@@ -188,8 +188,37 @@ export class Storage {
     return abs.slice(this.prefix.length);
   }
 
-  send(command) {
-    return this.client.send(command);
+  async send(command) {
+    try {
+      return await this.client.send(command);
+    } finally {
+      this.clockKnown = true;
+      this.warnClockSkew();
+    }
+  }
+
+  // ---------- часы ----------
+  // Presigned-ссылка содержит время создания (X-Amz-Date). Если часы VDS расходятся
+  // с хранилищем больше чем на ~15 минут, S3 отвергает ссылку («The difference between
+  // the request time and the current time is too large»), хотя запросы сервера проходят:
+  // SDK сам учитывает расхождение (systemClockOffset — по заголовку Date каждого ответа),
+  // но только для своих запросов, не для ссылок. Подписываем ссылки по часам хранилища.
+  get clockOffsetMs() {
+    return this.client.config.systemClockOffset || 0;
+  }
+
+  warnClockSkew() {
+    const sec = Math.round(this.clockOffsetMs / 1000);
+    if (Math.abs(sec) < 60 || this.clockWarned) return;
+    this.clockWarned = true;
+    console.warn(`[s3] Часы сервера расходятся с хранилищем «${this.name}» на ${sec} с — ссылки подписываются `
+      + 'по времени хранилища; настройте синхронизацию времени (timedatectl set-ntp true)');
+  }
+
+  async signingDate() {
+    // Расхождение ещё не измерено (не было ни одного ответа) — один лёгкий запрос.
+    if (!this.clockKnown) await this.headBucket().catch(() => {});
+    return new Date(Date.now() + this.clockOffsetMs);
   }
 
   /**
@@ -301,7 +330,7 @@ export class Storage {
     const url = await getSignedUrl(this.client,
       new PutObjectCommand({ Bucket: this.bucket, Key: this.abs(rel), ContentType: contentType, ContentLength: size, StorageClass: this.storageClass }),
       { expiresIn: config.limits.uploadUrlTtlSec, signableHeaders: new Set(['content-length']),
-        unhoistableHeaders: new Set(['x-amz-storage-class']) });
+        unhoistableHeaders: new Set(['x-amz-storage-class']), signingDate: await this.signingDate() });
     const headers = { 'Content-Type': contentType };
     if (this.storageClass) headers['X-Amz-Storage-Class'] = this.storageClass;
     return { url, headers };
@@ -309,13 +338,13 @@ export class Storage {
 
   // По умолчанию — как вложение: HTML/SVG из бакета не исполнится в браузере.
   // Для предпросмотра (inline) сервер обязан передать безопасный contentType из белого списка.
-  presignGet(rel, expiresIn, { inline = false, contentType } = {}) {
+  async presignGet(rel, expiresIn, { inline = false, contentType } = {}) {
     return getSignedUrl(this.client, new GetObjectCommand({
       Bucket: this.bucket,
       Key: this.abs(rel),
       ResponseContentDisposition: contentDisposition(nameFromKey(rel), inline ? 'inline' : 'attachment'),
       ResponseContentType: contentType,
-    }), { expiresIn });
+    }), { expiresIn, signingDate: await this.signingDate() });
   }
 
   async headObject(rel) {
@@ -336,10 +365,10 @@ export class Storage {
     return out.UploadId;
   }
 
-  presignPart(rel, uploadId, partNumber) {
+  async presignPart(rel, uploadId, partNumber) {
     return getSignedUrl(this.client,
       new UploadPartCommand({ Bucket: this.bucket, Key: this.abs(rel), UploadId: uploadId, PartNumber: partNumber }),
-      { expiresIn: config.limits.uploadUrlTtlSec });
+      { expiresIn: config.limits.uploadUrlTtlSec, signingDate: await this.signingDate() });
   }
 
   // ETag-и частей берём у самого S3 (ListParts), а не у клиента:

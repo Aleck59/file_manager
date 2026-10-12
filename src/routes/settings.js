@@ -229,6 +229,10 @@ settingsRouter.post('/storages/:id/diagnose', async (req, res) => {
   if (conn.ok) {
     const key = `.fm-check-${crypto.randomBytes(6).toString('hex')}`;
     test = { key, ...(await st.presignPut(key, 'text/plain', 2)) };
+    const skew = Math.round(st.clockOffsetMs / 1000);
+    checks.push(Math.abs(skew) < 60
+      ? { id: 'clock', ok: true, text: 'Часы сервера совпадают с часами хранилища' }
+      : { id: 'clock', ok: null, text: `Часы сервера расходятся с хранилищем на ${Math.abs(skew) >= 120 ? `${Math.round(Math.abs(skew) / 60)} мин` : `${Math.abs(skew)} с`} — ссылки подписываются по времени хранилища, но лучше включить синхронизацию времени: sudo timedatectl set-ntp true` });
     checks.push(await preflightCheck(def, test, config.appOrigin));
   }
   res.json({ origin: config.appOrigin, storageClass: def.storageClass || null, checks, test });

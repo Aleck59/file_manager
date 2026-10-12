@@ -387,3 +387,27 @@ test('Cloud.ru: всегда virtual-hosted (CORS работает только 
   assert.equal(cfg.parseStorageDef({ ...base, bucket: 'with.dot' }).forcePathStyle, true, 'бакет с точкой — path-style (TLS)');
   assert.equal(cfg.parseStorageDef({ ...base, endpoint: 'https://storage.yandexcloud.net', bucket: 'b' }).forcePathStyle, true);
 });
+
+test('ссылки подписываются по часам хранилища, если часы сервера расходятся', async () => {
+  const http = await import('node:http');
+  // Часы «хранилища» впереди на 2 часа: SDK видит это по заголовку Date ответа.
+  const srv = http.createServer((req, res) => { res.writeHead(200, { date: new Date(Date.now() + 7200e3).toUTCString() }); res.end(); });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const { Storage } = await import('../src/s3.js');
+  const st = new Storage({ ...cfg.config.storages[0], endpoint: `http://127.0.0.1:${srv.address().port}`, forcePathStyle: true });
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const amzDate = (u) => {
+      const m = new URL(u).searchParams.get('X-Amz-Date').match(/^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)Z$/);
+      return Date.UTC(m[1], m[2] - 1, m[3], m[4], m[5], m[6]);
+    };
+    for (const url of [(await st.presignPut('a~x.txt', 'text/plain', 1)).url, await st.presignGet('a~x.txt', 60), await st.presignPart('a~x.txt', 'u', 1)]) {
+      assert.ok(Math.abs(amzDate(url) - (Date.now() + 7200e3)) < 5000, 'время ссылки — по часам хранилища (+2 ч), без двойного сдвига');
+    }
+  } finally {
+    console.warn = warn;
+    st.destroy();
+    srv.close();
+  }
+});
