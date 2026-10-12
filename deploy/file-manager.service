@@ -1,0 +1,30 @@
+# systemd-юнит — альтернатива PM2 без лишнего демона в памяти (экономит ~40-60 МБ ОЗУ).
+# Установка: см. docs/DEPLOY_FASTPANEL.md, шаг 6, вариант Б.
+[Unit]
+Description=File manager (Node.js + S3 presigned URLs)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=USER
+Group=USER
+WorkingDirectory=/var/www/USER/data/www/files.example.com
+ExecStart=/usr/bin/node --max-old-space-size=96 --max-semi-space-size=2 src/server.js
+Environment=NODE_ENV=production
+Restart=always
+RestartSec=3
+# Жёсткий лимит памяти на уровне cgroup
+MemoryMax=180M
+
+# Песочница
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
