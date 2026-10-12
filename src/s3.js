@@ -93,8 +93,9 @@ export function corsRules(origin) {
   return [{
     AllowedOrigins: [origin],
     AllowedMethods: ['GET', 'PUT', 'HEAD'],
-    // «*» плюс явные имена: не все хранилища понимают «*» как «любой заголовок».
-    AllowedHeaders: ['*', 'content-type', 'x-amz-storage-class'],
+    // Только явные имена — ровно то, что шлёт браузер. «*» не все хранилища понимают как
+    // «любой заголовок», а Cloud.ru с «*» в списке отклоняет запрос даже при явных именах.
+    AllowedHeaders: ['content-type', 'x-amz-storage-class'],
     ExposeHeaders: ['ETag'],
     MaxAgeSeconds: 3600,
   }];
@@ -164,7 +165,7 @@ export async function preflightCheck(def, test, origin) {
   for (const h of names) if (!allowed(await probePreflight(test.url, origin, [h]))) denied.push(h);
   const list = (denied.length ? denied : names).join(', ');
   return { id: 'preflight', ok: false, headers: denied.length ? denied : names,
-    text: `Правила CORS не разрешают заголовки запроса: ${list}. Хранилище не считает «*» разрешением любых заголовков — впишите их явно в «Заголовки запроса» (AllowedHeader) или нажмите «Исправить правила CORS»` };
+    text: `Правила CORS не разрешают заголовки запроса: ${list}. Впишите их явно в «Заголовки запроса» (AllowedHeader) и уберите оттуда «*» (Cloud.ru с ним отклоняет запрос) — или нажмите «Исправить правила CORS»` };
 }
 
 // ---------- копирование (для переименования и перемещения) ----------

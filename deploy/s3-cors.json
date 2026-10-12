@@ -3,7 +3,7 @@
     {
       "AllowedOrigins": ["https://files.example.com"],
       "AllowedMethods": ["GET", "PUT", "HEAD"],
-      "AllowedHeaders": ["*", "content-type", "x-amz-storage-class"],
+      "AllowedHeaders": ["content-type", "x-amz-storage-class"],
       "ExposeHeaders": ["ETag"],
       "MaxAgeSeconds": 3600
     }
