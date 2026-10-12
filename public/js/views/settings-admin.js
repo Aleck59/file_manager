@@ -218,11 +218,26 @@ export function adminSettings(ctx) {
   async function diagnose(st) {
     const list = h('ul', { class: 'space-y-2 text-sm' });
     const close = h('button', { type: 'button', class: 'btn-primary', onclick: () => dialog.close() }, 'Готово');
+    // Записать в бакет правила CORS приложения (с явными заголовками) и проверить заново.
+    const fix = h('button', { type: 'button', class: 'btn-ghost', hidden: true }, icon('key'), 'Исправить правила CORS');
+    fix.onclick = async () => {
+      fix.disabled = true;
+      try {
+        await api.applyCors(st.id);
+        toast('Правила CORS записаны в бакет');
+        await run();
+      } catch (err) {
+        add(false, `Хранилище не приняло правила CORS: ${err.message}`,
+          `Задайте их в консоли бакета: Источник = ${location.origin}, методы GET, PUT, HEAD, заголовки запроса: content-type, x-amz-storage-class, заголовки ответа: ETag.`);
+      } finally {
+        fix.disabled = false;
+      }
+    };
     const dialog = h('dialog', { class: 'w-[min(36rem,calc(100%-2rem))] rounded-2xl bg-white p-0 text-slate-800 shadow-xl dark:bg-slate-900 dark:text-slate-200' },
       h('div', { class: 'space-y-4 p-6' },
         h('h3', { class: 'text-lg font-semibold' }, `Проверка загрузки: «${st.name}»`),
         list,
-        h('div', { class: 'flex justify-end' }, close)));
+        h('div', { class: 'flex flex-wrap justify-end gap-2' }, fix, close)));
     dialog.addEventListener('close', () => dialog.remove());
     document.body.append(dialog);
     dialog.showModal();
@@ -236,64 +251,72 @@ export function adminSettings(ctx) {
       return li;
     };
 
-    let r;
-    try {
-      r = await api.diagnoseStorage(st.id);
-    } catch (err) {
-      return add(false, err.message);
-    }
-    let corsWarning = null;
-    for (const c of r.checks) {
-      const li = add(c.ok, c.text);
-      if (c.id === 'cors' && c.ok === false) corsWarning = li;
-    }
-    if (!r.test) return add(false, 'Пробная загрузка из браузера невозможна, пока сервер не подключается к бакету.');
+    async function run() {
+      list.replaceChildren();
+      fix.hidden = true;
+      let r;
+      try {
+        r = await api.diagnoseStorage(st.id);
+      } catch (err) {
+        return add(false, err.message);
+      }
+      let corsWarning = null;
+      for (const c of r.checks) {
+        const li = add(c.ok, c.text);
+        if (c.id === 'cors' && c.ok === false) corsWarning = li;
+        if ((c.id === 'cors' || c.id === 'preflight') && c.ok === false) fix.hidden = false;
+      }
+      if (!r.test) return add(false, 'Пробная загрузка из браузера невозможна, пока сервер не подключается к бакету.');
 
-    // Пробная загрузка. Нарушение CSP браузер сообщает событием — так отличаем его от CORS.
-    let cspBlocked = false;
-    const onCsp = () => { cspBlocked = true; };
-    document.addEventListener('securitypolicyviolation', onCsp);
-    const result = await new Promise((resolve) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('PUT', r.test.url);
-      for (const [k, v] of Object.entries(r.test.headers)) xhr.setRequestHeader(k, v);
-      xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
-      xhr.onerror = () => resolve({ status: 0 });
-      xhr.send('ok');
-    });
-    document.removeEventListener('securitypolicyviolation', onCsp);
+      // Пробная загрузка. Нарушение CSP браузер сообщает событием — так отличаем его от CORS.
+      let cspBlocked = false;
+      const onCsp = () => { cspBlocked = true; };
+      document.addEventListener('securitypolicyviolation', onCsp);
+      const result = await new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', r.test.url);
+        for (const [k, v] of Object.entries(r.test.headers)) xhr.setRequestHeader(k, v);
+        xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
+        xhr.onerror = () => resolve({ status: 0 });
+        xhr.send('ok');
+      });
+      document.removeEventListener('securitypolicyviolation', onCsp);
 
-    if (result.status >= 200 && result.status < 300) {
-      add(true, 'Браузер загружает файлы в хранилище — всё работает.',
-        r.storageClass ? `Класс хранения ${r.storageClass} принят хранилищем.` : null);
-      // Некоторые хранилища без правил CORS пускают любой сайт — тогда это не ошибка.
-      corsWarning?.remove();
-      api.cleanupDiagnose(st.id, r.test.key).catch(() => {});
-      return;
+      if (result.status >= 200 && result.status < 300) {
+        add(true, 'Браузер загружает файлы в хранилище — всё работает.',
+          r.storageClass ? `Класс хранения ${r.storageClass} принят хранилищем.` : null);
+        // Некоторые хранилища без правил CORS пускают любой сайт — тогда это не ошибка.
+        corsWarning?.remove();
+        api.cleanupDiagnose(st.id, r.test.key).catch(() => {});
+        return;
+      }
+      if (result.status === 0) {
+        if (cspBlocked) {
+          return add(false, 'Обращение к хранилищу заблокировала политика безопасности страницы.',
+            'Страница была открыта до подключения этого хранилища. Обновите её (Ctrl+F5) и проверьте снова.');
+        }
+        if (location.protocol === 'https:' && r.test.url.startsWith('http:')) {
+          return add(false, 'Браузер заблокировал смешанный контент (сайт https, хранилище http).', 'Укажите endpoint хранилища с https://.');
+        }
+        if (r.checks.some((c) => c.id === 'preflight' && c.ok === false)) {
+          return add(false, 'Браузер не получил разрешения CORS от бакета — причина указана выше.',
+            'Нажмите «Исправить правила CORS» ниже — приложение запишет правила с явными заголовками и проверит снова.');
+        }
+        return add(false, 'Браузер не получил разрешения CORS от бакета — поэтому загрузки падают с «Нет ответа от S3».',
+          `Нажмите «Исправить правила CORS» ниже. Если провайдер не принимает правила через API, задайте их в консоли бакета: Источник = ${r.origin}, методы GET, PUT, HEAD, заголовки запроса: content-type, x-amz-storage-class, заголовки ответа: ETag.`);
+      }
+      const code = result.body?.match(/<Code>([^<]+)<\/Code>/)?.[1] ?? `HTTP ${result.status}`;
+      const hints = {
+        AccessDenied: 'У ключа нет права записи в бакет (или запись запрещена политикой бакета).',
+        SignatureDoesNotMatch: 'Хранилище не приняло подпись ссылки: проверьте регион, Secret Key и способ адресации (path-style).',
+        InvalidStorageClass: 'Хранилище не поддерживает выбранный класс хранения — выберите другой или «Класс бакета по умолчанию».',
+        InvalidArgument: 'Хранилище отклонило параметры загрузки: если в тексте ошибки есть «request time», расходятся часы сервера (sudo timedatectl set-ntp true), иначе попробуйте класс хранения «по умолчанию».',
+        RequestTimeTooSkewed: 'Часы сервера расходятся с хранилищем — включите синхронизацию времени: sudo timedatectl set-ntp true.',
+      };
+      add(false, `Хранилище отклонило загрузку: ${code}.`, hints[code] ?? 'Подробности — в консоли провайдера.');
     }
-    if (result.status === 0) {
-      if (cspBlocked) {
-        return add(false, 'Обращение к хранилищу заблокировала политика безопасности страницы.',
-          'Страница была открыта до подключения этого хранилища. Обновите её (Ctrl+F5) и проверьте снова.');
-      }
-      if (location.protocol === 'https:' && r.test.url.startsWith('http:')) {
-        return add(false, 'Браузер заблокировал смешанный контент (сайт https, хранилище http).', 'Укажите endpoint хранилища с https://.');
-      }
-      if (r.checks.some((c) => c.id === 'preflight' && c.ok === false)) {
-        return add(false, 'Браузер не получил разрешения CORS от бакета — причина указана выше.');
-      }
-      return add(false, 'Браузер не получил разрешения CORS от бакета — поэтому загрузки падают с «Нет ответа от S3».',
-        `Нажмите «Настроить CORS бакета» (ключ) в списке хранилищ. Если провайдер не принимает правила через API, задайте их в консоли бакета: AllowedOrigin = ${r.origin}, AllowedMethod = GET, PUT, HEAD, AllowedHeader = *, ExposeHeader = ETag.`);
-    }
-    const code = result.body?.match(/<Code>([^<]+)<\/Code>/)?.[1] ?? `HTTP ${result.status}`;
-    const hints = {
-      AccessDenied: 'У ключа нет права записи в бакет (или запись запрещена политикой бакета).',
-      SignatureDoesNotMatch: 'Хранилище не приняло подпись ссылки: проверьте регион, Secret Key и способ адресации (path-style).',
-      InvalidStorageClass: 'Хранилище не поддерживает выбранный класс хранения — выберите другой или «Класс бакета по умолчанию».',
-      InvalidArgument: 'Хранилище отклонило параметры загрузки: если в тексте ошибки есть «request time», расходятся часы сервера (sudo timedatectl set-ntp true), иначе попробуйте класс хранения «по умолчанию».',
-      RequestTimeTooSkewed: 'Часы сервера расходятся с хранилищем — включите синхронизацию времени: sudo timedatectl set-ntp true.',
-    };
-    add(false, `Хранилище отклонило загрузку: ${code}.`, hints[code] ?? 'Подробности — в консоли провайдера.');
+
+    run();
   }
 
   async function removeStorage(st) {

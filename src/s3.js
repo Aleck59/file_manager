@@ -109,6 +109,11 @@ const httpLib = createRequire(import.meta.url)('node:http');
  * Позволяет с сервера увидеть, почему хранилище не пускает браузер.
  * @returns {Promise<{status:number, allowOrigin:string|null, code:string|null, message:string|null}>}
  */
+const XML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+const decodeXml = (str) => str?.replace(/&(#\d+|#x[0-9a-f]+|amp|lt|gt|quot|apos);/gi, (m, e) => (e[0] === '#'
+  ? String.fromCodePoint(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : Number(e.slice(1)))
+  : XML_ENTITIES[e.toLowerCase()])) ?? null;
+
 export function probePreflight(url, origin, requestHeaders = []) {
   return new Promise((resolve) => {
     const u = new URL(url);
@@ -123,7 +128,7 @@ export function probePreflight(url, origin, requestHeaders = []) {
         status: res.statusCode,
         allowOrigin: res.headers['access-control-allow-origin'] ?? null,
         code: body.match(/<Code>([^<]{1,100})<\/Code>/)?.[1] ?? null,
-        message: body.match(/<Message>([^<]{1,300})<\/Message>/)?.[1] ?? null,
+        message: decodeXml(body.match(/<Message>([^<]{1,300})<\/Message>/)?.[1] ?? null),
       }));
     });
     req.on('timeout', () => req.destroy(new Error('таймаут')));
@@ -150,12 +155,16 @@ export async function preflightCheck(def, test, origin) {
       return { id: 'preflight', ok: false, text: `Хранилище применяет CORS только к адресам вида ${def.bucket}.${u.host} — выключите «Path-style» в параметрах хранилища (${why})` };
     }
   }
-  for (const h of names) {
-    if (allowed(await probePreflight(test.url, origin, names.filter((n) => n !== h)))) {
-      return { id: 'preflight', ok: false, text: `Правила CORS не разрешают заголовок ${h} — добавьте его в «Заголовки запроса» (AllowedHeader) или нажмите «Настроить CORS бакета» (${why})` };
-    }
+  // Без дополнительных заголовков: если и так отказ — не совпадает источник или метод.
+  if (!allowed(await probePreflight(test.url, origin, []))) {
+    return { id: 'preflight', ok: false, text: `Хранилище не разрешает PUT с ${origin}: в правиле CORS «Источник» (AllowedOrigin) должен в точности совпадать с этим адресом (схема, домен, без «/» на конце), метод — PUT (${why})` };
   }
-  return { id: 'preflight', ok: false, text: `Хранилище отклоняет предварительный запрос CORS с ${origin} (${why})` };
+  // Источник и метод подходят — значит, не разрешены заголовки. Проверяем каждый отдельно.
+  const denied = [];
+  for (const h of names) if (!allowed(await probePreflight(test.url, origin, [h]))) denied.push(h);
+  const list = (denied.length ? denied : names).join(', ');
+  return { id: 'preflight', ok: false, headers: denied.length ? denied : names,
+    text: `Правила CORS не разрешают заголовки запроса: ${list}. Хранилище не считает «*» разрешением любых заголовков — впишите их явно в «Заголовки запроса» (AllowedHeader) или нажмите «Исправить правила CORS»` };
 }
 
 // ---------- копирование (для переименования и перемещения) ----------
