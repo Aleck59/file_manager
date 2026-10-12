@@ -56,6 +56,15 @@ const ICONS = {
   pencil: '<path d="M21.17 6.81a1 1 0 0 0-3.98-3.98L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z"/><path d="m15 5 4 4"/>',
   move: '<path d="M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1"/><path d="M2 13h10"/><path d="m9 16 3-3-3-3"/>',
   more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+  grid: '<rect width="7" height="7" x="3" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="3" rx="1.5"/><rect width="7" height="7" x="3" y="14" rx="1.5"/><rect width="7" height="7" x="14" y="14" rx="1.5"/>',
+  list: '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/>',
+  sort: '<path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/>',
+  arrowUp: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+  arrowDown: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  keyboard: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 16h10"/>',
+  folderUp: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M12 17v-6"/><path d="m9 14 3-3 3 3"/>',
+  clipboard: '<rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
 };
 
 // Тип данных для перетаскивания файлов внутри приложения (не путать с файлами с компьютера).
@@ -111,6 +120,24 @@ export function formatSize(bytes) {
 const dateFmt = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 export const formatDate = (iso) => (iso ? dateFmt.format(new Date(iso)) : '—');
 
+// Короткая дата для списков: «сегодня, 18:56», «вчера, 09:10», «12 окт., 18:56», «3 мар. 2025».
+// Полная дата остаётся в подсказке (title). Читается быстрее и не переносится на телефоне.
+const timeFmt = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' });
+const dayFmt = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' });
+const dayYearFmt = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
+export function formatDateShort(iso, { time = true } = {}) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  const now = new Date();
+  const startOfDay = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOfDay(now) - startOfDay(d)) / 86_400_000);
+  const at = time ? `, ${timeFmt.format(d)}` : '';
+  if (days === 0) return `сегодня${at}`;
+  if (days === 1) return `вчера${at}`;
+  if (d.getFullYear() === now.getFullYear()) return `${dayFmt.format(d)}${at}`;
+  return dayYearFmt.format(d).replace(/\s*г\.$/, '');
+}
+
 const plural = new Intl.PluralRules('ru-RU');
 export function pluralize(n, forms) {
   return `${n.toLocaleString('ru-RU')} ${forms[plural.select(n)] ?? forms.other}`;
@@ -148,9 +175,9 @@ export const CATEGORY_STYLE = {
   other: { icon: 'file', tone: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' },
 };
 
-export function fileBadge(name, size = 'h-9 w-9') {
+export function fileBadge(name, size = 'h-9 w-9 rounded-lg', iconSize = 'h-4 w-4') {
   const style = CATEGORY_STYLE[categoryOf(name)];
-  return h('span', { class: `flex ${size} shrink-0 items-center justify-center rounded-lg ${style.tone}` }, icon(style.icon));
+  return h('span', { class: `flex ${size} shrink-0 items-center justify-center ${style.tone}` }, icon(style.icon, iconSize));
 }
 
 // Человекочитаемая папка: "" → «Мой диск», "a/b/" → «Мой диск / a / b»

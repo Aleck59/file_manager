@@ -1,6 +1,7 @@
 // Раздел «Главная»: сводка по диску, структура хранилища по типам и недавние файлы.
 import { api } from '../api.js';
-import { $, FILES, fileBadge, folderLabel, formatDate, formatSize, h, icon, pluralize, toast } from '../ui.js';
+import { thumbnail } from '../thumbs.js';
+import { $, FILES, folderLabel, formatDate, formatDateShort, formatSize, h, icon, pluralize, toast } from '../ui.js';
 import { diskHash, storageNotice } from './disk.js';
 
 // Категориальная палитра (проверена валидатором dataviz для светлой и тёмной темы):
@@ -178,13 +179,13 @@ export function mountHome(view, ctx) {
         recent.replaceChildren(...stats.recent.map((f) => h('li', {},
           h('a', { href: diskHash(f.folder), class: 'flex items-center gap-3 px-5 py-3 transition hover:bg-slate-50 dark:hover:bg-slate-800/40',
             onclick: () => { ctx.selectAfterNavigate = f.key; } },
-          fileBadge(f.name),
+          thumbnail(f),
           h('span', { class: 'min-w-0 flex-1' },
             h('span', { class: 'block truncate text-sm font-medium' }, f.name),
             h('span', { class: 'block truncate text-xs text-slate-500 dark:text-slate-400' }, folderLabel(f.folder))),
           h('span', { class: 'shrink-0 text-right text-xs text-slate-500 dark:text-slate-400' },
             h('span', { class: 'block tabular-nums' }, formatSize(f.size)),
-            h('span', { class: 'hidden sm:block' }, formatDate(f.lastModified)))))));
+            h('span', { class: 'hidden sm:block', title: formatDate(f.lastModified) }, formatDateShort(f.lastModified)))))));
       }
     } catch (err) {
       toast(err.message, 'error');

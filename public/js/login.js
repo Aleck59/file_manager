@@ -1,10 +1,23 @@
 const form = document.getElementById('login-form');
 const errorBox = document.getElementById('login-error');
-const button = form.querySelector('button');
+const button = form.querySelector('button[type=submit]');
+const toggle = document.getElementById('toggle-password');
+
+// Показать/скрыть пароль — удобно на телефоне, где легко ошибиться при вводе.
+toggle.addEventListener('click', () => {
+  const show = form.password.type === 'password';
+  form.password.type = show ? 'text' : 'password';
+  toggle.setAttribute('aria-pressed', String(show));
+  const label = show ? 'Скрыть пароль' : 'Показать пароль';
+  toggle.setAttribute('aria-label', label);
+  toggle.title = label;
+  form.password.focus();
+});
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   errorBox.classList.add('hidden');
+  form.password.type = 'password';
   button.disabled = true;
   button.textContent = 'Проверяем…';
   try {

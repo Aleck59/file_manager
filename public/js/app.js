@@ -28,6 +28,11 @@ const ctx = {
     uploadTarget = folder;
     $('#file-input').click();
   },
+  // Папка целиком (с подпапками): браузер отдаёт файлы с webkitRelativePath «Фото/2026/a.jpg».
+  pickFolder(folder) {
+    uploadTarget = folder;
+    $('#folder-input').click();
+  },
   enqueue,
   refreshStats,
   selectAfterNavigate: null,
@@ -176,12 +181,15 @@ function updateUploadsTitle() {
   $('#uploads-title').textContent = pending ? `Загрузка · осталось ${pending}` : `Готово · ${pluralize(finished, FILES)}`;
 }
 
+// files: File или { file, subfolders } (загрузка папки целиком — путь внутри неё).
 function enqueue(files, folder) {
   if (!ctx.can('editor')) return toast('Недостаточно прав для загрузки', 'error');
   clearTimeout(hideTimer);
   if (!active && !queue.length) { finished = 0; failed = 0; $('#upload-list').replaceChildren(); }
   $('#uploads').classList.remove('hidden');
-  for (const file of files) {
+  for (const item of files) {
+    const { file, subfolders = [] } = item instanceof File ? { file: item } : item;
+    const label = [...subfolders, file.name].join(' / ');
     const controller = new AbortController();
     const status = h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400' }, `${formatSize(file.size)} · в очереди`);
     const bar = h('div');
@@ -190,12 +198,12 @@ function enqueue(files, folder) {
     const row = h('li', { class: 'upload-row flex items-center gap-3 px-4 py-3' },
       h('div', { class: 'min-w-0 flex-1' },
         h('div', { class: 'flex items-baseline justify-between gap-3' },
-          h('p', { class: 'truncate text-sm font-medium', title: file.name }, file.name),
+          h('p', { class: 'truncate text-sm font-medium', title: label }, label),
           status),
         h('div', { class: 'progress mt-2' }, bar)),
       cancel);
     $('#upload-list').append(row);
-    queue.push({ file, folder, controller, ui: { row, status, bar, cancel } });
+    queue.push({ file, folder, subfolders: subfolders.length ? subfolders : undefined, controller, ui: { row, status, bar, cancel } });
   }
   updateUploadsTitle();
   pump();
@@ -217,7 +225,7 @@ function pump() {
   }
 }
 
-async function runUpload({ file, folder, controller, ui }) {
+async function runUpload({ file, folder, subfolders, controller, ui }) {
   const { status, bar, row, cancel } = ui;
   if (controller.signal.aborted) { row.remove(); return; }
   const progress = new ProgressView(bar, status, file.size);
@@ -225,6 +233,7 @@ async function runUpload({ file, folder, controller, ui }) {
   try {
     const result = await uploadFile(file, {
       folder,
+      subfolders,
       signal: controller.signal,
       onProgress: (loaded) => progress.update(loaded),
     });
@@ -233,7 +242,7 @@ async function runUpload({ file, folder, controller, ui }) {
     status.textContent = 'Готово';
     cancel.replaceChildren(icon('check'));
     cancel.disabled = true;
-    current?.onUploaded?.(result, folder);
+    current?.onUploaded?.(result.file, result.folder);
   } catch (err) {
     if (err instanceof UploadCancelled) { row.remove(); return; }
     failed++;
@@ -264,6 +273,13 @@ async function start() {
   initPreview(ctx);
   setStorageConfigured(ctx.storageConfigured);
 
+  $('#folder-input').addEventListener('change', (e) => {
+    const items = [...e.target.files]
+      .filter((f) => !['.DS_Store', 'Thumbs.db', 'desktop.ini'].includes(f.name))
+      .map((file) => ({ file, subfolders: (file.webkitRelativePath || file.name).split('/').slice(0, -1) }));
+    if (items.length) enqueue(items, uploadTarget);
+    e.target.value = '';
+  });
   $('#file-input').addEventListener('change', (e) => {
     enqueue([...e.target.files], uploadTarget);
     e.target.value = '';

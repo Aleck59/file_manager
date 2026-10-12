@@ -50,15 +50,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * @param {File} file
- * @param {{ folder?: string, onProgress: (loaded: number, total: number) => void, signal: AbortSignal }} opts
- * @returns {Promise<{key: string, name: string, size: number, lastModified: string}>}
+ * @param {{ folder?: string, subfolders?: string[], onProgress: (loaded: number, total: number) => void, signal: AbortSignal }} opts
+ * @returns {Promise<{file: {key: string, name: string, size: number, lastModified: string}, folder: string}>}
  */
-export async function uploadFile(file, { folder = '', onProgress, signal }) {
-  const plan = await api.startUpload(file, folder);
+export async function uploadFile(file, { folder = '', subfolders, onProgress, signal }) {
+  const plan = await api.startUpload(file, folder, subfolders);
+  // Итоговая папка (с подпапками при загрузке папки целиком) — её определяет сервер.
+  const target = plan.folder ?? folder;
 
   if (plan.mode === 'single') {
     await putBlob(plan.url, file, plan.headers, (loaded) => onProgress(loaded, file.size), signal);
-    return (await api.completeUpload(plan.key)).file;
+    return { file: (await api.completeUpload(plan.key)).file, folder: target };
   }
 
   const { key, uploadId, partSize, partCount } = plan;
@@ -115,7 +117,7 @@ export async function uploadFile(file, { folder = '', onProgress, signal }) {
 
   try {
     await Promise.all(Array.from({ length: Math.min(PART_CONCURRENCY, partCount) }, worker));
-    return (await api.completeUpload(key, uploadId)).file;
+    return { file: (await api.completeUpload(key, uploadId)).file, folder: target };
   } catch (err) {
     // Незавершённая multipart-загрузка занимает место в бакете — отменяем её.
     api.abortUpload(key, uploadId).catch(() => {});

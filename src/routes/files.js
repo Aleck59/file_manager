@@ -23,6 +23,21 @@ function requireFolder(folder) {
   return value;
 }
 
+// Загрузка папки целиком: относительный путь файла внутри перетащенной папки
+// (["Фото", "2026"]) — каждое имя очищается так же, как при создании папки.
+function withSubfolders(folder, subfolders) {
+  if (subfolders === undefined || subfolders === null) return folder;
+  if (!Array.isArray(subfolders) || subfolders.length > 20) throw new HttpError(400, 'Некорректный путь папки');
+  let path = folder;
+  for (const seg of subfolders) {
+    const name = typeof seg === 'string' ? sanitizeFolderName(seg) : null;
+    if (!name) throw new HttpError(400, 'Некорректное имя папки');
+    path += `${name}/`;
+  }
+  if (!isValidFolder(path)) throw new HttpError(400, 'Слишком глубокая вложенность или длинный путь');
+  return path;
+}
+
 function requireUploadId(uploadId) {
   // eslint-disable-next-line no-control-regex
   if (typeof uploadId !== 'string' || !uploadId || uploadId.length > 1024 || /[\u0000-\u001f]/.test(uploadId)) {
@@ -88,7 +103,7 @@ filesRouter.post('/folders/delete', canEdit, async (req, res) => {
 // POST /api/uploads — начало загрузки. Сервер выбирает хранилище, ключ и способ загрузки.
 filesRouter.post('/uploads', canEdit, async (req, res) => {
   const { name, size, type } = req.body ?? {};
-  const folder = requireFolder(req.body?.folder);
+  const folder = withSubfolders(requireFolder(req.body?.folder), req.body?.subfolders);
   if (typeof name !== 'string' || !name.trim()) throw new HttpError(400, 'Не указано имя файла');
   if (!Number.isSafeInteger(size) || size < 0) throw new HttpError(400, 'Некорректный размер файла');
   if (size > config.limits.maxFileSize) {
@@ -102,14 +117,14 @@ filesRouter.post('/uploads', canEdit, async (req, res) => {
 
   if (size <= config.limits.multipartThreshold) {
     const { url, headers } = await st.presignPut(rel, contentType, size);
-    return res.json({ mode: 'single', key, url, headers, storage: st.id });
+    return res.json({ mode: 'single', key, url, headers, storage: st.id, folder });
   }
 
   // Размер части — не меньше настроенного и такой, чтобы уложиться в 10 000 частей.
   const partSize = Math.max(config.limits.partSize, Math.ceil(size / MAX_PARTS / MB) * MB);
   const partCount = Math.ceil(size / partSize);
   const uploadId = await st.createMultipart(rel, contentType);
-  res.json({ mode: 'multipart', key, uploadId, partSize, partCount, storage: st.id });
+  res.json({ mode: 'multipart', key, uploadId, partSize, partCount, storage: st.id, folder });
 });
 
 // POST /api/uploads/parts — presigned URL для пачки частей multipart-загрузки.
@@ -186,6 +201,22 @@ filesRouter.post('/files/link', async (req, res) => {
   if (!(await st.headObject(rel))) throw new HttpError(404, 'Файл не найден');
   const url = await st.presignGet(rel, ttl);
   res.json({ url, expiresAt: new Date(Date.now() + ttl * 1000).toISOString() });
+});
+
+// POST /api/files/thumbs {keys} — ссылки на миниатюры изображений для вида «Плитки».
+// Только подпись ссылок (без запросов к S3), пачкой — одна ссылка на страницу списка.
+// Отсутствующий файл просто не покажет картинку. Тип ответа — из белого списка.
+filesRouter.post('/files/thumbs', async (req, res) => {
+  const keys = req.body?.keys;
+  if (!Array.isArray(keys) || keys.length > 200) throw new HttpError(400, 'Некорректный список файлов');
+  const urls = {};
+  for (const key of keys) {
+    const { st, rel } = resolveRef(key);
+    const preview = previewKind(nameFromKey(rel));
+    if (preview?.kind !== 'image') continue;
+    urls[key] = await st.presignGet(rel, PREVIEW_TTL, { contentType: preview.contentType });
+  }
+  res.json({ urls });
 });
 
 // POST /api/files/preview — короткоживущая inline-ссылка для предпросмотра.

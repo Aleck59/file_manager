@@ -47,6 +47,79 @@
   .segmented > button { @apply rounded-lg px-3 py-1.5 text-sm font-medium text-slate-600 transition dark:text-slate-300; }
   .segmented > button[aria-pressed="true"] { @apply bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white; }
   .file-row[aria-selected="true"] { @apply bg-brand-50/70 dark:bg-brand-950/40; }
+  .segmented-icons > button { @apply px-2 py-1.5 text-slate-500 dark:text-slate-400; }
+  .link { @apply font-medium text-brand-600 underline-offset-2 hover:underline dark:text-brand-400; }
+  .kbd { @apply inline-flex min-w-[1.75rem] items-center justify-center rounded-md border border-b-2 border-slate-200 bg-slate-50 px-1.5 py-0.5 font-sans text-xs font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300; }
+}
+
+/* ---------- список и плитки файлов ---------- */
+@layer components {
+  .file-list { @apply divide-y divide-slate-100 dark:divide-slate-800; }
+  .file-row, .list-head { grid-template-columns: minmax(0, 1fr) auto; }
+  .file-row { @apply grid cursor-pointer items-center gap-x-4 px-4 py-2.5 outline-none; transition: background-color 120ms ease-out; }
+  .file-row:hover { @apply bg-slate-50 dark:bg-slate-800/40; }
+  .file-row:focus-visible { @apply bg-slate-50 ring-2 ring-inset ring-brand-500 ring-offset-0 dark:bg-slate-800/40; }
+  @media (min-width: 768px) {
+    .file-row, .list-head { grid-template-columns: minmax(0, 1fr) 6.5rem 9rem 7.5rem; }
+  }
+  .check-cell { @apply flex w-4 shrink-0 items-center; }
+  .check { @apply h-4 w-4 cursor-pointer rounded accent-brand-600; transition: opacity 120ms ease-out; }
+  /* На телефоне флажки появляются только в режиме выбора (вход — «Выбрать» в меню «⋯»). */
+  @media (max-width: 767px) {
+    .file-row .check-cell { display: none; }
+    .has-selection .file-row .check-cell { display: flex; }
+  }
+
+  /* Действия строки и флажок выбора — по наведению (на сенсорных экранах видны всегда). */
+  @media (hover: hover) {
+    .file-row .row-actions, .file-row .check { opacity: 0; transition: opacity 120ms ease-out; }
+    .file-row:hover .row-actions, .file-row:focus-within .row-actions, .file-row[aria-selected="true"] .row-actions,
+    .file-row:hover .check, .file-row:focus-within .check, .has-selection .check, .check:checked { opacity: 1; }
+    .tile .tile-actions, .tile .tile-check { opacity: 0; }
+    .tile:hover .tile-actions, .tile:focus-within .tile-actions, .tile:hover .tile-check, .tile:focus-within .tile-check,
+    .has-selection .tile-check, .tile[aria-selected="true"] .tile-check { opacity: 1; }
+  }
+
+  .sort-head { @apply inline-flex items-center gap-1 rounded uppercase tracking-wide transition-colors hover:text-slate-700 dark:hover:text-slate-200; }
+  .sort-head.is-active { @apply text-slate-700 dark:text-slate-200; }
+  .sort-arrow { opacity: 0; transition: opacity 120ms ease-out, transform 150ms ease-out; }
+  .sort-head:hover .sort-arrow, .sort-head.is-active .sort-arrow { opacity: 1; }
+  .sort-head.is-asc .sort-arrow { transform: rotate(180deg); }
+
+  .file-grid { @apply grid gap-3 p-3 sm:gap-4 sm:p-4; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); }
+  .tile { @apply relative flex cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-200 bg-white outline-none dark:border-slate-800 dark:bg-slate-900;
+    transition: box-shadow 150ms ease-out, transform 150ms ease-out, border-color 150ms ease-out; }
+  .tile:hover { @apply border-slate-300 shadow-md dark:border-slate-700; transform: translateY(-1px); }
+  .tile:focus-visible { @apply ring-2 ring-brand-500; }
+  .tile[aria-selected="true"] { @apply border-brand-500 ring-2 ring-brand-500/40 dark:border-brand-500; }
+  .tile-media { @apply relative flex aspect-[4/3] items-center justify-center overflow-hidden bg-slate-50 dark:bg-slate-800/60; }
+  .tile-media > .thumb { @apply rounded-none; }
+  .tile-body { @apply border-t border-slate-100 px-3 py-2 dark:border-slate-800; }
+  .tile-check { @apply absolute left-2 top-2 z-10 flex h-7 w-7 items-center justify-center rounded-lg bg-white/90 shadow-sm backdrop-blur dark:bg-slate-900/90; transition: opacity 120ms ease-out; }
+  .tile-actions { @apply absolute right-1.5 top-1.5 z-10 rounded-lg bg-white/90 shadow-sm backdrop-blur dark:bg-slate-900/90; transition: opacity 120ms ease-out; }
+  .is-dragging { opacity: .45; }
+  /* Пока выбраны файлы, поиск уступает место панели действий. */
+  .has-selection .search-box { display: none; }
+  /* Сенсорные экраны: флажок на плитке — только в режиме выбора. */
+  @media (hover: none) {
+    .tile .tile-check { display: none; }
+    .has-selection .tile .tile-check { display: flex; }
+  }
+
+  /* Миниатюра проявляется поверх значка типа, когда загрузилась. */
+  .thumb-img { opacity: 0; transition: opacity 220ms ease-out; outline: 1px solid rgb(0 0 0 / .06); outline-offset: -1px; }
+  .thumb-img.is-loaded { opacity: 1; }
+  [data-theme="dark"] .thumb-img { outline-color: rgb(255 255 255 / .06); }
+
+  /* Смена вида: элементы мягко появляются. */
+  .is-switching > li { animation: item-in .22s cubic-bezier(.22, 1, .36, 1) both; }
+  @keyframes item-in { from { opacity: 0; transform: translateY(4px) scale(.99); } }
+  .bulk-bar { animation: item-in .18s ease-out both; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tile:hover { transform: none; }
+    .is-switching > li, .bulk-bar { animation: none; }
+  }
 }
 
 @layer components {
@@ -86,4 +159,14 @@
     dialog[open], dialog[open]::backdrop { animation: none; }
     .btn:active:not(:disabled), .icon-btn:active:not(:disabled) { transform: none; }
   }
+}
+
+/* Страница входа: едва заметная сетка точек — фон не пустой, но и не отвлекает. */
+@layer components {
+  .login-bg {
+    background-image: radial-gradient(rgb(15 23 42 / .07) 1px, transparent 1px);
+    background-size: 22px 22px;
+    background-position: center;
+  }
+  [data-theme="dark"] .login-bg { background-image: radial-gradient(rgb(255 255 255 / .06) 1px, transparent 1px); }
 }

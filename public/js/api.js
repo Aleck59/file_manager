@@ -48,13 +48,14 @@ export const api = {
   createFolder: (parent, name) => request('POST', '/api/folders', { parent, name }),
   deleteFolder: (path) => request('POST', '/api/folders/delete', { path }),
 
-  startUpload: (file, folder) => request('POST', '/api/uploads', { name: file.name, size: file.size, type: file.type, folder }),
+  startUpload: (file, folder, subfolders) => request('POST', '/api/uploads', { name: file.name, size: file.size, type: file.type, folder, subfolders }),
   partUrls: (key, uploadId, partNumbers) => request('POST', '/api/uploads/parts', { key, uploadId, partNumbers }),
   completeUpload: (key, uploadId) => request('POST', '/api/uploads/complete', { key, uploadId }),
   abortUpload: (key, uploadId) => request('POST', '/api/uploads/abort', { key, uploadId }),
 
   downloadLink: (key, ttl) => request('POST', '/api/files/link', { key, ttl }),
   preview: (key) => request('POST', '/api/files/preview', { key }),
+  thumbs: (keys) => request('POST', '/api/files/thumbs', { keys }),
   deleteFile: (key) => request('DELETE', `/api/files${q({ key })}`),
   moveFile: (key, { folder, name } = {}) => request('POST', '/api/files/move', { key, folder, name }),
 

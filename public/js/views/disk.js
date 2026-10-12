@@ -1,12 +1,15 @@
-// Раздел «Диск»: содержимое папки, хлебные крошки, загрузка (drag-and-drop),
-// переименование, перемещение (меню, окно выбора папки, перетаскивание на папку) и удаление.
+// Раздел «Диск»: содержимое папки в виде списка или плиток, хлебные крошки, сортировка,
+// выбор нескольких файлов и действия над ними, загрузка (кнопка, перетаскивание файлов
+// и папок целиком, вставка из буфера обмена), переименование, перемещение и удаление,
+// управление с клавиатуры.
 import { api } from '../api.js';
-import { closePreview, copyFileLink, isPreviewing, setPreviewEnabled, showPreview } from '../preview.js';
+import { closePreview, copyFileLink, isPreviewing, setPreviewEnabled, showPreview, TTL_LABELS } from '../preview.js';
 import { pickFolder } from '../folder-picker.js';
+import { forgetThumb, thumbnail } from '../thumbs.js';
 import * as tree from '../tree.js';
 import {
-  confirmDialog, DRAG_TYPE, FILES, fileBadge, folderLabel, FOLDERS, formatDate, formatSize, h, icon, makeDropTarget,
-  openDialog, openMenu, pluralize, toast,
+  confirmDialog, copyToClipboard, DRAG_TYPE, FILES, folderLabel, FOLDERS, formatDate, formatDateShort, formatSize, h, icon,
+  makeDropTarget, openDialog, openMenu, pluralize, prefs, toast,
 } from '../ui.js';
 
 export const diskHash = (folder) => `#/disk/${folder.split('/').filter(Boolean).map(encodeURIComponent).join('/')}${folder ? '/' : ''}`;
@@ -20,6 +23,62 @@ export function storageNotice(ctx) {
     ctx.can('admin') && h('a', { href: '#/settings', class: 'btn-primary mt-6' }, icon('settings'), 'Открыть настройки'));
 }
 
+// ---------- сортировка ----------
+const SORTS = {
+  date: { label: 'Дата изменения', cmp: (a, b) => String(a.lastModified).localeCompare(String(b.lastModified)) },
+  name: { label: 'Имя', cmp: (a, b) => a.name.localeCompare(b.name, 'ru', { numeric: true, sensitivity: 'base' }) },
+  size: { label: 'Размер', cmp: (a, b) => a.size - b.size },
+};
+const DEFAULT_DIR = { date: 'desc', name: 'asc', size: 'desc' };
+
+// ---------- загрузка папок целиком ----------
+const MAX_DROPPED_FILES = 5000;
+const SKIP_FILES = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
+
+/** Файлы из перетащенных элементов, включая содержимое папок: [{file, subfolders}]. */
+async function collectDropped(dataTransfer) {
+  // webkitGetAsEntry нужно вызвать синхронно, пока событие drop не завершилось.
+  const items = [...dataTransfer.items].filter((i) => i.kind === 'file');
+  const entries = items.map((i) => i.webkitGetAsEntry?.() ?? null);
+  const out = [];
+  if (entries.some((e) => !e)) {
+    for (const f of dataTransfer.files) out.push({ file: f, subfolders: [] });
+    return out;
+  }
+  const readAll = (reader) => new Promise((resolve, reject) => {
+    const all = [];
+    const next = () => reader.readEntries((batch) => {
+      if (!batch.length) return resolve(all);
+      all.push(...batch);
+      next();
+    }, reject);
+    next();
+  });
+  async function walk(entry, path) {
+    if (out.length >= MAX_DROPPED_FILES) return;
+    if (entry.isFile) {
+      if (SKIP_FILES.has(entry.name)) return;
+      const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+      out.push({ file, subfolders: path });
+    } else if (entry.isDirectory) {
+      for (const child of await readAll(entry.createReader())) await walk(child, [...path, entry.name]);
+    }
+  }
+  for (const entry of entries) await walk(entry, []);
+  return out;
+}
+
+// Скриншот из буфера обмена приходит как «image.png» — даём понятное имя с датой.
+function pastedName(file) {
+  if (file.name && !/^image\.\w+$/i.test(file.name)) return file.name;
+  const ext = file.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `Снимок ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}.${p(d.getMinutes())}.${p(d.getSeconds())}.${ext}`;
+}
+
+const isTyping = (el) => el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+
 export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   if (!ctx.storageConfigured) {
     ctx.setHeader(h('h1', { class: 'truncate text-base font-semibold' }, 'Мой диск'), []);
@@ -27,13 +86,22 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     return { unmount() {} };
   }
   const canEdit = ctx.can('editor');
-  const state = { folders: [], files: [], cursor: null, loading: false, selected: selectKey ?? null, query: '' };
+  const [sortBy, sortDir] = prefs.get('sort', 'date-desc').split('-');
+  const state = {
+    folders: [], files: [], cursor: null, loading: false, query: '',
+    selected: selectKey ?? null, // файл в панели предпросмотра
+    checked: new Set(), // выбранные (несколько) файлы
+    anchor: null, // для выбора диапазона с Shift
+    layout: prefs.get('layout', 'list') === 'grid' ? 'grid' : 'list',
+    sort: SORTS[sortBy] ? { by: sortBy, dir: sortDir === 'asc' ? 'asc' : 'desc' } : { by: 'date', dir: 'desc' },
+  };
   const cleanup = [];
+  const on = (target, type, fn, opts) => { target.addEventListener(type, fn, opts); cleanup.push(() => target.removeEventListener(type, fn, opts)); };
 
   setPreviewEnabled(true);
-  if (canEdit) tree.setDropHandler((key, path) => moveByKey(key, path));
+  if (canEdit) tree.setDropHandler((keys, path) => moveByKeys(keys, path));
   tree.reveal(folder);
-  ctx.onPreviewClosed = () => { state.selected = null; markSelected(); };
+  ctx.onPreviewClosed = () => { state.selected = null; markSelection(); };
   ctx.onPreviewMissing = () => load();
 
   // ---------- заголовок: хлебные крошки + действия ----------
@@ -47,7 +115,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
         ? h('span', { class: 'truncate font-semibold text-slate-900 dark:text-white', 'aria-current': 'page' }, label)
         : h('a', { href: diskHash(path), class: 'shrink-0 truncate rounded px-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white max-w-[10rem]' }, label);
       // Файл можно перетащить на родительскую папку в хлебных крошках.
-      if (!last && canEdit) makeDropTarget(item, (key) => moveByKey(key, path));
+      if (!last && canEdit) makeDropTarget(item, (keys) => moveByKeys(keys, path));
       return i === 0 ? [item] : [icon('chevronRight', 'h-3.5 w-3.5 text-slate-300 dark:text-slate-600'), item];
     }));
   // На узких экранах показываем только последнюю пару крошек.
@@ -58,10 +126,38 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     h('button', { type: 'button', class: 'btn-primary', onclick: () => ctx.pickFiles(folder) }, icon('upload'), h('span', { class: 'hidden sm:inline' }, 'Загрузить')),
   ] : []);
 
+  // ---------- панель инструментов ----------
+  const search = h('input', { type: 'search', placeholder: 'Поиск в папке', 'aria-label': 'Поиск в папке', 'aria-keyshortcuts': '/',
+    class: 'input py-1.5 pl-9', oninput: (e) => { state.query = e.target.value.trim().toLowerCase(); renderList(); } });
+  const summary = h('p', { class: 'text-sm tabular-nums text-slate-500 dark:text-slate-400' }, 'Загрузка…');
+
+  const sortBtn = h('button', { type: 'button', class: 'icon-btn', 'aria-haspopup': 'menu', onclick: (e) => openSortMenu(e.currentTarget) }, icon('sort'));
+  const layoutBtns = ['list', 'grid'].map((layout) => h('button', {
+    type: 'button', 'aria-pressed': String(state.layout === layout), title: layout === 'list' ? 'Списком' : 'Плитками',
+    'aria-label': layout === 'list' ? 'Показывать списком' : 'Показывать плитками',
+    onclick: () => setLayout(layout),
+  }, icon(layout === 'list' ? 'list' : 'grid')));
+  const layoutSwitch = h('div', { class: 'segmented segmented-icons', role: 'group', 'aria-label': 'Вид' }, layoutBtns);
+
+  const toolbar = h('div', { class: 'flex items-center gap-2' },
+    h('div', { class: 'search-box relative min-w-0 flex-1 sm:w-56 sm:flex-none' },
+      h('span', { class: 'pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400' }, icon('search')),
+      search),
+    sortBtn, layoutSwitch,
+    h('button', { type: 'button', class: 'icon-btn hidden sm:inline-flex', title: 'Обновить', 'aria-label': 'Обновить', onclick: () => load() }, icon('refresh')));
+
+  // Панель действий над выбранными файлами — появляется вместо сводки.
+  const bulkCount = h('span', { class: 'whitespace-nowrap text-sm font-medium tabular-nums' });
+  const bulkBar = h('div', { class: 'bulk-bar hidden min-w-0 items-center gap-1', role: 'toolbar', 'aria-label': 'Действия с выбранными файлами' },
+    h('button', { type: 'button', class: 'icon-btn', title: 'Снять выбор (Esc)', 'aria-label': 'Снять выбор', onclick: () => clearChecked() }, icon('close')),
+    bulkCount,
+    h('span', { class: 'mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700' }),
+    h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', onclick: () => bulkCopyLinks() }, icon('copy'), h('span', { class: 'hidden xl:inline' }, 'Ссылки')),
+    canEdit && h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', onclick: () => bulkMove() }, icon('move'), h('span', { class: 'hidden xl:inline' }, 'Переместить')),
+    canEdit && h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5 text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950', onclick: () => bulkDelete() }, icon('trash'), h('span', { class: 'hidden xl:inline' }, 'Удалить')));
+
   // ---------- разметка ----------
-  const search = h('input', { type: 'search', placeholder: 'Поиск в папке', 'aria-label': 'Поиск в папке', class: 'input py-1.5 pl-9', oninput: (e) => { state.query = e.target.value.trim().toLowerCase(); renderList(); } });
-  const summary = h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Загрузка…');
-  const list = h('ul', { class: 'divide-y divide-slate-100 dark:divide-slate-800', role: 'listbox', 'aria-label': 'Содержимое папки' });
+  const list = h('ul', { class: 'file-list', role: 'listbox', 'aria-multiselectable': 'true', 'aria-label': 'Содержимое папки' });
   const empty = h('div', { class: 'hidden px-6 py-16 text-center' });
   const skeleton = h('div', { class: 'space-y-3 p-4', 'aria-hidden': 'true' },
     [1, 2, 3, 4].map(() => h('div', { class: 'h-10 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800' })));
@@ -82,109 +178,152 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     title: 'Хранилище, в котором лежит файл',
   }, ctx.storageName(file.storage));
 
-  const dropzone = canEdit && h('button', {
-    type: 'button',
-    class: 'group flex w-full items-center gap-4 rounded-2xl border-2 border-dashed border-slate-300 bg-white px-5 py-4 text-left transition hover:border-brand-400 hover:bg-brand-50/50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-brand-600 dark:hover:bg-brand-950/30',
-    onclick: () => ctx.pickFiles(folder),
-  },
-  h('span', { class: 'flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600 transition group-hover:scale-105 dark:bg-brand-950 dark:text-brand-400' }, icon('upload', 'h-5 w-5')),
-  h('span', { class: 'min-w-0' },
-    h('span', { class: 'block text-sm font-medium' }, 'Перетащите файлы сюда или ', h('span', { class: 'text-brand-600 dark:text-brand-400' }, 'выберите на компьютере')),
-    h('span', { class: 'block text-xs text-slate-500 dark:text-slate-400' }, 'Файлы загружаются напрямую в хранилище S3, в текущую папку')));
+  // Шапка таблицы: «выбрать всё» и сортировка по столбцам.
+  const checkAll = h('input', { type: 'checkbox', class: 'check', 'aria-label': 'Выбрать все файлы', onchange: (e) => (e.target.checked ? checkAllFiles() : clearChecked()) });
+  const sortHeader = (by, label, cls = '') => h('button', {
+    type: 'button', class: `sort-head ${cls}`, dataset: { sort: by }, onclick: () => setSort(by),
+  }, label, icon('arrowDown', 'sort-arrow h-3 w-3'));
+  const head = h('div', { class: 'list-head hidden items-center gap-4 border-b border-slate-200 px-4 py-2 text-xs font-medium uppercase tracking-wide text-slate-400 md:grid dark:border-slate-800' },
+    h('span', { class: 'flex items-center gap-3' }, h('span', { class: 'check-cell' }, checkAll), sortHeader('name', 'Имя')),
+    sortHeader('size', 'Размер', 'justify-end'), sortHeader('date', 'Изменён'), h('span', { class: 'text-right' }, 'Действия'));
 
-  const overlay = h('div', { class: 'pointer-events-none absolute inset-3 z-10 hidden items-center justify-center rounded-2xl border-2 border-dashed border-brand-500 bg-brand-50/90 dark:bg-brand-950/80' },
+  const dropzone = canEdit && h('div', { class: 'dropzone group hidden items-center sm:flex gap-3 rounded-2xl border border-dashed border-slate-300 bg-white/60 px-4 py-3 text-sm dark:border-slate-700 dark:bg-slate-900/40' },
+    h('span', { class: 'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600 dark:bg-brand-950 dark:text-brand-400' }, icon('upload')),
+    h('p', { class: 'min-w-0 text-slate-600 dark:text-slate-300' },
+      'Перетащите файлы или папки, вставьте из буфера (Ctrl+V) или ',
+      h('button', { type: 'button', class: 'link', onclick: () => ctx.pickFiles(folder) }, 'выберите файлы'),
+      ' · ',
+      h('button', { type: 'button', class: 'link', onclick: () => ctx.pickFolder(folder) }, 'папку')));
+
+  const overlay = h('div', { class: 'drop-overlay pointer-events-none absolute inset-3 z-10 hidden items-center justify-center rounded-2xl border-2 border-dashed border-brand-500 bg-brand-50/90 backdrop-blur-sm dark:bg-brand-950/80' },
     h('div', { class: 'text-center' },
       h('span', { class: 'mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-brand-600 shadow dark:bg-slate-900' }, icon('upload', 'h-7 w-7')),
       h('p', { class: 'font-medium text-brand-800 dark:text-brand-200' }, 'Отпустите, чтобы загрузить'),
-      h('p', { class: 'text-sm text-brand-700/80 dark:text-brand-300/80' }, `в «${crumbs.at(-1)[0]}»`)));
+      h('p', { class: 'text-sm text-brand-700/80 dark:text-brand-300/80' }, `в «${crumbs.at(-1)[0]}» · папки сохранят структуру`)));
 
-  view.replaceChildren(
-    h('div', { class: 'mx-auto max-w-6xl space-y-4 p-4 sm:p-6' },
-      dropzone,
-      h('section', { class: 'card overflow-hidden' },
-        h('div', { class: 'flex flex-col gap-3 border-b border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-slate-800' },
-          summary,
-          h('div', { class: 'flex items-center gap-2' },
-            h('div', { class: 'relative w-full sm:w-56' },
-              h('span', { class: 'pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400' }, icon('search')),
-              search),
-            h('button', { type: 'button', class: 'icon-btn', title: 'Обновить', 'aria-label': 'Обновить', onclick: () => load() }, icon('refresh')))),
-        h('div', { class: 'hidden grid-cols-[minmax(0,1fr)_6.5rem_10.5rem_7.5rem] gap-4 border-b border-slate-200 px-4 py-2 text-xs font-medium uppercase tracking-wide text-slate-400 md:grid dark:border-slate-800' },
-          h('span', {}, 'Имя'), h('span', { class: 'text-right' }, 'Размер'), h('span', {}, 'Изменён'), h('span', { class: 'text-right' }, 'Действия')),
-        warnBox, list, empty, skeleton, loadMoreWrap)),
-    overlay,
-  );
+  const card = h('section', { class: 'card overflow-hidden' },
+    h('div', { class: 'flex min-h-[3.75rem] flex-col gap-3 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between dark:border-slate-800' },
+      h('div', { class: 'flex min-h-9 min-w-0 items-center' }, summary, bulkBar),
+      toolbar),
+    warnBox, head, list, empty, skeleton, loadMoreWrap);
 
-  // ---------- строки ----------
-  const rowClass = 'file-row grid cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 px-4 py-2.5 transition hover:bg-slate-50 md:grid-cols-[minmax(0,1fr)_6.5rem_10.5rem_7.5rem] dark:hover:bg-slate-800/40';
-  const actionBtn = (name, label, onclick, danger) => h('button', {
-    type: 'button', class: danger ? 'icon-btn-danger' : 'icon-btn', title: label, 'aria-label': label,
+  view.replaceChildren(h('div', { class: 'mx-auto max-w-6xl space-y-4 p-4 sm:p-6' }, dropzone, card), overlay);
+
+  // ---------- элементы списка ----------
+  const actionBtn = (name, label, onclick, danger, extra = '') => h('button', {
+    type: 'button', class: `${danger ? 'icon-btn-danger' : 'icon-btn'} ${extra}`, title: label, 'aria-label': label, tabindex: '-1',
     onclick: (e) => { e.stopPropagation(); onclick(e.currentTarget); },
   }, icon(name));
 
-  function folderRow(f) {
+  const fileMenu = (file) => (btn) => openMenu(btn, [
+    { label: 'Скачать', icon: 'download', onSelect: () => download(file) },
+    { label: 'Скопировать ссылку', icon: 'link', onSelect: () => copyFileLink(file) },
+    { label: state.checked.has(file.key) ? 'Снять выбор' : 'Выбрать', icon: 'check', onSelect: () => toggleChecked(file.key) },
+    canEdit && { label: 'Переименовать', icon: 'pencil', onSelect: () => renameFile(file) },
+    canEdit && { label: 'Переместить…', icon: 'move', onSelect: () => moveFile(file) },
+    canEdit && { label: 'Удалить', icon: 'trash', danger: true, onSelect: () => deleteFile(file) },
+  ]);
+
+  function folderItem(f) {
+    const grid = state.layout === 'grid';
     const li = h('li', {
-      class: rowClass, role: 'option', 'aria-selected': 'false', tabindex: '0',
+      class: grid ? 'tile' : 'file-row', role: 'option', 'aria-selected': 'false', tabindex: '-1', dataset: { folder: f.path },
       onclick: () => ctx.navigate(diskHash(f.path)),
-      onkeydown: (e) => { if (e.key === 'Enter') ctx.navigate(diskHash(f.path)); },
+      onkeydown: (e) => { if (e.target === e.currentTarget && e.key === 'Enter') ctx.navigate(diskHash(f.path)); },
     },
-    h('div', { class: 'flex min-w-0 items-center gap-3' },
-      h('span', { class: 'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-950/60 dark:text-brand-400' }, icon('folder')),
-      h('div', { class: 'min-w-0' },
-        h('p', { class: 'truncate text-sm font-medium', title: f.name }, f.name),
-        h('p', { class: 'text-xs text-slate-500 md:hidden dark:text-slate-400' }, 'Папка'))),
-    h('span', { class: 'hidden text-right text-sm text-slate-400 md:block' }, '—'),
-    h('span', { class: 'hidden text-sm text-slate-500 md:block dark:text-slate-400' }, 'Папка'),
-    h('div', { class: 'flex justify-end gap-0.5' },
-      canEdit && actionBtn('trash', 'Удалить папку', () => deleteFolder(f), true)));
-    if (canEdit) makeDropTarget(li, (key) => moveByKey(key, f.path));
+    grid
+      ? [h('span', { class: 'tile-media bg-brand-50 text-brand-600 dark:bg-brand-950/50 dark:text-brand-400' }, icon('folder', 'h-10 w-10')),
+        h('span', { class: 'tile-body' },
+          h('span', { class: 'block truncate text-sm font-medium', title: f.name }, f.name),
+          h('span', { class: 'block text-xs text-slate-500 dark:text-slate-400' }, 'Папка')),
+        canEdit && h('span', { class: 'tile-actions' }, actionBtn('trash', 'Удалить папку', () => deleteFolder(f), true))]
+      : [h('div', { class: 'flex min-w-0 items-center gap-3' },
+        h('span', { class: 'check-cell' }),
+        h('span', { class: 'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-950/60 dark:text-brand-400' }, icon('folder')),
+        h('div', { class: 'min-w-0' },
+          h('p', { class: 'truncate text-sm font-medium', title: f.name }, f.name),
+          h('p', { class: 'text-xs text-slate-500 md:hidden dark:text-slate-400' }, 'Папка'))),
+      h('span', { class: 'hidden text-right text-sm text-slate-400 md:block' }, '—'),
+      h('span', { class: 'hidden text-sm text-slate-500 md:block dark:text-slate-400' }, 'Папка'),
+      h('div', { class: 'row-actions flex justify-end gap-0.5' },
+        canEdit && actionBtn('trash', 'Удалить папку', () => deleteFolder(f), true))]);
+    if (canEdit) makeDropTarget(li, (keys) => moveByKeys(keys, f.path));
     return li;
   }
 
-  function fileRow(file) {
+  function fileItem(file) {
+    const grid = state.layout === 'grid';
+    const check = h('input', {
+      type: 'checkbox', class: 'check', tabindex: '-1', checked: state.checked.has(file.key), 'aria-label': `Выбрать ${file.name}`,
+      onclick: (e) => { e.stopPropagation(); toggleChecked(file.key, e.shiftKey); },
+    });
     const li = h('li', {
-      class: rowClass, role: 'option', 'aria-selected': String(state.selected === file.key), tabindex: '0',
+      class: grid ? 'tile' : 'file-row', role: 'option', tabindex: '-1',
+      'aria-selected': String(state.checked.has(file.key) || state.selected === file.key),
       dataset: { key: file.key },
       draggable: canEdit ? 'true' : undefined,
-      onclick: () => select(file),
-      onkeydown: (e) => {
-        if (e.target !== e.currentTarget) return;
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(file); }
-        if (e.key === 'Delete' && canEdit) deleteFile(file);
-        if (e.key === 'F2' && canEdit) { e.preventDefault(); renameFile(file); }
+      onclick: (e) => {
+        if (e.shiftKey) return toggleChecked(file.key, true);
+        if (e.ctrlKey || e.metaKey) return toggleChecked(file.key);
+        if (state.checked.size) return toggleChecked(file.key); // в режиме выбора клик выбирает
+        select(file);
       },
       ondragstart: (e) => {
-        e.dataTransfer.setData(DRAG_TYPE, file.key);
+        // Перетаскиваем все выбранные файлы, если тянем один из них.
+        const keys = state.checked.has(file.key) ? [...state.checked] : [file.key];
+        e.dataTransfer.setData(DRAG_TYPE, keys.join('\n'));
         e.dataTransfer.effectAllowed = 'move';
-        li.classList.add('opacity-50');
+        li.classList.add('is-dragging');
       },
-      ondragend: () => li.classList.remove('opacity-50'),
+      ondragend: () => li.classList.remove('is-dragging'),
     },
-    h('div', { class: 'flex min-w-0 items-center gap-3' },
-      fileBadge(file.name),
-      h('div', { class: 'min-w-0' },
-        h('div', { class: 'flex min-w-0 items-center gap-2' },
-          h('p', { class: 'truncate text-sm font-medium', title: file.name }, file.name),
-          storageChip(file)),
-        h('p', { class: 'text-xs text-slate-500 md:hidden dark:text-slate-400' }, `${formatSize(file.size)} · ${formatDate(file.lastModified)}`))),
-    h('span', { class: 'hidden text-right text-sm tabular-nums text-slate-500 md:block dark:text-slate-400' }, formatSize(file.size)),
-    h('span', { class: 'hidden text-sm text-slate-500 md:block dark:text-slate-400' }, formatDate(file.lastModified)),
-    h('div', { class: 'flex justify-end gap-0.5' },
-      actionBtn('download', 'Скачать', () => download(file)),
-      actionBtn('link', 'Скопировать ссылку для скачивания', () => copyFileLink(file)),
-      canEdit && actionBtn('more', 'Ещё действия', (btn) => openMenu(btn, [
-        { label: 'Переименовать', icon: 'pencil', onSelect: () => renameFile(file) },
-        { label: 'Переместить…', icon: 'move', onSelect: () => moveFile(file) },
-        { label: 'Удалить', icon: 'trash', danger: true, onSelect: () => deleteFile(file) },
-      ]))));
+    grid
+      ? [h('span', { class: 'tile-media' }, thumbnail(file, { cls: 'h-full w-full', iconSize: 'h-9 w-9' })),
+        h('span', { class: 'tile-check' }, check),
+        h('span', { class: 'tile-body' },
+          h('span', { class: 'block truncate text-sm font-medium', title: file.name }, file.name),
+          h('span', { class: 'block truncate text-xs tabular-nums text-slate-500 dark:text-slate-400', title: formatDate(file.lastModified) },
+            `${formatSize(file.size)} · ${formatDateShort(file.lastModified, { time: false })}`)),
+        h('span', { class: 'tile-actions' }, actionBtn('more', 'Действия', fileMenu(file)))]
+      : [h('div', { class: 'flex min-w-0 items-center gap-3' },
+        h('span', { class: 'check-cell' }, check),
+        thumbnail(file),
+        h('div', { class: 'min-w-0' },
+          h('div', { class: 'flex min-w-0 items-center gap-2' },
+            h('p', { class: 'truncate text-sm font-medium', title: file.name }, file.name),
+            storageChip(file)),
+          h('p', { class: 'truncate text-xs tabular-nums text-slate-500 md:hidden dark:text-slate-400' }, `${formatSize(file.size)} · ${formatDateShort(file.lastModified)}`))),
+      h('span', { class: 'hidden text-right text-sm tabular-nums text-slate-500 md:block dark:text-slate-400' }, formatSize(file.size)),
+      h('span', { class: 'hidden truncate text-sm text-slate-500 md:block dark:text-slate-400', title: formatDate(file.lastModified) }, formatDateShort(file.lastModified)),
+      // На узких экранах — только меню «⋯» (в нём есть и «Скачать», и «Ссылка»).
+      h('div', { class: 'row-actions flex justify-end gap-0.5' },
+        actionBtn('download', 'Скачать', () => download(file), false, 'hidden md:inline-flex'),
+        actionBtn('link', 'Скопировать ссылку для скачивания', () => copyFileLink(file), false, 'hidden md:inline-flex'),
+        actionBtn('more', 'Ещё действия', fileMenu(file)))]);
     return li;
+  }
+
+  // ---------- отрисовка ----------
+  function visible() {
+    const match = (name) => !state.query || name.toLowerCase().includes(state.query);
+    const { by, dir } = state.sort;
+    const sign = dir === 'asc' ? 1 : -1;
+    const folders = state.folders.filter((f) => match(f.name));
+    if (by === 'name' && dir === 'desc') folders.reverse();
+    const files = state.files.filter((f) => match(f.name)).sort((a, b) => sign * SORTS[by].cmp(a, b));
+    return { folders, files };
   }
 
   function renderList() {
-    const match = (name) => !state.query || name.toLowerCase().includes(state.query);
-    const folders = state.folders.filter((f) => match(f.name));
-    const files = state.files.filter((f) => match(f.name));
-    list.replaceChildren(...folders.map(folderRow), ...files.map(fileRow));
+    const { folders, files } = visible();
+    const focusedKey = document.activeElement?.closest?.('#view [role=option]')?.dataset;
+    list.className = state.layout === 'grid' ? 'file-grid' : 'file-list';
+    head.classList.toggle('md:grid', state.layout === 'list');
+    list.replaceChildren(...folders.map(folderItem), ...files.map(fileItem));
+    // Клавиатурный фокус переживает перерисовку (сортировку, выбор).
+    const restore = focusedKey && list.querySelector(focusedKey.key ? `[data-key="${CSS.escape(focusedKey.key)}"]` : `[data-folder="${CSS.escape(focusedKey.folder ?? '')}"]`);
+    setRoving(restore ?? list.firstElementChild);
+    if (restore) restore.focus({ preventScroll: true });
 
     const total = state.files.reduce((s, f) => s + f.size, 0);
     const more = state.cursor ? '+' : '';
@@ -193,6 +332,15 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     if (state.files.length || !parts.length) parts.push(`${pluralize(state.files.length, FILES)}${more}`);
     summary.textContent = state.loading && !state.files.length ? 'Загрузка…' : `${parts.join(', ')} · ${formatSize(total)}${more}`;
 
+    for (const btn of head.querySelectorAll('.sort-head')) {
+      const active = btn.dataset.sort === state.sort.by;
+      btn.classList.toggle('is-active', active);
+      btn.classList.toggle('is-asc', active && state.sort.dir === 'asc');
+      btn.setAttribute('aria-sort', active ? (state.sort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+    }
+    sortBtn.title = `Сортировка: ${SORTS[state.sort.by].label.toLowerCase()}`;
+    sortBtn.setAttribute('aria-label', sortBtn.title);
+
     const isEmpty = !state.loading && !folders.length && !files.length;
     empty.classList.toggle('hidden', !isEmpty);
     if (isEmpty) {
@@ -200,21 +348,198 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
         h('span', { class: 'mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-400 dark:bg-slate-800' }, icon(state.query ? 'search' : 'folder', 'h-6 w-6')),
         h('p', { class: 'font-medium' }, state.query ? 'Ничего не найдено' : 'Папка пуста'),
         h('p', { class: 'mt-1 text-sm text-slate-500 dark:text-slate-400' },
-          state.query ? 'Попробуйте изменить запрос.' : canEdit ? 'Перетащите сюда файлы или нажмите «Загрузить».' : 'Здесь пока нет файлов.'));
+          state.query ? 'Попробуйте изменить запрос.' : canEdit ? 'Перетащите сюда файлы или папки, вставьте скриншот (Ctrl+V) или нажмите «Загрузить».' : 'Здесь пока нет файлов.'),
+        canEdit && !state.query && h('div', { class: 'mt-5 flex justify-center gap-2' },
+          h('button', { type: 'button', class: 'btn-primary', onclick: () => ctx.pickFiles(folder) }, icon('upload'), 'Загрузить файлы'),
+          h('button', { type: 'button', class: 'btn-ghost', onclick: () => ctx.pickFolder(folder) }, icon('folderUp'), 'Папку')));
     }
     loadMoreWrap.classList.toggle('hidden', !state.cursor);
+    renderBulk();
   }
 
-  function markSelected() {
-    for (const li of list.querySelectorAll('li[data-key]')) li.setAttribute('aria-selected', String(li.dataset.key === state.selected));
+  function renderBulk() {
+    // Выбор мог включать файлы, которых уже нет (удалены, перемещены).
+    for (const key of state.checked) if (!state.files.some((f) => f.key === key)) state.checked.delete(key);
+    const n = state.checked.size;
+    bulkBar.classList.toggle('hidden', !n);
+    bulkBar.classList.toggle('flex', n > 0);
+    summary.classList.toggle('hidden', n > 0);
+    bulkCount.textContent = `Выбрано: ${n}`;
+    bulkCount.title = pluralize(n, FILES);
+    card.classList.toggle('has-selection', n > 0);
+    const files = visible().files;
+    checkAll.checked = n > 0 && files.every((f) => state.checked.has(f.key));
+    checkAll.indeterminate = n > 0 && !checkAll.checked;
+  }
+
+  function markSelection() {
+    for (const li of list.querySelectorAll('[data-key]')) {
+      const key = li.dataset.key;
+      li.setAttribute('aria-selected', String(state.checked.has(key) || state.selected === key));
+      const box = li.querySelector('.check');
+      if (box) box.checked = state.checked.has(key);
+    }
+    renderBulk();
+  }
+
+  // ---------- выбор ----------
+  function toggleChecked(key, range = false) {
+    const files = visible().files;
+    if (range && state.anchor) {
+      const a = files.findIndex((f) => f.key === state.anchor);
+      const b = files.findIndex((f) => f.key === key);
+      if (a >= 0 && b >= 0) {
+        for (let i = Math.min(a, b); i <= Math.max(a, b); i++) state.checked.add(files[i].key);
+        return markSelection();
+      }
+    }
+    if (state.checked.has(key)) state.checked.delete(key);
+    else state.checked.add(key);
+    state.anchor = key;
+    markSelection();
+  }
+  function checkAllFiles() {
+    for (const f of visible().files) state.checked.add(f.key);
+    markSelection();
+  }
+  function clearChecked() {
+    state.checked.clear();
+    state.anchor = null;
+    markSelection();
   }
 
   function select(file) {
     state.selected = file.key;
-    markSelected();
+    markSelection();
     showPreview(file, canEdit
       ? { folder, onDelete: deleteFile, onRename: renameFile, onMove: moveFile }
       : { folder });
+  }
+
+  // ---------- вид и сортировка ----------
+  function setLayout(layout) {
+    if (state.layout === layout) return;
+    state.layout = layout;
+    prefs.set('layout', layout);
+    for (const b of layoutBtns) b.setAttribute('aria-pressed', String(b === layoutBtns[layout === 'list' ? 0 : 1]));
+    list.classList.add('is-switching');
+    renderList();
+    setTimeout(() => list.classList.remove('is-switching'), 300);
+  }
+
+  function setSort(by, dir) {
+    const same = state.sort.by === by;
+    state.sort = { by, dir: dir ?? (same ? (state.sort.dir === 'asc' ? 'desc' : 'asc') : DEFAULT_DIR[by]) };
+    prefs.set('sort', `${state.sort.by}-${state.sort.dir}`);
+    renderList();
+  }
+
+  function openSortMenu(anchor) {
+    const mark = (by, dir) => (state.sort.by === by && state.sort.dir === dir ? 'check' : 'sort');
+    openMenu(anchor, [
+      { label: 'Сначала новые', icon: mark('date', 'desc'), onSelect: () => setSort('date', 'desc') },
+      { label: 'Сначала старые', icon: mark('date', 'asc'), onSelect: () => setSort('date', 'asc') },
+      { label: 'По имени, А → Я', icon: mark('name', 'asc'), onSelect: () => setSort('name', 'asc') },
+      { label: 'По имени, Я → А', icon: mark('name', 'desc'), onSelect: () => setSort('name', 'desc') },
+      { label: 'Сначала большие', icon: mark('size', 'desc'), onSelect: () => setSort('size', 'desc') },
+      { label: 'Сначала маленькие', icon: mark('size', 'asc'), onSelect: () => setSort('size', 'asc') },
+    ]);
+  }
+
+  // ---------- клавиатура ----------
+  // Один элемент списка в порядке Tab (roving tabindex), стрелки двигают фокус.
+  function setRoving(el) {
+    for (const item of list.querySelectorAll('[role=option][tabindex="0"]')) item.tabIndex = -1;
+    if (el) el.tabIndex = 0;
+  }
+  const items = () => [...list.querySelectorAll('[role=option]')];
+  function columns() {
+    if (state.layout !== 'grid') return 1;
+    const all = items();
+    const top = all[0]?.offsetTop;
+    return Math.max(1, all.filter((el) => el.offsetTop === top).length);
+  }
+  function focusAt(i) {
+    const all = items();
+    const el = all[Math.max(0, Math.min(all.length - 1, i))];
+    if (!el) return;
+    setRoving(el);
+    el.focus();
+    el.scrollIntoView({ block: 'nearest' });
+  }
+  on(list, 'keydown', (e) => {
+    const all = items();
+    const i = all.indexOf(e.target);
+    if (i < 0) return;
+    const key = e.target.dataset.key;
+    const file = key && state.files.find((f) => f.key === key);
+    const step = { ArrowDown: columns(), ArrowUp: -columns(), ArrowRight: state.layout === 'grid' ? 1 : 0, ArrowLeft: state.layout === 'grid' ? -1 : 0 }[e.key];
+    if (step) {
+      e.preventDefault();
+      focusAt(i + step);
+      if (e.shiftKey && file) {
+        const next = items()[Math.max(0, Math.min(all.length - 1, i + step))]?.dataset.key;
+        if (next) { state.checked.add(key); state.checked.add(next); state.anchor = next; markSelection(); }
+      }
+    } else if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault();
+      focusAt(e.key === 'Home' ? 0 : all.length - 1);
+    } else if (file && (e.key === 'Enter' || (e.key === ' ' && !state.checked.size))) {
+      e.preventDefault();
+      select(file);
+    } else if (file && e.key === ' ') {
+      e.preventDefault();
+      toggleChecked(key);
+    } else if (file && e.key === 'x') {
+      toggleChecked(key);
+    } else if (canEdit && e.key === 'Delete') {
+      e.preventDefault();
+      if (state.checked.size) bulkDelete();
+      else if (file) deleteFile(file);
+    } else if (canEdit && file && e.key === 'F2') {
+      e.preventDefault();
+      renameFile(file);
+    }
+  });
+  on(list, 'focusin', (e) => { if (e.target.matches?.('[role=option]')) setRoving(e.target); });
+
+  on(document, 'keydown', (e) => {
+    if (document.querySelector('dialog[open]') || isTyping(document.activeElement)) {
+      if (e.key === 'Escape' && document.activeElement === search && search.value) { search.value = ''; state.query = ''; renderList(); }
+      return;
+    }
+    if (e.key === '/' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); search.focus(); search.select(); }
+    else if (e.key === '?') { e.preventDefault(); showShortcuts(); }
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); checkAllFiles(); }
+    else if (e.key === 'Escape' && state.checked.size) clearChecked();
+  });
+
+  function showShortcuts() {
+    const row = (keys, text) => h('div', { class: 'flex items-center justify-between gap-4 py-1.5' },
+      h('span', { class: 'text-sm text-slate-600 dark:text-slate-300' }, text),
+      h('span', { class: 'flex shrink-0 gap-1' }, keys.map((k) => h('kbd', { class: 'kbd' }, k))));
+    const close = h('button', { type: 'button', class: 'btn-primary', onclick: () => dialog.close() }, 'Понятно');
+    const dialog = h('dialog', { class: 'w-[min(30rem,calc(100%-2rem))] rounded-2xl bg-white p-0 text-slate-800 shadow-xl dark:bg-slate-900 dark:text-slate-200', 'aria-labelledby': 'kb-title' },
+      h('div', { class: 'space-y-4 p-6' },
+        h('h3', { id: 'kb-title', class: 'flex items-center gap-2 text-lg font-semibold' }, icon('keyboard', 'h-5 w-5 text-slate-400'), 'Горячие клавиши'),
+        h('div', { class: 'divide-y divide-slate-100 dark:divide-slate-800' },
+          row(['↑', '↓', '←', '→'], 'Перемещение по файлам'),
+          row(['Enter'], 'Открыть файл или папку'),
+          row(['Пробел'], 'Предпросмотр / выбрать в режиме выбора'),
+          row(['Ctrl', 'клик'], 'Выбрать несколько файлов'),
+          row(['Shift', 'клик'], 'Выбрать диапазон'),
+          row(['Ctrl', 'A'], 'Выбрать все файлы папки'),
+          row(['Esc'], 'Снять выбор'),
+          canEdit && row(['F2'], 'Переименовать'),
+          canEdit && row(['Delete'], 'Удалить'),
+          canEdit && row(['Ctrl', 'V'], 'Загрузить из буфера обмена'),
+          row(['/'], 'Поиск в папке'),
+          row(['?'], 'Эта подсказка')),
+        h('div', { class: 'flex justify-end' }, close)));
+    dialog.addEventListener('close', () => dialog.remove());
+    document.body.append(dialog);
+    dialog.showModal();
+    close.focus();
   }
 
   // ---------- данные ----------
@@ -248,7 +573,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   }
   const mergeFolders = (a, b) => [...new Map([...a, ...b].map((f) => [f.path, f])).values()];
 
-  // ---------- действия ----------
+  // ---------- действия с одним файлом ----------
   async function download(file) {
     try {
       const { url } = await api.downloadLink(file.key, 3600);
@@ -258,12 +583,18 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     }
   }
 
+  function removeFiles(keys) {
+    const gone = new Set(keys);
+    state.files = state.files.filter((f) => !gone.has(f.key));
+    for (const key of keys) { state.checked.delete(key); forgetThumb(key); }
+    if (gone.has(state.selected)) closePreview();
+  }
+
   async function deleteFile(file) {
     if (!(await confirmDialog('Удалить файл?', `«${file.name}» будет удалён без возможности восстановления. Выданные ссылки перестанут работать.`))) return;
     try {
       await api.deleteFile(file.key);
-      state.files = state.files.filter((f) => f.key !== file.key);
-      if (state.selected === file.key) closePreview();
+      removeFiles([file.key]);
       renderList();
       ctx.refreshStats();
       toast('Файл удалён', 'success');
@@ -275,15 +606,16 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   // Применяет результат переименования/перемещения к списку и панели предпросмотра.
   function applyMoved(oldKey, file, targetFolder) {
     const wasSelected = state.selected === oldKey;
+    const wasChecked = state.checked.delete(oldKey);
+    forgetThumb(oldKey);
     if (targetFolder === folder) {
       state.files = state.files.map((f) => (f.key === oldKey ? file : f));
+      if (wasChecked) state.checked.add(file.key);
       if (wasSelected) select(file);
     } else {
       state.files = state.files.filter((f) => f.key !== oldKey);
       if (wasSelected) closePreview();
     }
-    renderList();
-    ctx.refreshStats();
   }
 
   async function renameFile(file) {
@@ -300,6 +632,8 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
         if (trimmed === file.name) return {};
         const res = await api.moveFile(file.key, { name: trimmed });
         applyMoved(file.key, res.file, res.folder);
+        renderList();
+        ctx.refreshStats();
         toast(`Переименовано в «${res.file.name}»`, 'success');
         return res;
       },
@@ -308,27 +642,82 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
 
   async function moveFile(file) {
     const target = await pickFolder({ title: `Переместить «${file.name}»`, current: folder });
-    if (target !== null) await moveTo(file, target);
+    if (target !== null) await moveFiles([file], target);
   }
 
-  async function moveTo(file, target) {
-    if (target === folder) return;
-    try {
+  // ---------- действия с несколькими файлами ----------
+  // Выполняет action для каждого файла, не более 4 одновременно; возвращает число ошибок.
+  async function eachLimited(files, action) {
+    let failed = 0;
+    let next = 0;
+    const worker = async () => {
+      while (next < files.length) {
+        const file = files[next++];
+        try { await action(file); } catch (err) { failed++; if (failed === 1) toast(`${file.name}: ${err.message}`, 'error'); }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, files.length) }, worker));
+    return failed;
+  }
+
+  const checkedFiles = () => state.files.filter((f) => state.checked.has(f.key));
+
+  async function moveFiles(files, target) {
+    if (target === folder || !files.length) return;
+    const failed = await eachLimited(files, async (file) => {
       const res = await api.moveFile(file.key, { folder: target });
       applyMoved(file.key, res.file, res.folder);
-      toast(`«${res.file.name}» перемещён в «${folderLabel(target)}»`, 'success');
-    } catch (err) {
-      toast(err.message, 'error');
-      if (err.status === 404) load();
-    }
+    });
+    renderList();
+    ctx.refreshStats();
+    const ok = files.length - failed;
+    if (ok) toast(files.length === 1 ? `«${files[0].name}» перемещён в «${folderLabel(target)}»` : `Перемещено ${pluralize(ok, FILES)} в «${folderLabel(target)}»`, 'success');
+    if (failed) load();
   }
 
   // Цель перетаскивания: папка в списке, в дереве или в хлебных крошках.
-  function moveByKey(key, target) {
-    const file = state.files.find((f) => f.key === key);
-    if (file) moveTo(file, target);
+  function moveByKeys(keys, target) {
+    const set = new Set(String(keys).split('\n'));
+    moveFiles(state.files.filter((f) => set.has(f.key)), target);
   }
 
+  async function bulkMove() {
+    const files = checkedFiles();
+    const target = await pickFolder({ title: `Переместить ${pluralize(files.length, FILES)}`, current: folder });
+    if (target !== null) await moveFiles(files, target);
+  }
+
+  async function bulkDelete() {
+    const files = checkedFiles();
+    if (!files.length) return;
+    if (!(await confirmDialog(`Удалить ${pluralize(files.length, FILES)}?`, 'Файлы будут удалены без возможности восстановления. Выданные ссылки перестанут работать.'))) return;
+    const done = [];
+    const failed = await eachLimited(files, async (file) => { await api.deleteFile(file.key); done.push(file.key); });
+    removeFiles(done);
+    renderList();
+    ctx.refreshStats();
+    if (done.length) toast(`Удалено: ${pluralize(done.length, FILES)}`, 'success');
+    if (failed) load();
+  }
+
+  async function bulkCopyLinks() {
+    const files = checkedFiles();
+    const ttl = Number(prefs.get('link-ttl', '86400'));
+    const lines = [];
+    await eachLimited(files, async (file) => {
+      const { url } = await api.downloadLink(file.key, ttl);
+      lines.push([files.indexOf(file), `${file.name}: ${url}`]);
+    });
+    if (!lines.length) return;
+    try {
+      await copyToClipboard(lines.sort((a, b) => a[0] - b[0]).map((x) => x[1]).join('\n'));
+      toast(`Скопировано ссылок: ${lines.length} · действуют ${TTL_LABELS[ttl] ?? ''}`, 'success');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  // ---------- папки ----------
   async function deleteFolder(f) {
     if (!(await confirmDialog('Удалить папку?', `Папка «${f.name}» и всё её содержимое (включая вложенные папки) будут удалены без возможности восстановления.`))) return;
     try {
@@ -344,6 +733,12 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     }
   }
 
+  function addFolder(created) {
+    if (state.folders.some((x) => x.path === created.path)) return;
+    state.folders = [...state.folders, created].sort((a, b) => a.name.localeCompare(b.name, 'ru', { numeric: true }));
+    tree.setChildren(folder, state.folders);
+  }
+
   async function newFolder() {
     await openDialog({
       title: 'Новая папка',
@@ -352,10 +747,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
       async onSubmit({ name }) {
         if (!name.trim()) throw new Error('Введите название папки');
         const { folder: created } = await api.createFolder(folder, name);
-        if (!state.folders.some((x) => x.path === created.path)) {
-          state.folders = [...state.folders, created].sort((a, b) => a.name.localeCompare(b.name, 'ru', { numeric: true }));
-        }
-        tree.setChildren(folder, state.folders);
+        addFolder(created);
         renderList();
         ctx.refreshStats();
         toast(`Папка «${created.name}» создана`, 'success');
@@ -364,41 +756,47 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   }
   ctx.newFolderHere = canEdit ? newFolder : null;
 
-  // ---------- drag-and-drop по всей области ----------
+  // ---------- загрузка: перетаскивание и вставка ----------
   if (canEdit) {
     let depth = 0;
     const hasFiles = (e) => [...(e.dataTransfer?.types ?? [])].includes('Files');
-    const show = (on) => { overlay.classList.toggle('hidden', !on); overlay.classList.toggle('flex', on); };
-    const handlers = {
-      dragenter: (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth++; show(true); },
-      dragleave: (e) => { if (!hasFiles(e)) return; depth = Math.max(0, depth - 1); if (!depth) show(false); },
-      dragover: (e) => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; },
-      drop: (e) => {
-        if (!hasFiles(e)) return;
-        e.preventDefault();
-        depth = 0;
-        show(false);
-        const files = [...e.dataTransfer.items]
-          .filter((item) => item.kind === 'file' && !item.webkitGetAsEntry?.()?.isDirectory)
-          .map((item) => item.getAsFile())
-          .filter(Boolean);
-        if (files.length) ctx.enqueue(files, folder);
-        else toast('Папки целиком не поддерживаются — перетащите сами файлы', 'error');
-      },
-    };
-    for (const [type, fn] of Object.entries(handlers)) {
-      window.addEventListener(type, fn);
-      cleanup.push(() => window.removeEventListener(type, fn));
-    }
+    const show = (visibleNow) => { overlay.classList.toggle('hidden', !visibleNow); overlay.classList.toggle('flex', visibleNow); };
+    on(window, 'dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth++; show(true); });
+    on(window, 'dragleave', (e) => { if (!hasFiles(e)) return; depth = Math.max(0, depth - 1); if (!depth) show(false); });
+    on(window, 'dragover', (e) => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+    on(window, 'drop', async (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      show(false);
+      const dropped = await collectDropped(e.dataTransfer);
+      if (dropped.length >= MAX_DROPPED_FILES) toast(`Загружаются первые ${MAX_DROPPED_FILES} файлов`, 'error');
+      if (dropped.length) ctx.enqueue(dropped, folder);
+      else toast('В перетащенных папках нет файлов', 'error');
+    });
+    on(window, 'paste', (e) => {
+      if (isTyping(document.activeElement) || document.querySelector('dialog[open]')) return;
+      const files = [...(e.clipboardData?.files ?? [])];
+      if (!files.length) return;
+      e.preventDefault();
+      ctx.enqueue(files.map((f) => new File([f], pastedName(f), { type: f.type, lastModified: f.lastModified })), folder);
+    });
   }
 
   load();
 
   return {
-    // Загрузка завершилась: если файл в этой папке — добавляем его сверху.
+    // Загрузка завершилась: файл в этой папке — добавляем; в её подпапке — показываем подпапку.
     onUploaded(file, targetFolder) {
-      if (targetFolder !== folder || state.files.some((f) => f.key === file.key)) return;
-      state.files.unshift(file);
+      if (targetFolder === folder) {
+        if (state.files.some((f) => f.key === file.key)) return;
+        state.files.unshift(file);
+      } else if (targetFolder.startsWith(folder)) {
+        const name = targetFolder.slice(folder.length).split('/')[0];
+        addFolder({ path: `${folder}${name}/`, name });
+      } else {
+        return;
+      }
       renderList();
     },
     unmount() {

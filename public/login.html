@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/css/app.css">
   <script type="module" src="/js/login.js"></script>
 </head>
-<body class="flex min-h-screen items-center justify-center px-4">
+<body class="login-bg flex min-h-screen items-center justify-center px-4">
   <main class="w-full max-w-sm">
     <div class="mb-8 flex flex-col items-center text-center">
       <img src="/favicon.svg" alt="" class="mb-4 h-12 w-12">
@@ -18,14 +18,19 @@
       <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Войдите, чтобы управлять файлами</p>
     </div>
 
-    <form id="login-form" class="card space-y-4 p-6" novalidate>
+    <form id="login-form" class="card space-y-4 p-6 shadow-lg shadow-slate-900/5" novalidate>
       <div>
         <label for="username" class="mb-1.5 block text-sm font-medium">Логин</label>
         <input id="username" name="username" type="text" class="input" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
       </div>
       <div>
         <label for="password" class="mb-1.5 block text-sm font-medium">Пароль</label>
-        <input id="password" name="password" type="password" class="input" autocomplete="current-password" required>
+        <div class="relative">
+          <input id="password" name="password" type="password" class="input pr-11" autocomplete="current-password" required>
+          <button id="toggle-password" type="button" class="icon-btn absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2" aria-label="Показать пароль" aria-pressed="false" title="Показать пароль">
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
       </div>
       <p id="login-error" class="hidden rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/60 dark:text-rose-300" role="alert"></p>
       <button type="submit" class="btn-primary w-full py-2.5">Войти</button>
