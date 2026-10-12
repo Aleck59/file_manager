@@ -1,15 +1,33 @@
-// Предустановленные S3-совместимые хранилища: при выборе подставляются endpoint, регион
-// и способ адресации. Ключи доступа и бакет берутся из консоли провайдера.
+// Предустановленные S3-совместимые хранилища: при выборе подставляются endpoint, регион,
+// способ адресации и класс хранения. Ключи доступа и бакет берутся из консоли провайдера.
+// classes — допустимые классы хранения провайдера (заголовок X-Amz-Storage-Class).
+
+// Подписи классов хранения.
+export const STORAGE_CLASS_LABELS = {
+  '': 'Класс бакета по умолчанию',
+  STANDARD: 'STANDARD — стандартный',
+  COLD: 'COLD — холодный (дешевле хранение, дороже операции)',
+  ICE: 'ICE — ледяной (для редкого доступа)',
+  SINGLE: 'SINGLE — однозонный (одна копия, дешевле)',
+  STANDARD_IA: 'STANDARD_IA — редкий доступ',
+  ONEZONE_IA: 'ONEZONE_IA — редкий доступ, одна зона',
+  INTELLIGENT_TIERING: 'INTELLIGENT_TIERING — автоматический',
+  GLACIER_IR: 'GLACIER_IR — архив с мгновенным доступом',
+};
+const GENERIC_CLASSES = ['', 'STANDARD'];
 export const S3_PRESETS = [
   {
     id: 'yandex', name: 'Yandex Object Storage',
     endpoint: 'https://storage.yandexcloud.net', region: 'ru-central1', pathStyle: true,
+    classes: ['', 'STANDARD', 'COLD', 'ICE'], defaultClass: 'STANDARD',
     hint: 'Ключи: сервисный аккаунт → «Создать статический ключ доступа». Регион всегда ru-central1.',
   },
   {
     id: 'cloudru', name: 'Cloud.ru Object Storage',
     endpoint: 'https://s3.cloud.ru', region: 'ru-central-1', pathStyle: true,
-    hint: 'Access Key ID указывается в формате <tenant_id>:<key_id> — см. раздел документации Cloud.ru о подключении к Object Storage через AWS CLI/SDK.',
+    // https://cloud.ru/docs/s3e/ug/topics/concepts__storage-class
+    classes: ['STANDARD', 'COLD', 'ICE', 'SINGLE', ''], defaultClass: 'STANDARD',
+    hint: 'Access Key ID — в формате <tenant_id>:<key_id>. Класс хранения по умолчанию — STANDARD. Если CORS не настроится автоматически, задайте его в консоли: бакет → CORS (Origin — адрес сайта, методы GET, PUT, HEAD, заголовки *).',
     accessKeyPlaceholder: 'tenant_id:key_id',
   },
   {
@@ -35,6 +53,7 @@ export const S3_PRESETS = [
   {
     id: 'aws', name: 'Amazon S3',
     endpoint: 'https://s3.eu-central-1.amazonaws.com', region: 'eu-central-1', pathStyle: false,
+    classes: ['', 'STANDARD', 'STANDARD_IA', 'ONEZONE_IA', 'INTELLIGENT_TIERING', 'GLACIER_IR'], defaultClass: '',
     hint: 'Регион в адресе и в поле «Регион» должен совпадать с регионом бакета.',
   },
   {
@@ -53,4 +72,11 @@ export function detectPreset(endpoint) {
   // Шаблоны вроде https://<ACCOUNT_ID>... не являются URL — сравниваем по строке хоста.
   const hostOf = (url) => url.replace(/^https?:\/\//, '').split('/')[0];
   return S3_PRESETS.find((p) => p.id !== 'minio' && hostOf(p.endpoint) === host) ?? null;
+}
+
+/** Классы хранения, которые имеет смысл предлагать для данного хранилища. */
+export function storageClassesFor(preset, current = '') {
+  const list = [...(preset?.classes ?? GENERIC_CLASSES)];
+  if (current && !list.includes(current)) list.push(current);
+  return list;
 }

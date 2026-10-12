@@ -76,7 +76,7 @@
 - Рекурсивное удаление папки идёт пачками по 1000 ключей, без накопления списка в памяти.
 
 Переменные и флаги уже прописаны в `npm start`, `ecosystem.config.cjs` (PM2) и
-`deploy/file-manager.service` (systemd).
+`deploy/file-manager.service` (systemd; установка — `sudo bash deploy/install-systemd.sh --user USER`).
 
 ## Несколько хранилищ как единый диск
 

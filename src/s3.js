@@ -22,11 +22,32 @@ import {
   GetBucketCorsCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import crypto from 'node:crypto';
 import { config } from './config.js';
 import { contentDisposition, isValidFolder, isValidKey, nameFromKey } from './keys.js';
 
+// Совместимость с S3-совместимыми хранилищами. AWS SDK v3 (с 2025 г.) для операций, которым
+// нужна контрольная сумма тела (PutBucketCors, DeleteObjects), шлёт новый x-amz-checksum-crc32
+// вместо классического Content-MD5. Многие провайдеры принимают только Content-MD5 и отвечают
+// ошибкой — тогда, например, не настраивается CORS бакета и браузер не может загружать файлы.
+// Для таких запросов считаем Content-MD5 сами и убираем CRC32-заголовки (до подписи запроса).
+const NEEDS_MD5 = new Set(['cors', 'delete', 'lifecycle', 'tagging']);
+function contentMd5Middleware(next) {
+  return async (args) => {
+    const req = args.request;
+    const body = req?.body;
+    if (req?.query && Object.keys(req.query).some((k) => NEEDS_MD5.has(k)) && (typeof body === 'string' || body instanceof Uint8Array)) {
+      for (const h of Object.keys(req.headers)) {
+        if (/^x-amz-(checksum-|sdk-checksum-algorithm)/i.test(h)) delete req.headers[h];
+      }
+      req.headers['content-md5'] = crypto.createHash('md5').update(body).digest('base64');
+    }
+    return next(args);
+  };
+}
+
 export function createClient(def) {
-  return new S3Client({
+  const client = new S3Client({
     endpoint: def.endpoint,
     region: def.region,
     forcePathStyle: def.forcePathStyle,
@@ -40,6 +61,9 @@ export function createClient(def) {
     // а вместе с ними — список файлов единого диска для всех пользователей.
     requestHandler: { connectionTimeout: 5_000, requestTimeout: 60_000 },
   });
+  // Сразу перед подписью: после контрольных сумм (шаг build), и Content-MD5 входит в подпись.
+  client.middlewareStack.addRelativeTo(contentMd5Middleware, { relation: 'before', toMiddleware: 'httpSigningMiddleware', name: 'contentMd5Compat' });
+  return client;
 }
 
 /** Проверка доступа к бакету с произвольными (в т.ч. ещё не сохранёнными) параметрами. */
@@ -87,6 +111,8 @@ export class Storage {
     this.name = def.name;
     this.bucket = def.bucket;
     this.prefix = def.prefix ?? '';
+    // Класс хранения новых объектов; undefined — класс бакета по умолчанию.
+    this.storageClass = def.storageClass || undefined;
     this.client = createClient(def);
   }
 
@@ -124,6 +150,21 @@ export class Storage {
       .map((o) => ({ rel: this.rel(o.Key), size: o.Size ?? 0, lastModified: o.LastModified?.toISOString() ?? null }))
       .filter((f) => isValidKey(f.rel));
     return { folders, files, truncated: Boolean(out.IsTruncated) };
+  }
+
+  /** Обход ВСЕХ объектов бакета, не только папки хранилища (для реального занятого объёма). */
+  async forEachBucketObject(fn, { max = Infinity } = {}) {
+    let cursor;
+    let seen = 0;
+    do {
+      const out = await this.send(new ListObjectsV2Command({ Bucket: this.bucket, MaxKeys: 1000, ContinuationToken: cursor }));
+      for (const o of out.Contents ?? []) {
+        if (seen++ >= max) return false;
+        await fn(o.Key, o.Size ?? 0, o.LastModified?.toISOString() ?? null);
+      }
+      cursor = out.IsTruncated ? out.NextContinuationToken : undefined;
+    } while (cursor);
+    return true;
   }
 
   /** Обход всех объектов под относительным префиксом (статистика, рекурсивное удаление). */
@@ -193,10 +234,17 @@ export class Storage {
   // Размер входит в подпись (заголовок Content-Length): S3 отклонит загрузку
   // любого другого объёма, поэтому лимит размера нельзя обойти, загрузив по ссылке
   // больше заявленного и не вызвав /uploads/complete.
-  presignPut(rel, contentType, size) {
-    return getSignedUrl(this.client,
-      new PutObjectCommand({ Bucket: this.bucket, Key: this.abs(rel), ContentType: contentType, ContentLength: size }),
-      { expiresIn: config.limits.uploadUrlTtlSec, signableHeaders: new Set(['content-length']) });
+  // Возвращает { url, headers }: заголовки браузер обязан отправить вместе с PUT.
+  // Класс хранения подписывается как заголовок, а не параметр ссылки: параметр
+  // x-amz-storage-class в адресе понимают не все S3-совместимые хранилища (SignatureDoesNotMatch).
+  async presignPut(rel, contentType, size) {
+    const url = await getSignedUrl(this.client,
+      new PutObjectCommand({ Bucket: this.bucket, Key: this.abs(rel), ContentType: contentType, ContentLength: size, StorageClass: this.storageClass }),
+      { expiresIn: config.limits.uploadUrlTtlSec, signableHeaders: new Set(['content-length']),
+        unhoistableHeaders: new Set(['x-amz-storage-class']) });
+    const headers = { 'Content-Type': contentType };
+    if (this.storageClass) headers['X-Amz-Storage-Class'] = this.storageClass;
+    return { url, headers };
   }
 
   // По умолчанию — как вложение: HTML/SVG из бакета не исполнится в браузере.
@@ -223,8 +271,8 @@ export class Storage {
     return this.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: this.abs(rel) }));
   }
 
-  async createMultipart(rel, contentType) {
-    const out = await this.send(new CreateMultipartUploadCommand({ Bucket: this.bucket, Key: this.abs(rel), ContentType: contentType }));
+  async createMultipart(rel, contentType, storageClass = this.storageClass) {
+    const out = await this.send(new CreateMultipartUploadCommand({ Bucket: this.bucket, Key: this.abs(rel), ContentType: contentType, StorageClass: storageClass }));
     return out.UploadId;
   }
 
@@ -264,15 +312,18 @@ export class Storage {
   }
 
   /** Копирование внутри бакета: байты файла не проходят через VDS. */
-  async copyObject(srcRel, dstRel, size, contentType) {
+  // Класс хранения при копировании нужно указать явно — иначе S3 запишет копию в классе
+  // по умолчанию, и переименование «холодного» файла сделало бы его «стандартным» (и наоборот).
+  async copyObject(srcRel, dstRel, size, contentType, storageClass = this.storageClass) {
     if (size <= MAX_SINGLE_COPY) {
       await this.send(new CopyObjectCommand({
         Bucket: this.bucket, Key: this.abs(dstRel), CopySource: this.copySource(srcRel), MetadataDirective: 'COPY',
+        StorageClass: storageClass,
       }));
       return;
     }
     // Больше 5 ГБ — multipart-копирование диапазонами (UploadPartCopy).
-    const uploadId = await this.createMultipart(dstRel, contentType);
+    const uploadId = await this.createMultipart(dstRel, contentType, storageClass);
     try {
       const ranges = [];
       for (let start = 0; start < size; start += COPY_PART_SIZE) ranges.push([start, Math.min(start + COPY_PART_SIZE, size) - 1]);

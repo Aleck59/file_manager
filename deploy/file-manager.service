@@ -1,36 +1,67 @@
-# systemd-юнит — альтернатива PM2 без лишнего демона в памяти (экономит ~40-60 МБ ОЗУ).
-# Установка: см. docs/DEPLOY_FASTPANEL.md, шаг 6, вариант Б.
+# systemd-юнит файлообменника.
+# Проще всего установить скриптом:  sudo bash deploy/install-systemd.sh
+# (он подставит пользователя, путь к приложению и к node вместо @…@).
+# Вручную: замените @USER@, @APP_DIR@, @NODE@, @PROTECT_HOME@ и скопируйте файл в
+# /etc/systemd/system/file-manager.service, затем: systemctl daemon-reload && systemctl enable --now file-manager
 [Unit]
-Description=File manager (Node.js + S3 presigned URLs)
+Description=Файлообменник (Node.js + S3 presigned URLs)
+Documentation=file://@APP_DIR@/docs/DEPLOY_FASTPANEL.md
 After=network-online.target
 Wants=network-online.target
+# Не перезапускать бесконечно при постоянной ошибке (например, неверный .env):
+# не больше 5 запусков за 2 минуты, дальше — состояние failed (см. journalctl).
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
-User=USER
-Group=USER
-WorkingDirectory=/var/www/USER/data/www/files.example.com
-ExecStart=/usr/bin/node --jitless --no-expose-wasm --optimize-for-size --max-old-space-size=64 --max-semi-space-size=1 src/server.js
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@APP_DIR@
+# Экономия ОЗУ: V8 без JIT и компактная куча (~60 МБ RSS вместо ~120 МБ).
+ExecStart=@NODE@ --jitless --no-expose-wasm --optimize-for-size --max-old-space-size=64 --max-semi-space-size=1 src/server.js
 Environment=NODE_ENV=production
-# glibc: возвращать освобождённую память системе (иначе каждый вход по паролю,
-# scrypt = 16 МБ, оседает в куче процесса: 60 МБ → 120+ МБ).
+# glibc: сразу возвращать системе освобождённую память (иначе каждый вход по паролю —
+# scrypt, 16 МБ — оседает в куче процесса).
 Environment=MALLOC_ARENA_MAX=2
 Environment=MALLOC_TRIM_THRESHOLD_=131072
 Restart=always
 RestartSec=3
-# Жёсткий лимит памяти на уровне cgroup
+TimeoutStopSec=10
+SyslogIdentifier=file-manager
+# Жёсткий лимит памяти (cgroup). При превышении процесс будет перезапущен.
+MemoryHigh=120M
 MemoryMax=150M
+TasksMax=64
 
-# Песочница
+# ---------- песочница ----------
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
-ProtectHome=true
-# Единственный каталог, куда приложению можно писать (users.json)
-ReadWritePaths=/var/www/USER/data/www/files.example.com/data
+ProtectHome=@PROTECT_HOME@
+# Писать приложению можно только в data/ (users.json, settings.json, revoked.json).
+ReadWritePaths=@APP_DIR@/data
 ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
 ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
 RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+# Только сеть IPv4/IPv6 и локальные сокеты; никаких привилегий (порт 3000 > 1024).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# Запрещённый вызов возвращает ошибку (EPERM), а не убивает процесс.
+SystemCallErrorNumber=EPERM
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

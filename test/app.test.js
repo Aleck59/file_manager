@@ -334,3 +334,49 @@ test('аудит: выход отзывает токен', () => {
   const mode = fs.statSync(path.join(dataDir, 'revoked.json')).mode & 0o777;
   assert.equal(mode, 0o600);
 });
+
+test('класс хранения: проверка значения и запись в presigned PUT', async () => {
+  const f = cfg.STORAGE_FIELDS.storageClass;
+  assert.equal(cfg.parseField('Класс', 'standard', f), 'STANDARD');
+  assert.equal(cfg.parseField('Класс', '', f), '');
+  assert.throws(() => cfg.parseField('Класс', 'COLD; rm', f));
+  const { Storage } = await import('../src/s3.js');
+  const st = new Storage({ ...cfg.config.storages[0], storageClass: 'STANDARD' });
+  const { url, headers } = await st.presignPut('a~x.txt', 'text/plain', 3);
+  // Класс — подписанный заголовок, а не параметр ссылки (его понимают не все хранилища).
+  const u = new URL(url);
+  assert.equal(u.searchParams.get('x-amz-storage-class'), null);
+  assert.match(u.searchParams.get('X-Amz-SignedHeaders'), /x-amz-storage-class/);
+  assert.equal(headers['X-Amz-Storage-Class'], 'STANDARD');
+  st.destroy();
+});
+
+test('S3: PutBucketCors и DeleteObjects шлют Content-MD5 вместо CRC32', async () => {
+  const http = await import('node:http');
+  const seen = [];
+  const srv = http.createServer((req, res) => {
+    seen.push({ url: req.url, h: req.headers });
+    req.resume();
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/xml');
+      res.end(req.url.includes('delete') ? '<DeleteResult></DeleteResult>' : '');
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const { Storage } = await import('../src/s3.js');
+  const st = new Storage({ ...cfg.config.storages[0], endpoint: `http://127.0.0.1:${srv.address().port}`, forcePathStyle: true });
+  try {
+    await st.putCors('https://files.example.com');
+    await st.deleteMany(['a~x.txt']);
+  } finally {
+    st.destroy();
+    srv.close();
+  }
+  assert.equal(seen.length, 2);
+  for (const { h } of seen) {
+    assert.match(h['content-md5'] ?? '', /^[A-Za-z0-9+/]{22}==$/);
+    assert.ok(!Object.keys(h).some((k) => k.startsWith('x-amz-checksum-')));
+    // Заголовок добавляется до подписи — иначе S3 ответит «headers … not signed».
+    assert.match(h.authorization, /SignedHeaders=[^,]*content-md5/);
+  }
+});

@@ -73,6 +73,8 @@ export const api = {
   reorderStorages: (ids) => request('PUT', '/api/settings/storages-order', { ids }),
   setPlacement: (placement) => request('PUT', '/api/settings/placement', { placement }),
   applyCors: (id) => request('POST', `/api/settings/storages/${encodeURIComponent(id)}/cors`),
+  diagnoseStorage: (id) => request('POST', `/api/settings/storages/${encodeURIComponent(id)}/diagnose`),
+  cleanupDiagnose: (id, key) => request('POST', `/api/settings/storages/${encodeURIComponent(id)}/diagnose/cleanup`, { key }),
   resetSessions: () => request('POST', '/api/settings/sessions/reset'),
   restart: () => request('POST', '/api/settings/restart'),
 };

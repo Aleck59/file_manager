@@ -101,8 +101,8 @@ filesRouter.post('/uploads', canEdit, async (req, res) => {
   const contentType = safeContentType(type);
 
   if (size <= config.limits.multipartThreshold) {
-    const url = await st.presignPut(rel, contentType, size);
-    return res.json({ mode: 'single', key, url, headers: { 'Content-Type': contentType }, storage: st.id });
+    const { url, headers } = await st.presignPut(rel, contentType, size);
+    return res.json({ mode: 'single', key, url, headers, storage: st.id });
   }
 
   // Размер части — не меньше настроенного и такой, чтобы уложиться в 10 000 частей.
@@ -229,7 +229,8 @@ filesRouter.post('/files/move', canEdit, async (req, res) => {
   const size = head.ContentLength ?? 0;
   if (target === rel) return res.json({ file: fileInfo(st, rel, size, head.LastModified), folder });
 
-  await st.copyObject(rel, target, size, head.ContentType);
+  // Класс хранения файла сохраняется (HeadObject не возвращает его для STANDARD).
+  await st.copyObject(rel, target, size, head.ContentType, head.StorageClass ?? st.storageClass);
   await st.deleteObject(rel);
   storages.invalidateStats();
   audit(req, 'file.move', { storage: st.id, from: rel, to: target });

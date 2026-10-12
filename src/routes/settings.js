@@ -11,6 +11,7 @@ import {
 import { Router } from '../http.js';
 import { HttpError } from '../middleware/security.js';
 import { Storage, testConnection } from '../s3.js';
+import * as storagesRegistry from '../storages.js';
 import { getUser } from '../users.js';
 
 export const settingsRouter = Router();
@@ -186,4 +187,56 @@ settingsRouter.post('/restart', (req, res) => {
   res.json({ ok: true, supervised });
   // SIGTERM → штатное завершение (server.js), менеджер процессов запустит приложение заново.
   setTimeout(() => process.kill(process.pid, 'SIGTERM'), 300);
+});
+
+// ---------- диагностика загрузки из браузера ----------
+// Ошибка «Нет ответа от S3» означает, что браузер не получил ответа от хранилища: его
+// блокирует CORS бакета, политика страницы (CSP) или смешанный контент (https → http).
+// Сервер проверяет то, что видно ему, и выдаёт ссылку на крошечный тестовый объект —
+// браузер пробует загрузить его тем же способом, что и обычные файлы.
+const CHECK_KEY_RE = /^\.fm-check-[0-9a-f]{12}$/;
+
+settingsRouter.post('/storages/:id/diagnose', async (req, res) => {
+  const def = findStorageDef(req.params.id);
+  if (!def) throw new HttpError(404, 'Хранилище не найдено');
+  const st = storagesRegistry.get(def.id);
+  const checks = [];
+
+  const conn = await testConnection(def);
+  checks.push({ id: 'connect', ok: conn.ok, text: conn.ok ? `Сервер подключается к бакету (${conn.latencyMs} мс)` : `Сервер не подключается к бакету: ${conn.error}` });
+
+  const mixed = config.appOrigin.startsWith('https:') && def.endpoint.startsWith('http:');
+  checks.push({ id: 'scheme', ok: !mixed, text: mixed
+    ? 'Сайт открыт по https, а хранилище — по http: браузер заблокирует обращения (смешанный контент). Укажите endpoint с https://'
+    : `Схема адреса подходит (${new URL(def.endpoint).protocol.replace(':', '')})` });
+
+  if (conn.ok) {
+    try {
+      const rules = await st.getCors();
+      const ok = rules.some((r) => (r.AllowedOrigins ?? []).some((o) => o === '*' || o === config.appOrigin)
+        && (r.AllowedMethods ?? []).includes('PUT'));
+      checks.push({ id: 'cors', ok, text: ok ? `Правила CORS бакета разрешают загрузку с ${config.appOrigin}`
+        : `Правила CORS есть, но не разрешают PUT с ${config.appOrigin}` });
+    } catch (err) {
+      const missing = err.name === 'NoSuchCORSConfiguration' || err.$metadata?.httpStatusCode === 404;
+      checks.push({ id: 'cors', ok: missing ? false : null, text: missing
+        ? 'У бакета нет правил CORS — большинство хранилищ (в т.ч. Cloud.ru) не пустят браузер; результат — в проверке ниже'
+        : `Провайдер не отдаёт правила CORS через API (${err.name}) — смотрите проверку из браузера` });
+    }
+  }
+
+  let test = null;
+  if (conn.ok) {
+    const key = `.fm-check-${crypto.randomBytes(6).toString('hex')}`;
+    test = { key, ...(await st.presignPut(key, 'text/plain', 2)) };
+  }
+  res.json({ origin: config.appOrigin, storageClass: def.storageClass || null, checks, test });
+});
+
+// POST /api/settings/storages/:id/diagnose/cleanup {key} — удалить тестовый объект
+settingsRouter.post('/storages/:id/diagnose/cleanup', async (req, res) => {
+  const key = req.body?.key;
+  if (typeof key !== 'string' || !CHECK_KEY_RE.test(key)) throw new HttpError(400, 'Некорректный ключ');
+  await storagesRegistry.get(req.params.id).deleteObject(key).catch(() => {});
+  res.json({ ok: true });
 });

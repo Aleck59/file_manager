@@ -80,7 +80,9 @@ function breakdown(stats) {
 
 // Заполненность хранилищ: полоса (если задана квота) + подписи с числами.
 function storagesUsage(list, ctx) {
-  const pct = (s) => (s.quota ? Math.min(100, (s.size / s.quota) * 100) : null);
+  // Занятое место — по всему бакету (включая объекты других программ), как у провайдера.
+  const used = (s) => s.bucketSize ?? s.size;
+  const pct = (s) => (s.quota ? Math.min(100, (used(s) / s.quota) * 100) : null);
   return h('ul', { class: 'grid gap-4 sm:grid-cols-2' }, list.map((s) => {
     const p = pct(s);
     const tone = p === null ? '' : p >= 90 ? 'bg-rose-500' : p >= 75 ? 'bg-amber-500' : 'bg-brand-500';
@@ -102,9 +104,12 @@ function storagesUsage(list, ctx) {
         status),
       bar,
       h('p', { class: 'mt-2 text-sm text-slate-500 dark:text-slate-400' },
-        h('span', { class: 'font-medium tabular-nums text-slate-800 dark:text-slate-200' }, formatSize(s.size)),
+        h('span', { class: 'font-medium tabular-nums text-slate-800 dark:text-slate-200' }, formatSize(used(s))),
         s.quota ? ` из ${formatSize(s.quota)} · ${Math.round(p)}%` : ' · без квоты',
-        ` · ${pluralize(s.files, FILES)}${s.complete ? '' : '+'}`));
+        s.storageClass ? ` · ${s.storageClass}` : '',
+        h('span', { class: 'block text-xs' },
+          `файлообменник: ${formatSize(s.size)}, ${pluralize(s.files, FILES)}${s.complete ? '' : '+'}`,
+          (s.bucketSize ?? s.size) > s.size ? ' · остальное — объекты других программ в бакете' : '')));
   }));
 }
 

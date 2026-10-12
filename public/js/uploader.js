@@ -26,11 +26,17 @@ function putBlob(url, blob, headers, onProgress, signal) {
         onProgress(blob.size);
         resolve();
       } else {
-        reject(new Error(`Хранилище S3 ответило ошибкой ${xhr.status}`));
+        // Код ошибки S3 из XML-ответа (AccessDenied, SignatureDoesNotMatch, InvalidStorageClass…).
+        const code = xhr.responseText?.match(/<Code>([^<]+)<\/Code>/)?.[1];
+        reject(new Error(`Хранилище отклонило загрузку: ${code ?? `HTTP ${xhr.status}`}. Подробности — Настройки → Хранилища → «Проверить загрузку из браузера»`));
       }
     };
     // status 0 почти всегда означает, что браузер заблокировал запрос по CORS.
-    xhr.onerror = () => reject(new Error('Нет ответа от S3 (проверьте CORS бакета и соединение)'));
+    // status 0: браузер не получил ответа. Чаще всего это CORS бакета, реже — смешанный
+    // контент (сайт https, хранилище http) или обрыв сети.
+    xhr.onerror = () => reject(new Error(location.protocol === 'https:' && url.startsWith('http:')
+      ? 'Браузер блокирует хранилище по http на сайте https — укажите endpoint с https://'
+      : 'Нет ответа от хранилища: скорее всего, у бакета не настроен CORS. Настройки → Хранилища → «Проверить загрузку из браузера»'));
     xhr.ontimeout = () => reject(new Error('Превышено время ожидания S3'));
     const onAbort = () => xhr.abort();
     xhr.onabort = () => reject(new UploadCancelled());

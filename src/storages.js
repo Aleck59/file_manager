@@ -9,7 +9,7 @@
 // - Недоступное хранилище не ломает диск: его файлы временно не видны, а клиент
 //   получает предупреждение.
 import { config, onConfigChange } from './config.js';
-import { categoryOf, compareKeys, folderFromKey, formatRef, nameFromKey, parseRef } from './keys.js';
+import { categoryOf, compareKeys, folderFromKey, formatRef, isValidKey, nameFromKey, parseRef } from './keys.js';
 import { describeS3Error, Storage } from './s3.js';
 
 const GB = 1024 ** 3;
@@ -241,24 +241,31 @@ async function computeStats() {
   const perStorage = [];
 
   for (const st of all()) {
-    const item = { id: st.id, name: st.name, files: 0, size: 0, quota: (st.def.quotaGb || 0) * GB,
-      acceptUploads: st.def.acceptUploads, complete: true, error: null };
+    // files/size — файлы файлообменника; bucketObjects/bucketSize — ВЕСЬ бакет, включая
+    // объекты, загруженные другими программами: это реально занятое место у провайдера.
+    const item = { id: st.id, name: st.name, files: 0, size: 0, bucketObjects: 0, bucketSize: 0,
+      quota: (st.def.quotaGb || 0) * GB, acceptUploads: st.def.acceptUploads, storageClass: st.def.storageClass || null,
+      complete: true, error: null };
     try {
       const down = skipWhileDown(st);
       if (down) throw down;
-      item.complete = await st.forEachObject('', (o) => {
-        if (o.rel.endsWith('/')) {
-          if (o.rel) folders.add(o.rel);
+      item.complete = await st.forEachBucketObject((key, size, lastModified) => {
+        item.bucketObjects += 1;
+        item.bucketSize += size;
+        if (!key.startsWith(st.prefix)) return; // вне папки хранилища — только в общем объёме
+        const rel = st.rel(key);
+        if (rel.endsWith('/')) {
+          if (rel) folders.add(rel);
           return;
         }
-        if (!/~/.test(o.rel.slice(o.rel.lastIndexOf('/') + 1))) return; // не наш формат
-        const file = fileInfo(st, o.rel, o.size, o.lastModified);
-        file.folder = folderFromKey(o.rel);
+        if (!isValidKey(rel)) return; // не формат файлообменника
+        const file = fileInfo(st, rel, size, lastModified);
+        file.folder = folderFromKey(rel);
         item.files += 1;
-        item.size += o.size;
+        item.size += size;
         const cat = categories[categoryOf(file.name)];
         cat.count += 1;
-        cat.size += o.size;
+        cat.size += size;
         for (const f of parentFolders(file.folder)) folders.add(f);
         recent.push(file);
         if (recent.length > 64) recent = recent.sort(byDateDesc).slice(0, 8);
@@ -340,7 +347,8 @@ export async function pickForUpload(size) {
       st,
       id: st.id,
       quota: (st.def.quotaGb || 0) * GB,
-      used: (s?.size ?? 0) + (reserved.get(st.id) ?? 0),
+      // Квота сравнивается с реально занятым местом в бакете (включая чужие объекты).
+      used: (s?.bucketSize ?? s?.size ?? 0) + (reserved.get(st.id) ?? 0),
       // Хранилище, которое сейчас не отвечает, для новых файлов не используем.
       acceptUploads: st.def.acceptUploads && !recentlyFailed(st.id),
     };

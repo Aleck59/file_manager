@@ -2,8 +2,10 @@
 // Значения из .env остаются значениями по умолчанию; изменения хранятся на сервере
 // в data/settings.json. Секреты в браузер не передаются — их можно только заменить.
 import { api } from '../api.js';
-import { detectPreset, S3_PRESETS } from '../s3-presets.js';
+import { detectPreset, S3_PRESETS, STORAGE_CLASS_LABELS, storageClassesFor } from '../s3-presets.js';
 import { confirmDialog, FILES, formatSize, h, icon, openDialog, pluralize, toast } from '../ui.js';
+
+const OBJECTS = { one: 'объект', few: 'объекта', many: 'объектов', other: 'объекта' };
 
 const SOURCE = {
   env: ['.env', 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300', 'Значение из файла .env'],
@@ -140,8 +142,11 @@ export function adminSettings(ctx) {
         for (const el of usage.closest('section')?.querySelectorAll('[data-usage]') ?? []) {
           const x = stats[el.dataset.usage];
           if (!x) continue;
+          // Реальное место в бакете (включая объекты других программ) и доля файлообменника.
           el.textContent = x.error ? `недоступно: ${x.error}`
-            : `${formatSize(x.size)}${x.quota ? ` из ${formatSize(x.quota)}` : ''} · ${pluralize(x.files, FILES)}${x.complete ? '' : '+'}`;
+            : `В бакете: ${formatSize(x.bucketSize ?? x.size)}${x.quota ? ` из ${formatSize(x.quota)}` : ''}`
+              + ` (${pluralize(x.bucketObjects ?? x.files, OBJECTS)}${x.complete ? '' : '+'})`
+              + ` · файлообменник: ${formatSize(x.size)}, ${pluralize(x.files, FILES)}`;
           el.classList.toggle('text-rose-600', Boolean(x.error));
         }
       }).catch(() => {});
@@ -167,7 +172,8 @@ export function adminSettings(ctx) {
             st.acceptUploads
               ? h('span', { class: 'badge bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300' }, 'принимает файлы')
               : h('span', { class: 'badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300' }, 'только чтение'),
-            st.quotaGb > 0 && h('span', { class: 'badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300' }, `квота ${st.quotaGb} ГБ`)),
+            st.quotaGb > 0 && h('span', { class: 'badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300' }, `квота ${st.quotaGb} ГБ`),
+            st.storageClass && h('span', { class: 'badge bg-sky-50 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300', title: 'Класс хранения новых файлов' }, st.storageClass)),
           h('p', { class: 'truncate text-sm text-slate-500 dark:text-slate-400', title: `${st.endpoint} · ${st.bucket}/${st.prefix}` },
             `${detectPreset(st.endpoint)?.name ?? new URL(st.endpoint).host} · ${st.bucket}/${st.prefix}`),
           h('p', { class: 'mt-0.5 text-xs tabular-nums text-slate-500 dark:text-slate-400', dataset: { usage: st.id } }, ' '),
@@ -175,6 +181,7 @@ export function adminSettings(ctx) {
         h('div', { class: 'flex shrink-0 gap-0.5' },
           list.length > 1 && action('chevronRight', 'Выше', () => move(i, -1), `-rotate-90 ${i === 0 ? 'invisible' : ''}`),
           list.length > 1 && action('chevronRight', 'Ниже', () => move(i, 1), `rotate-90 ${i === list.length - 1 ? 'invisible' : ''}`),
+          action('upload', 'Проверить загрузку из браузера', () => diagnose(st)),
           action('server', 'Проверить подключение', async () => {
             setStatus(status, 'info', 'Проверяем…');
             const r = await api.checkStorage({}, st.id).catch((err) => ({ ok: false, error: err.message }));
@@ -206,6 +213,85 @@ export function adminSettings(ctx) {
             : 'Хранилища «только чтение» и с исчерпанной квотой новые файлы не получают. Переименование и перемещение выполняются внутри бакета, где лежит файл.')));
   }
 
+  // Диагностика: проверки сервера + пробная загрузка крошечного файла из этого браузера
+  // тем же способом, что и обычные файлы. Объясняет, что именно мешает загрузке.
+  async function diagnose(st) {
+    const list = h('ul', { class: 'space-y-2 text-sm' });
+    const close = h('button', { type: 'button', class: 'btn-primary', onclick: () => dialog.close() }, 'Готово');
+    const dialog = h('dialog', { class: 'w-[min(36rem,calc(100%-2rem))] rounded-2xl bg-white p-0 text-slate-800 shadow-xl dark:bg-slate-900 dark:text-slate-200' },
+      h('div', { class: 'space-y-4 p-6' },
+        h('h3', { class: 'text-lg font-semibold' }, `Проверка загрузки: «${st.name}»`),
+        list,
+        h('div', { class: 'flex justify-end' }, close)));
+    dialog.addEventListener('close', () => dialog.remove());
+    document.body.append(dialog);
+    dialog.showModal();
+
+    const add = (ok, text, hint) => {
+      const tone = ok === true ? 'text-brand-700 dark:text-brand-400' : ok === false ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500';
+      const li = h('li', { class: `flex items-start gap-2 ${tone}` },
+        icon(ok === true ? 'check' : ok === false ? 'alert' : 'clock', 'mt-0.5 h-4 w-4'),
+        h('span', {}, h('span', { class: 'block' }, text), hint && h('span', { class: 'mt-0.5 block text-xs text-slate-500 dark:text-slate-400' }, hint)));
+      list.append(li);
+      return li;
+    };
+
+    let r;
+    try {
+      r = await api.diagnoseStorage(st.id);
+    } catch (err) {
+      return add(false, err.message);
+    }
+    let corsWarning = null;
+    for (const c of r.checks) {
+      const li = add(c.ok, c.text);
+      if (c.id === 'cors' && c.ok === false) corsWarning = li;
+    }
+    if (!r.test) return add(false, 'Пробная загрузка из браузера невозможна, пока сервер не подключается к бакету.');
+
+    // Пробная загрузка. Нарушение CSP браузер сообщает событием — так отличаем его от CORS.
+    let cspBlocked = false;
+    const onCsp = () => { cspBlocked = true; };
+    document.addEventListener('securitypolicyviolation', onCsp);
+    const result = await new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', r.test.url);
+      for (const [k, v] of Object.entries(r.test.headers)) xhr.setRequestHeader(k, v);
+      xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
+      xhr.onerror = () => resolve({ status: 0 });
+      xhr.send('ok');
+    });
+    document.removeEventListener('securitypolicyviolation', onCsp);
+
+    if (result.status >= 200 && result.status < 300) {
+      add(true, 'Браузер загружает файлы в хранилище — всё работает.',
+        r.storageClass ? `Класс хранения ${r.storageClass} принят хранилищем.` : null);
+      // Некоторые хранилища без правил CORS пускают любой сайт — тогда это не ошибка.
+      corsWarning?.remove();
+      api.cleanupDiagnose(st.id, r.test.key).catch(() => {});
+      return;
+    }
+    if (result.status === 0) {
+      if (cspBlocked) {
+        return add(false, 'Обращение к хранилищу заблокировала политика безопасности страницы.',
+          'Страница была открыта до подключения этого хранилища. Обновите её (Ctrl+F5) и проверьте снова.');
+      }
+      if (location.protocol === 'https:' && r.test.url.startsWith('http:')) {
+        return add(false, 'Браузер заблокировал смешанный контент (сайт https, хранилище http).', 'Укажите endpoint хранилища с https://.');
+      }
+      return add(false, 'Браузер не получил разрешения CORS от бакета — поэтому загрузки падают с «Нет ответа от S3».',
+        `Нажмите «Настроить CORS бакета» (ключ) в списке хранилищ. Если провайдер не принимает правила через API, задайте их в консоли бакета: AllowedOrigin = ${r.origin}, AllowedMethod = GET, PUT, HEAD, AllowedHeader = *, ExposeHeader = ETag.`);
+    }
+    const code = result.body?.match(/<Code>([^<]+)<\/Code>/)?.[1] ?? `HTTP ${result.status}`;
+    const hints = {
+      AccessDenied: 'У ключа нет права записи в бакет (или запись запрещена политикой бакета).',
+      SignatureDoesNotMatch: 'Хранилище не приняло подпись ссылки: проверьте регион, Secret Key и способ адресации (path-style).',
+      InvalidStorageClass: 'Хранилище не поддерживает выбранный класс хранения — выберите другой или «Класс бакета по умолчанию».',
+      InvalidArgument: 'Хранилище отклонило параметры загрузки — попробуйте класс хранения «по умолчанию».',
+    };
+    add(false, `Хранилище отклонило загрузку: ${code}.`, hints[code] ?? 'Подробности — в консоли провайдера.');
+  }
+
   async function removeStorage(st) {
     const ok = await confirmDialog(`Отключить «${st.name}»?`,
       'Хранилище будет убрано из диска: его файлы перестанут отображаться, но останутся в бакете. Подключив его снова с теми же параметрами, вы вернёте их.',
@@ -221,7 +307,7 @@ export function adminSettings(ctx) {
   // Окно добавления / изменения хранилища.
   function editStorage(st) {
     const isNew = !st;
-    const v = st ?? { name: '', endpoint: '', region: 'us-east-1', bucket: '', accessKeyId: '', forcePathStyle: true, prefix: 'uploads/', quotaGb: 0, acceptUploads: true, hasSecret: false };
+    const v = st ?? { name: '', endpoint: '', region: 'us-east-1', bucket: '', accessKeyId: '', forcePathStyle: true, prefix: 'uploads/', quotaGb: 0, acceptUploads: true, storageClass: '', hasSecret: false };
     const input = (name, label, { wide, hint, ...attrs } = {}) => {
       const el = h('input', { id: `st-${name}`, name, class: 'input', autocomplete: 'off', spellcheck: 'false', ...attrs });
       el.value = attrs.type === 'password' ? '' : String(v[name] ?? '');
@@ -255,6 +341,15 @@ export function adminSettings(ctx) {
       f.accessKeyId.el.placeholder = preset?.accessKeyPlaceholder ?? '';
     };
     const current = detectPreset(v.endpoint);
+    // Класс хранения новых файлов: варианты зависят от провайдера.
+    const classSel = h('select', { id: 'st-storageClass', class: 'input' });
+    const fillClasses = (p, value) => {
+      classSel.replaceChildren(...storageClassesFor(p, value).map((c) => h('option', { value: c, selected: c === value }, STORAGE_CLASS_LABELS[c] ?? c)));
+    };
+    fillClasses(current, v.storageClass ?? '');
+    const classWrap = h('div', { class: 'sm:col-span-2' },
+      h('label', { for: 'st-storageClass', class: 'mb-1.5 block text-sm font-medium' }, 'Класс хранения новых файлов'), classSel,
+      h('p', { class: 'mt-1 text-xs text-slate-500 dark:text-slate-400' }, 'Передаётся заголовком X-Amz-Storage-Class при загрузке и сохраняется при переименовании/перемещении. Уже загруженные файлы не меняются.'));
     const preset = h('select', { id: 'st-preset', class: 'input', onchange: () => {
       const p = S3_PRESETS.find((x) => x.id === preset.value);
       showHint(p);
@@ -262,6 +357,7 @@ export function adminSettings(ctx) {
       f.endpoint.el.value = p.endpoint;
       f.region.el.value = p.region;
       f.forcePathStyle.el.checked = p.pathStyle;
+      fillClasses(p, p.defaultClass ?? '');
       if (!f.name.el.value.trim()) f.name.el.value = p.name;
       (p.endpoint.includes('<') ? f.endpoint.el : f.bucket.el).focus();
     } },
@@ -280,6 +376,7 @@ export function adminSettings(ctx) {
       quotaGb: f.quotaGb.el.value.trim() || '0',
       forcePathStyle: f.forcePathStyle.el.checked,
       acceptUploads: f.acceptUploads.el.checked,
+      storageClass: classSel.value,
     });
 
     const status = statusLine();
@@ -298,6 +395,7 @@ export function adminSettings(ctx) {
         h('div', { class: 'sm:col-span-2' }, h('label', { for: 'st-preset', class: 'mb-1.5 block text-sm font-medium' }, 'Провайдер'), preset),
         hintBox,
         ...['name', 'endpoint', 'region', 'bucket', 'accessKeyId', 'secretAccessKey', 'prefix', 'quotaGb'].map((k) => f[k].wrap),
+        classWrap,
         h('div', { class: 'space-y-3 sm:col-span-2' }, f.forcePathStyle.wrap, f.acceptUploads.wrap)),
       status,
       h('div', { class: 'flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-5 dark:border-slate-800' },

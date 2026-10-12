@@ -52,6 +52,9 @@ export const STORAGE_FIELDS = {
   prefix: { type: 'prefix', label: 'Папка в бакете', default: 'uploads/', env: 'S3_PREFIX' },
   quotaGb: { type: 'int', label: 'Квота, ГБ', default: 0, min: 0, max: 1_000_000 },
   acceptUploads: { type: 'bool', label: 'Принимать новые файлы', default: true },
+  // Класс хранения (заголовок X-Amz-Storage-Class) для новых файлов: STANDARD, COLD, ICE,
+  // SINGLE (Cloud.ru), STANDARD_IA (AWS) и т.п. Пусто — класс бакета по умолчанию.
+  storageClass: { type: 'storageClass', label: 'Класс хранения', default: '' },
 };
 export const PLACEMENTS = ['fill', 'balance'];
 
@@ -81,6 +84,9 @@ export function parseField(key, raw, f = FIELDS[key]) {
       if (!['http:', 'https:'].includes(u.protocol)) throw new Error(`${key}: допускаются только http и https`);
       return f.type === 'origin' ? u.origin : str.replace(/\/+$/, '');
     }
+    case 'storageClass':
+      if (!/^[A-Z][A-Z0-9_]{0,31}$/.test(str.toUpperCase())) throw new Error(`${key}: например STANDARD`);
+      return str.toUpperCase();
     case 'prefix': {
       const p = str.replace(/^\/+/, '');
       if (p === '') return '';
@@ -112,6 +118,8 @@ for (const key of Object.keys(FIELDS)) {
 const dataDir = path.resolve(ROOT, process.env.DATA_DIR || 'data');
 const settingsFile = path.join(dataDir, 'settings.json');
 
+const safeHost = (url) => { try { return new URL(url).hostname; } catch { return ''; } };
+
 // ---------- переопределения и хранилища из интерфейса ----------
 let overrides = {};
 let storages = null; // null — список ещё не создавался (первый запуск или старая версия)
@@ -120,7 +128,12 @@ const legacyS3 = {}; // S3_* из settings.json прошлой версии (о�
 if (fs.existsSync(settingsFile)) {
   try {
     const file = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-    if (Array.isArray(file.storages)) storages = file.storages;
+    if (Array.isArray(file.storages)) {
+      // Хранилища из версий до появления «класса хранения»: для Cloud.ru — STANDARD
+      // (нужный класс по умолчанию), для остальных — класс бакета.
+      storages = file.storages.map((s) => (s.storageClass !== undefined ? s
+        : { ...s, storageClass: /(^|\.)cloud\.ru$/.test(safeHost(s.endpoint)) ? 'STANDARD' : '' }));
+    }
     if (PLACEMENTS.includes(file.placement)) placement = file.placement;
     const raw = file.overrides ?? {};
     for (const [key, value] of Object.entries(raw)) {
