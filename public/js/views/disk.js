@@ -67,6 +67,20 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     [1, 2, 3, 4].map(() => h('div', { class: 'h-10 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800' })));
   const loadMore = h('button', { type: 'button', class: 'btn-ghost', onclick: () => load({ append: true }) }, 'Показать ещё');
   const loadMoreWrap = h('div', { class: 'hidden border-t border-slate-200 p-3 text-center dark:border-slate-800' }, loadMore);
+  // Предупреждение, если какое-то из хранилищ единого диска сейчас не отвечает.
+  const warnBox = h('div', { class: 'hidden items-start gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-200', role: 'status' });
+  const showWarnings = (warnings = []) => {
+    warnBox.classList.toggle('hidden', !warnings.length);
+    warnBox.classList.toggle('flex', warnings.length > 0);
+    warnBox.replaceChildren(icon('alert', 'mt-0.5 h-4 w-4'), h('span', {},
+      warnings.map((w) => `Хранилище «${w.storage}» недоступно (${w.error}).`).join(' '),
+      ' Его файлы временно не показаны.'));
+  };
+  // Метка хранилища у файла — только когда хранилищ несколько.
+  const storageChip = (file) => ctx.storages.length > 1 && h('span', {
+    class: 'badge hidden shrink-0 bg-slate-100 text-slate-500 sm:inline-flex dark:bg-slate-800 dark:text-slate-400',
+    title: 'Хранилище, в котором лежит файл',
+  }, ctx.storageName(file.storage));
 
   const dropzone = canEdit && h('button', {
     type: 'button',
@@ -97,7 +111,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
             h('button', { type: 'button', class: 'icon-btn', title: 'Обновить', 'aria-label': 'Обновить', onclick: () => load() }, icon('refresh')))),
         h('div', { class: 'hidden grid-cols-[minmax(0,1fr)_6.5rem_10.5rem_7.5rem] gap-4 border-b border-slate-200 px-4 py-2 text-xs font-medium uppercase tracking-wide text-slate-400 md:grid dark:border-slate-800' },
           h('span', {}, 'Имя'), h('span', { class: 'text-right' }, 'Размер'), h('span', {}, 'Изменён'), h('span', { class: 'text-right' }, 'Действия')),
-        list, empty, skeleton, loadMoreWrap)),
+        warnBox, list, empty, skeleton, loadMoreWrap)),
     overlay,
   );
 
@@ -149,7 +163,9 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     h('div', { class: 'flex min-w-0 items-center gap-3' },
       fileBadge(file.name),
       h('div', { class: 'min-w-0' },
-        h('p', { class: 'truncate text-sm font-medium', title: file.name }, file.name),
+        h('div', { class: 'flex min-w-0 items-center gap-2' },
+          h('p', { class: 'truncate text-sm font-medium', title: file.name }, file.name),
+          storageChip(file)),
         h('p', { class: 'text-xs text-slate-500 md:hidden dark:text-slate-400' }, `${formatSize(file.size)} · ${formatDate(file.lastModified)}`))),
     h('span', { class: 'hidden text-right text-sm tabular-nums text-slate-500 md:block dark:text-slate-400' }, formatSize(file.size)),
     h('span', { class: 'hidden text-sm text-slate-500 md:block dark:text-slate-400' }, formatDate(file.lastModified)),
@@ -213,6 +229,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
       state.files = append ? state.files.concat(res.files) : res.files;
       state.folders = append ? mergeFolders(state.folders, res.folders) : res.folders;
       state.cursor = res.nextCursor;
+      if (!append) showWarnings(res.warnings);
       tree.setChildren(folder, state.folders);
     } catch (err) {
       toast(err.message, 'error');

@@ -1,5 +1,7 @@
-// Тонкая обёртка над AWS SDK v3. Через сервер проходят только метаданные —
-// сами байты файлов идут напрямую между браузером и S3 по presigned URL.
+// Одно S3-хранилище (бакет + папка в нём) поверх AWS SDK v3.
+// Через сервер проходят только метаданные — байты файлов идут напрямую между
+// браузером и S3 по presigned URL. Все ключи и папки в методах — относительные
+// (без префикса хранилища), префикс добавляется здесь.
 import {
   S3Client,
   ListObjectsV2Command,
@@ -20,25 +22,15 @@ import {
   GetBucketCorsCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { config, onConfigChange } from './config.js';
-import { contentDisposition, folderToPrefix, isValidFolder, isValidKey, nameFromKey } from './keys.js';
+import { config } from './config.js';
+import { contentDisposition, isValidFolder, isValidKey, nameFromKey } from './keys.js';
 
-const bucket = () => config.s3.bucket;
-
-export class StorageNotConfigured extends Error {
-  constructor() {
-    super('Хранилище S3 не настроено. Администратор может указать его в разделе «Настройки».');
-    this.status = 503;
-    this.code = 'S3_NOT_CONFIGURED';
-  }
-}
-
-export function createClient(s3cfg) {
+export function createClient(def) {
   return new S3Client({
-    endpoint: s3cfg.endpoint,
-    region: s3cfg.region,
-    forcePathStyle: s3cfg.forcePathStyle,
-    credentials: { accessKeyId: s3cfg.accessKeyId, secretAccessKey: s3cfg.secretAccessKey },
+    endpoint: def.endpoint,
+    region: def.region,
+    forcePathStyle: def.forcePathStyle,
+    credentials: { accessKeyId: def.accessKeyId, secretAccessKey: def.secretAccessKey },
     // Многие S3-совместимые хранилища не поддерживают новые CRC32-чексуммы
     // (включены в SDK по умолчанию с 2025 г.) — шлём их только когда требуется.
     requestChecksumCalculation: 'WHEN_REQUIRED',
@@ -47,35 +39,25 @@ export function createClient(s3cfg) {
   });
 }
 
-// Клиент создаётся лениво и пересоздаётся, когда администратор меняет настройки S3.
-let current = null;
-export function client() {
-  if (!config.s3Configured) throw new StorageNotConfigured();
-  current ??= createClient(config.s3);
-  return current;
-}
-onConfigChange((changed) => {
-  if (changed.some((k) => k.startsWith('S3_')) && current) {
-    current.destroy();
-    current = null;
-  }
-});
-
-/** Проверка доступа к бакету с произвольными (ещё не сохранёнными) параметрами. */
-export async function testConnection(s3cfg) {
-  const c = createClient(s3cfg);
+/** Проверка доступа к бакету с произвольными (в т.ч. ещё не сохранёнными) параметрами. */
+export async function testConnection(def) {
+  const c = createClient(def);
   const started = Date.now();
   try {
-    await c.send(new HeadBucketCommand({ Bucket: s3cfg.bucket }));
+    await c.send(new HeadBucketCommand({ Bucket: def.bucket }));
     return { ok: true, latencyMs: Date.now() - started };
   } catch (err) {
-    const status = err.$metadata?.httpStatusCode;
-    const hint = status === 403 ? 'нет доступа: проверьте ключи и права'
-      : status === 404 ? 'бакет не найден' : status === 301 ? 'неверный регион или адресация' : err.message;
-    return { ok: false, latencyMs: Date.now() - started, error: `${err.name}${status ? ` (HTTP ${status})` : ''}: ${hint}` };
+    return { ok: false, latencyMs: Date.now() - started, error: describeS3Error(err) };
   } finally {
     c.destroy();
   }
+}
+
+export function describeS3Error(err) {
+  const status = err.$metadata?.httpStatusCode;
+  const hint = status === 403 ? 'нет доступа: проверьте ключи и права'
+    : status === 404 ? 'бакет не найден' : status === 301 ? 'неверный регион или адресация' : err.message;
+  return `${err.name}${status ? ` (HTTP ${status})` : ''}: ${hint}`;
 }
 
 // CORS бакета: браузеру разрешено загружать/скачивать только с нашего домена.
@@ -88,204 +70,223 @@ export function corsRules(origin) {
     MaxAgeSeconds: 3600,
   }];
 }
-export function putBucketCors(origin) {
-  return client().send(new PutBucketCorsCommand({ Bucket: bucket(), CORSConfiguration: { CORSRules: corsRules(origin) } }));
-}
-export async function getBucketCors() {
-  return (await client().send(new GetBucketCorsCommand({ Bucket: bucket() }))).CORSRules ?? [];
-}
-
-const toFile = (o) => ({
-  key: o.Key,
-  name: nameFromKey(o.Key),
-  size: o.Size ?? 0,
-  lastModified: o.LastModified?.toISOString() ?? null,
-});
-
-// Содержимое одной папки: подпапки (CommonPrefixes) + файлы (Contents), постранично.
-export async function listFolder(folder, { cursor, limit = 200 } = {}) {
-  const base = folderToPrefix(folder);
-  const out = await client().send(
-    new ListObjectsV2Command({
-      Bucket: bucket(),
-      Prefix: base,
-      Delimiter: '/',
-      MaxKeys: limit,
-      ContinuationToken: cursor || undefined,
-    }),
-  );
-  const folders = (out.CommonPrefixes ?? [])
-    .map((p) => p.Prefix.slice(config.s3.prefix.length))
-    .filter(isValidFolder)
-    .map((path) => ({ path, name: path.slice(0, -1).split('/').pop() }))
-    // Сортировка «по-русски» (localeCompare) — в браузере: на сервере она подгружает ICU (~5 МБ ОЗУ).
-    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  // Маркер самой папки и посторонние объекты (не нашего формата) не показываем.
-  const files = (out.Contents ?? []).filter((o) => isValidKey(o.Key)).map(toFile);
-  return { folders, files, nextCursor: out.IsTruncated ? out.NextContinuationToken : null };
-}
-
-// Обход всех объектов под префиксом (для статистики и рекурсивного удаления).
-export async function forEachObject(prefix, fn, { max = Infinity } = {}) {
-  let cursor;
-  let seen = 0;
-  do {
-    const out = await client().send(
-      new ListObjectsV2Command({ Bucket: bucket(), Prefix: prefix, MaxKeys: 1000, ContinuationToken: cursor }),
-    );
-    for (const o of out.Contents ?? []) {
-      if (seen++ >= max) return false;
-      await fn(o);
-    }
-    cursor = out.IsTruncated ? out.NextContinuationToken : undefined;
-  } while (cursor);
-  return true;
-}
-
-export async function deleteMany(keys) {
-  for (let i = 0; i < keys.length; i += 1000) {
-    const out = await client().send(
-      new DeleteObjectsCommand({
-        Bucket: bucket(),
-        Delete: { Objects: keys.slice(i, i + 1000).map((Key) => ({ Key })), Quiet: true },
-      }),
-    );
-    if (out.Errors?.length) {
-      const e = out.Errors[0];
-      throw Object.assign(new Error(`DeleteObjects: ${e.Code} ${e.Message}`), { $fault: 'server' });
-    }
-  }
-}
-
-export function putFolderMarker(folder) {
-  return client().send(new PutObjectCommand({ Bucket: bucket(), Key: folderToPrefix(folder), Body: new Uint8Array(0), ContentLength: 0 }));
-}
-
-export function headBucket() {
-  return client().send(new HeadBucketCommand({ Bucket: bucket() }));
-}
-
-export function presignPut(key, contentType) {
-  return getSignedUrl(
-    client(),
-    new PutObjectCommand({ Bucket: bucket(), Key: key, ContentType: contentType }),
-    { expiresIn: config.limits.uploadUrlTtlSec },
-  );
-}
-
-// По умолчанию — как вложение: HTML/SVG из бакета не исполнится в браузере.
-// Для предпросмотра (inline) сервер обязан передать безопасный contentType из белого списка.
-export function presignGet(key, expiresIn, { inline = false, contentType } = {}) {
-  return getSignedUrl(
-    client(),
-    new GetObjectCommand({
-      Bucket: bucket(),
-      Key: key,
-      ResponseContentDisposition: contentDisposition(nameFromKey(key), inline ? 'inline' : 'attachment'),
-      ResponseContentType: contentType,
-    }),
-    { expiresIn },
-  );
-}
-
-export async function headObject(key) {
-  try {
-    return await client().send(new HeadObjectCommand({ Bucket: bucket(), Key: key }));
-  } catch (err) {
-    if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) return null;
-    throw err;
-  }
-}
-
-export function deleteObject(key) {
-  return client().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key }));
-}
-
-export async function createMultipart(key, contentType) {
-  const out = await client().send(
-    new CreateMultipartUploadCommand({ Bucket: bucket(), Key: key, ContentType: contentType }),
-  );
-  return out.UploadId;
-}
-
-export function presignPart(key, uploadId, partNumber) {
-  return getSignedUrl(
-    client(),
-    new UploadPartCommand({ Bucket: bucket(), Key: key, UploadId: uploadId, PartNumber: partNumber }),
-    { expiresIn: config.limits.uploadUrlTtlSec },
-  );
-}
-
-// ETag-и частей берём у самого S3 (ListParts), а не у клиента:
-// так не нужно доверять данным из браузера и проще контролировать итоговый размер.
-export async function listAllParts(key, uploadId) {
-  const parts = [];
-  let marker;
-  do {
-    const out = await client().send(
-      new ListPartsCommand({ Bucket: bucket(), Key: key, UploadId: uploadId, PartNumberMarker: marker }),
-    );
-    for (const p of out.Parts ?? []) parts.push({ PartNumber: p.PartNumber, ETag: p.ETag, Size: p.Size ?? 0 });
-    marker = out.IsTruncated ? out.NextPartNumberMarker : undefined;
-  } while (marker);
-  return parts.sort((a, b) => a.PartNumber - b.PartNumber);
-}
-
-export function completeMultipart(key, uploadId, parts) {
-  return client().send(
-    new CompleteMultipartUploadCommand({
-      Bucket: bucket(),
-      Key: key,
-      UploadId: uploadId,
-      MultipartUpload: { Parts: parts.map(({ PartNumber, ETag }) => ({ PartNumber, ETag })) },
-    }),
-  );
-}
-
-export function abortMultipart(key, uploadId) {
-  return client().send(new AbortMultipartUploadCommand({ Bucket: bucket(), Key: key, UploadId: uploadId }));
-}
 
 // ---------- копирование (для переименования и перемещения) ----------
-// Копирование выполняется внутри S3: байты файла не проходят через VDS.
 const MAX_SINGLE_COPY = 5 * 1024 ** 3; // предел CopyObject — 5 ГБ
 const COPY_PART_SIZE = 512 * 1024 ** 2;
 const COPY_CONCURRENCY = 4;
 
-// CopySource должен быть URL-кодирован (кириллица, пробелы и т.п. в имени).
-const copySource = (key) => `${bucket()}/${key.split('/').map(encodeURIComponent).join('/')}`;
-
-export async function copyObject(srcKey, dstKey, size, contentType) {
-  if (size <= MAX_SINGLE_COPY) {
-    await client().send(new CopyObjectCommand({
-      Bucket: bucket(), Key: dstKey, CopySource: copySource(srcKey), MetadataDirective: 'COPY',
-    }));
-    return;
+export class Storage {
+  /** @param {{id, name, endpoint, region, bucket, accessKeyId, secretAccessKey, forcePathStyle, prefix, quotaGb, acceptUploads}} def */
+  constructor(def) {
+    this.def = def;
+    this.id = def.id;
+    this.name = def.name;
+    this.bucket = def.bucket;
+    this.prefix = def.prefix ?? '';
+    this.client = createClient(def);
   }
 
-  // Больше 5 ГБ — multipart-копирование диапазонами (UploadPartCopy).
-  const uploadId = await createMultipart(dstKey, contentType);
-  try {
-    const ranges = [];
-    for (let start = 0; start < size; start += COPY_PART_SIZE) {
-      ranges.push([start, Math.min(start + COPY_PART_SIZE, size) - 1]);
-    }
-    const parts = new Array(ranges.length);
-    let next = 0;
-    const worker = async () => {
-      while (next < ranges.length) {
-        const i = next++;
-        const out = await client().send(new UploadPartCopyCommand({
-          Bucket: bucket(), Key: dstKey, UploadId: uploadId, PartNumber: i + 1,
-          CopySource: copySource(srcKey), CopySourceRange: `bytes=${ranges[i][0]}-${ranges[i][1]}`,
-        }));
-        parts[i] = { PartNumber: i + 1, ETag: out.CopyPartResult?.ETag };
+  destroy() {
+    this.client.destroy();
+  }
+
+  abs(rel) {
+    return this.prefix + rel;
+  }
+
+  rel(abs) {
+    return abs.slice(this.prefix.length);
+  }
+
+  send(command) {
+    return this.client.send(command);
+  }
+
+  /**
+   * Одна страница папки после ключа startAfter (относительного): подпапки и файлы
+   * в порядке ключей S3. Для слияния нескольких хранилищ (см. storages.js).
+   */
+  async listPage(folder, { startAfter, limit = 200 } = {}) {
+    const out = await this.send(new ListObjectsV2Command({
+      Bucket: this.bucket,
+      Prefix: this.abs(folder),
+      Delimiter: '/',
+      MaxKeys: limit,
+      StartAfter: startAfter ? this.abs(startAfter) : undefined,
+    }));
+    const folders = (out.CommonPrefixes ?? []).map((p) => this.rel(p.Prefix)).filter(isValidFolder);
+    // Маркер самой папки и посторонние объекты (не нашего формата) не показываем.
+    const files = (out.Contents ?? [])
+      .map((o) => ({ rel: this.rel(o.Key), size: o.Size ?? 0, lastModified: o.LastModified?.toISOString() ?? null }))
+      .filter((f) => isValidKey(f.rel));
+    return { folders, files, truncated: Boolean(out.IsTruncated) };
+  }
+
+  /** Обход всех объектов под относительным префиксом (статистика, рекурсивное удаление). */
+  async forEachObject(relPrefix, fn, { max = Infinity } = {}) {
+    let cursor;
+    let seen = 0;
+    do {
+      const out = await this.send(new ListObjectsV2Command({
+        Bucket: this.bucket, Prefix: this.abs(relPrefix), MaxKeys: 1000, ContinuationToken: cursor,
+      }));
+      for (const o of out.Contents ?? []) {
+        if (seen++ >= max) return false;
+        await fn({ rel: this.rel(o.Key), size: o.Size ?? 0, lastModified: o.LastModified?.toISOString() ?? null });
       }
+      cursor = out.IsTruncated ? out.NextContinuationToken : undefined;
+    } while (cursor);
+    return true;
+  }
+
+  async deleteMany(rels) {
+    for (let i = 0; i < rels.length; i += 1000) {
+      const out = await this.send(new DeleteObjectsCommand({
+        Bucket: this.bucket,
+        Delete: { Objects: rels.slice(i, i + 1000).map((r) => ({ Key: this.abs(r) })), Quiet: true },
+      }));
+      if (out.Errors?.length) {
+        const e = out.Errors[0];
+        throw Object.assign(new Error(`DeleteObjects: ${e.Code} ${e.Message}`), { $fault: 'server' });
+      }
+    }
+  }
+
+  /** Рекурсивное удаление папки пачками по 1000 — без накопления списка ключей в памяти. */
+  async deleteFolder(folder) {
+    let batch = [];
+    let deleted = 0;
+    const flush = async () => {
+      if (!batch.length) return;
+      await this.deleteMany(batch);
+      deleted += batch.length;
+      batch = [];
     };
-    await Promise.all(Array.from({ length: Math.min(COPY_CONCURRENCY, ranges.length) }, worker));
-    await completeMultipart(dstKey, uploadId, parts);
-  } catch (err) {
-    await abortMultipart(dstKey, uploadId).catch(() => {});
-    throw err;
+    await this.forEachObject(folder, async (o) => {
+      batch.push(o.rel);
+      if (batch.length >= 1000) await flush();
+    });
+    await flush();
+    return deleted;
+  }
+
+  putFolderMarker(folder) {
+    return this.send(new PutObjectCommand({ Bucket: this.bucket, Key: this.abs(folder), Body: new Uint8Array(0), ContentLength: 0 }));
+  }
+
+  headBucket() {
+    return this.send(new HeadBucketCommand({ Bucket: this.bucket }));
+  }
+
+  putCors(origin) {
+    return this.send(new PutBucketCorsCommand({ Bucket: this.bucket, CORSConfiguration: { CORSRules: corsRules(origin) } }));
+  }
+
+  async getCors() {
+    return (await this.send(new GetBucketCorsCommand({ Bucket: this.bucket }))).CORSRules ?? [];
+  }
+
+  presignPut(rel, contentType) {
+    return getSignedUrl(this.client,
+      new PutObjectCommand({ Bucket: this.bucket, Key: this.abs(rel), ContentType: contentType }),
+      { expiresIn: config.limits.uploadUrlTtlSec });
+  }
+
+  // По умолчанию — как вложение: HTML/SVG из бакета не исполнится в браузере.
+  // Для предпросмотра (inline) сервер обязан передать безопасный contentType из белого списка.
+  presignGet(rel, expiresIn, { inline = false, contentType } = {}) {
+    return getSignedUrl(this.client, new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: this.abs(rel),
+      ResponseContentDisposition: contentDisposition(nameFromKey(rel), inline ? 'inline' : 'attachment'),
+      ResponseContentType: contentType,
+    }), { expiresIn });
+  }
+
+  async headObject(rel) {
+    try {
+      return await this.send(new HeadObjectCommand({ Bucket: this.bucket, Key: this.abs(rel) }));
+    } catch (err) {
+      if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) return null;
+      throw err;
+    }
+  }
+
+  deleteObject(rel) {
+    return this.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: this.abs(rel) }));
+  }
+
+  async createMultipart(rel, contentType) {
+    const out = await this.send(new CreateMultipartUploadCommand({ Bucket: this.bucket, Key: this.abs(rel), ContentType: contentType }));
+    return out.UploadId;
+  }
+
+  presignPart(rel, uploadId, partNumber) {
+    return getSignedUrl(this.client,
+      new UploadPartCommand({ Bucket: this.bucket, Key: this.abs(rel), UploadId: uploadId, PartNumber: partNumber }),
+      { expiresIn: config.limits.uploadUrlTtlSec });
+  }
+
+  // ETag-и частей берём у самого S3 (ListParts), а не у клиента:
+  // так не нужно доверять данным из браузера и проще контролировать итоговый размер.
+  async listAllParts(rel, uploadId) {
+    const parts = [];
+    let marker;
+    do {
+      const out = await this.send(new ListPartsCommand({ Bucket: this.bucket, Key: this.abs(rel), UploadId: uploadId, PartNumberMarker: marker }));
+      for (const p of out.Parts ?? []) parts.push({ PartNumber: p.PartNumber, ETag: p.ETag, Size: p.Size ?? 0 });
+      marker = out.IsTruncated ? out.NextPartNumberMarker : undefined;
+    } while (marker);
+    return parts.sort((a, b) => a.PartNumber - b.PartNumber);
+  }
+
+  completeMultipart(rel, uploadId, parts) {
+    return this.send(new CompleteMultipartUploadCommand({
+      Bucket: this.bucket, Key: this.abs(rel), UploadId: uploadId,
+      MultipartUpload: { Parts: parts.map(({ PartNumber, ETag }) => ({ PartNumber, ETag })) },
+    }));
+  }
+
+  abortMultipart(rel, uploadId) {
+    return this.send(new AbortMultipartUploadCommand({ Bucket: this.bucket, Key: this.abs(rel), UploadId: uploadId }));
+  }
+
+  // CopySource должен быть URL-кодирован (кириллица, пробелы и т.п. в имени).
+  copySource(rel) {
+    return `${this.bucket}/${this.abs(rel).split('/').map(encodeURIComponent).join('/')}`;
+  }
+
+  /** Копирование внутри бакета: байты файла не проходят через VDS. */
+  async copyObject(srcRel, dstRel, size, contentType) {
+    if (size <= MAX_SINGLE_COPY) {
+      await this.send(new CopyObjectCommand({
+        Bucket: this.bucket, Key: this.abs(dstRel), CopySource: this.copySource(srcRel), MetadataDirective: 'COPY',
+      }));
+      return;
+    }
+    // Больше 5 ГБ — multipart-копирование диапазонами (UploadPartCopy).
+    const uploadId = await this.createMultipart(dstRel, contentType);
+    try {
+      const ranges = [];
+      for (let start = 0; start < size; start += COPY_PART_SIZE) ranges.push([start, Math.min(start + COPY_PART_SIZE, size) - 1]);
+      const parts = new Array(ranges.length);
+      let next = 0;
+      const worker = async () => {
+        while (next < ranges.length) {
+          const i = next++;
+          const out = await this.send(new UploadPartCopyCommand({
+            Bucket: this.bucket, Key: this.abs(dstRel), UploadId: uploadId, PartNumber: i + 1,
+            CopySource: this.copySource(srcRel), CopySourceRange: `bytes=${ranges[i][0]}-${ranges[i][1]}`,
+          }));
+          parts[i] = { PartNumber: i + 1, ETag: out.CopyPartResult?.ETag };
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(COPY_CONCURRENCY, ranges.length) }, worker));
+      await this.completeMultipart(dstRel, uploadId, parts);
+    } catch (err) {
+      await this.abortMultipart(dstRel, uploadId).catch(() => {});
+      throw err;
+    }
   }
 }

@@ -1,16 +1,20 @@
-// Ключи объектов в S3 и папки.
+// Ключи объектов и папки. Здесь всё ОТНОСИТЕЛЬНО папки хранилища (S3-префикса):
+// у каждого хранилища свой префикс, его добавляет класс Storage (s3.js).
 //
 // Папка — это S3-префикс, заканчивающийся на "/". Пустая папка хранится как
-// объект-маркер нулевой длины с ключом "<prefix><path>/" (общепринятое соглашение S3).
+// объект-маркер нулевой длины с ключом "<префикс хранилища><path>/".
 //
-// Файл:  <prefix><папка><время-по-убыванию>-<id>~<имя файла>
+// Файл:  <папка><время-по-убыванию>-<id>~<имя файла>
 //   - инвертированная метка времени даёт сортировку «новые сверху» прямо в ListObjectsV2;
 //   - 96 бит случайности делают ключ неугадываемым;
 //   - файл лежит одним сегментом прямо в папке, поэтому ListObjectsV2 с Delimiter="/"
-//     отдаёт файлы папки в Contents, а подпапки — в CommonPrefixes.
+//     отдаёт файлы папки в Contents, а подпапки — в CommonPrefixes;
+//   - формат одинаков во всех хранилищах, поэтому списки разных бакетов сливаются
+//     в один упорядоченный список простым слиянием.
+//
+// В API файл адресуется ссылкой «<id хранилища>:<ключ>» (см. formatRef/parseRef).
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { config } from './config.js';
 
 const MAX_TS = 9_999_999_999_999; // ~ год 2286
 const MAX_NAME_LENGTH = 180;
@@ -18,8 +22,6 @@ const MAX_FOLDER_SEGMENT = 100;
 const MAX_FOLDER_DEPTH = 20;
 const ID_LENGTH = 26; // 9 (время) + 1 + 16 (случайная часть)
 
-// S3_PREFIX можно сменить в настройках на лету — читаем при каждом обращении.
-const prefix = () => config.s3.prefix;
 const FILE_SEGMENT_RE = /^[0-9a-z]{9}-[A-Za-z0-9_-]{16}~[^/]+$/;
 // eslint-disable-next-line no-control-regex
 const UNSAFE_CHARS = '\\u0000-\\u001f\\u007f-\\u009f/\\\\:*?"<>|';
@@ -58,7 +60,7 @@ function isValidSegment(seg) {
   );
 }
 
-// Путь папки относительно S3_PREFIX: "" (корень) или "a/b/" — всегда со слешем на конце.
+// Путь папки: "" (корень) или "a/b/" — всегда со слешем на конце.
 export function isValidFolder(folder) {
   if (folder === '') return true;
   if (typeof folder !== 'string' || folder.length > 1000 || !folder.endsWith('/')) return false;
@@ -66,21 +68,16 @@ export function isValidFolder(folder) {
   return segments.length <= MAX_FOLDER_DEPTH && segments.every(isValidSegment);
 }
 
-export function folderToPrefix(folder) {
-  return prefix() + folder;
-}
-
 export function generateKey(fileName, folder = '') {
   const inverted = (MAX_TS - Date.now()).toString(36).padStart(9, '0');
   const random = crypto.randomBytes(12).toString('base64url');
-  return `${prefix()}${folder}${inverted}-${random}~${sanitizeFileName(fileName)}`;
+  return `${folder}${inverted}-${random}~${sanitizeFileName(fileName)}`;
 }
 
 // Любой ключ, пришедший от клиента, обязан пройти эту проверку —
 // иначе через API можно было бы удалить/скачать произвольный объект бакета.
-export function isValidKey(key) {
-  if (typeof key !== 'string' || key.length > 1200 || !key.startsWith(prefix())) return false;
-  const rel = key.slice(prefix().length);
+export function isValidKey(rel) {
+  if (typeof rel !== 'string' || rel.length > 1200) return false;
   const slash = rel.lastIndexOf('/');
   const folder = rel.slice(0, slash + 1);
   return FILE_SEGMENT_RE.test(rel.slice(slash + 1)) && isValidFolder(folder);
@@ -94,12 +91,35 @@ export function nameFromKey(key) {
 // сохраняется — файл остаётся на своём месте в сортировке «новые сверху».
 export function rebuildKey(key, { folder = folderFromKey(key), name = nameFromKey(key) } = {}) {
   const segment = key.slice(key.lastIndexOf('/') + 1);
-  return `${prefix()}${folder}${segment.slice(0, ID_LENGTH)}~${sanitizeFileName(name)}`;
+  return `${folder}${segment.slice(0, ID_LENGTH)}~${sanitizeFileName(name)}`;
 }
 
-export function folderFromKey(key) {
-  const rel = key.slice(prefix().length);
+export function folderFromKey(rel) {
   return rel.slice(0, rel.lastIndexOf('/') + 1);
+}
+
+// ---------- ссылки на файл в API: «<id хранилища>:<ключ>» ----------
+const STORAGE_ID_RE = /^[a-z0-9]{1,24}$/;
+export const isValidStorageId = (id) => typeof id === 'string' && STORAGE_ID_RE.test(id);
+
+export function formatRef(storageId, rel) {
+  return `${storageId}:${rel}`;
+}
+
+/** @returns {{storageId: string, rel: string} | null} */
+export function parseRef(ref) {
+  if (typeof ref !== 'string') return null;
+  const i = ref.indexOf(':');
+  if (i <= 0) return null;
+  const storageId = ref.slice(0, i);
+  const rel = ref.slice(i + 1);
+  return isValidStorageId(storageId) && isValidKey(rel) ? { storageId, rel } : null;
+}
+
+// Порядок ключей как в S3 (по байтам UTF-8), а не как у JS-строк (UTF-16):
+// нужен для точного слияния постраничных списков разных хранилищ.
+export function compareKeys(a, b) {
+  return Buffer.compare(Buffer.from(a), Buffer.from(b));
 }
 
 const MIME_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,127}$/i;

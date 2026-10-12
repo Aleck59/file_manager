@@ -1,11 +1,15 @@
 import { config, onConfigChange } from '../config.js';
 
-// Origin-ы S3, к которым браузеру разрешено обращаться (CSP connect-src и т.д.).
+// Origin-ы всех хранилищ S3, к которым браузеру разрешено обращаться (CSP connect-src и т.д.).
 // Покрываем и path-style (endpoint/bucket), и virtual-hosted-style (bucket.endpoint).
 function s3Origins() {
-  if (!config.s3.endpoint) return [];
-  const url = new URL(config.s3.endpoint);
-  return [url.origin, ...(config.s3.bucket ? [`${url.protocol}//${config.s3.bucket}.${url.host}`] : [])];
+  const out = new Set();
+  for (const st of config.storages) {
+    const url = new URL(st.endpoint);
+    out.add(url.origin);
+    out.add(`${url.protocol}//${st.bucket}.${url.host}`);
+  }
+  return [...out];
 }
 
 // Заголовки безопасности (то, что раньше делал helmet, без лишней зависимости).
@@ -45,7 +49,7 @@ function buildHeaders() {
 }
 buildHeaders();
 onConfigChange((changed) => {
-  if (changed.some((k) => k === 'APP_ORIGIN' || k === 'S3_ENDPOINT' || k === 'S3_BUCKET')) buildHeaders();
+  if (changed.some((k) => k === 'APP_ORIGIN' || k === 'STORAGES')) buildHeaders();
 });
 
 export function securityHeaders(req, res, next) {
@@ -102,6 +106,10 @@ export class HttpError extends Error {
 export function errorHandler(err, req, res, next) {
   if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
   if (err.code === 'S3_NOT_CONFIGURED') return res.status(503).json({ error: err.message, code: err.code });
+  // Наши собственные ошибки со статусом (не ответы S3): 400/404/507 и т.п.
+  if (Number.isInteger(err.status) && err.status >= 400 && err.status < 600 && !err.$metadata) {
+    return res.status(err.status).json({ error: err.message });
+  }
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Некорректный JSON' });
   if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Слишком большой запрос' });
 

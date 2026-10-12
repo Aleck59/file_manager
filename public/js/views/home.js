@@ -78,6 +78,36 @@ function breakdown(stats) {
   return h('div', {}, bar, legend);
 }
 
+// Заполненность хранилищ: полоса (если задана квота) + подписи с числами.
+function storagesUsage(list, ctx) {
+  const pct = (s) => (s.quota ? Math.min(100, (s.size / s.quota) * 100) : null);
+  return h('ul', { class: 'grid gap-4 sm:grid-cols-2' }, list.map((s) => {
+    const p = pct(s);
+    const tone = p === null ? '' : p >= 90 ? 'bg-rose-500' : p >= 75 ? 'bg-amber-500' : 'bg-brand-500';
+    const status = s.error
+      ? h('span', { class: 'badge bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300', title: s.error }, 'недоступно')
+      : !s.acceptUploads
+        ? h('span', { class: 'badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300' }, 'только чтение')
+        : h('span', { class: 'badge bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300' }, 'принимает файлы');
+    let bar = null;
+    if (p !== null) {
+      const fill = h('div', { class: `h-full rounded-full ${tone}` });
+      fill.style.width = `${Math.max(p, 1)}%`;
+      bar = h('div', { class: 'mt-2 h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800', role: 'meter',
+        'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(Math.round(p)), 'aria-label': `${s.name}: занято ${Math.round(p)}%` }, fill);
+    }
+    return h('li', { class: 'rounded-xl border border-slate-200 p-4 dark:border-slate-800' },
+      h('div', { class: 'flex items-center justify-between gap-3' },
+        h('span', { class: 'flex min-w-0 items-center gap-2 font-medium' }, icon('server', 'h-4 w-4 text-slate-400'), h('span', { class: 'truncate' }, s.name)),
+        status),
+      bar,
+      h('p', { class: 'mt-2 text-sm text-slate-500 dark:text-slate-400' },
+        h('span', { class: 'font-medium tabular-nums text-slate-800 dark:text-slate-200' }, formatSize(s.size)),
+        s.quota ? ` из ${formatSize(s.quota)} · ${Math.round(p)}%` : ' · без квоты',
+        ` · ${pluralize(s.files, FILES)}${s.complete ? '' : '+'}`));
+  }));
+}
+
 export function mountHome(view, ctx) {
   ctx.setHeader(h('h1', { class: 'truncate text-base font-semibold' }, 'Главная'), ctx.can('editor')
     ? [h('button', { type: 'button', class: 'btn-primary', onclick: () => ctx.pickFiles('') }, icon('upload'), h('span', { class: 'hidden sm:inline' }, 'Загрузить'))]
@@ -87,6 +117,7 @@ export function mountHome(view, ctx) {
     [1, 2, 3, 4].map(() => h('div', { class: 'card h-[6.5rem] animate-pulse' })));
   const structure = h('div', { class: 'h-24 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800' });
   const recent = h('ul', { class: 'divide-y divide-slate-100 dark:divide-slate-800' });
+  const storagesList = h('div', { class: 'h-16 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800' });
 
   view.replaceChildren(h('div', { class: 'mx-auto max-w-6xl space-y-6 p-4 sm:p-6' },
     h('div', {},
@@ -104,7 +135,15 @@ export function mountHome(view, ctx) {
             h('h3', { class: 'font-semibold' }, 'Недавние файлы'),
             h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Последние загрузки на диск')),
           h('a', { href: diskHash(''), class: 'text-sm font-medium text-brand-600 hover:underline dark:text-brand-400' }, 'Открыть диск')),
-        recent))));
+        recent)),
+    h('section', { class: 'card p-5' },
+      h('div', { class: 'mb-4 flex items-end justify-between gap-4' },
+        h('div', {},
+          h('h3', { class: 'font-semibold' }, 'Хранилища'),
+          h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' },
+            ctx.storages.length > 1 ? `${ctx.storages.length} S3-хранилища объединены в один диск` : 'Где физически лежат файлы')),
+        ctx.can('admin') && h('a', { href: '#/settings', class: 'text-sm font-medium text-brand-600 hover:underline dark:text-brand-400' }, 'Управлять')),
+      storagesList)));
 
   let alive = true;
   if (!ctx.storageConfigured) {
@@ -126,6 +165,7 @@ export function mountHome(view, ctx) {
           ? statTile('Пользователи', usersCount.toLocaleString('ru-RU'), null, 'users')
           : statTile('Ваша роль', ctx.roleLabel(ctx.user.role), null, 'key'));
       structure.replaceWith(breakdown(stats));
+      storagesList.replaceWith(storagesUsage(stats.storages, ctx));
 
       if (!stats.recent.length) {
         recent.replaceChildren(h('li', { class: 'px-5 py-10 text-center text-sm text-slate-500 dark:text-slate-400' }, 'Файлов пока нет'));

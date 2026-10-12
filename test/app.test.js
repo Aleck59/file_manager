@@ -38,10 +38,27 @@ test('новые ключи сортируются раньше старых', a
 });
 
 test('isValidKey отклоняет чужие и опасные ключи', () => {
-  for (const key of ['secret/file', 'uploads/../x', 'uploads/abc~x', 'uploads/', '', null,
-    'uploads/../2wqsre1rt-OVWOwbIfUMkMzvVC~a', 'other/2wqsre1rt-OVWOwbIfUMkMzvVC~a']) {
+  for (const key of ['secret/file', '../x', 'abc~x', 'a/', '', null,
+    '../2wqsre1rt-OVWOwbIfUMkMzvVC~a', 'a/../2wqsre1rt-OVWOwbIfUMkMzvVC~a']) {
     assert.equal(keys.isValidKey(key), false, String(key));
   }
+  assert.equal(keys.isValidKey('Документы/2wqsre1rt-OVWOwbIfUMkMzvVC~a.txt'), true);
+});
+
+test('ссылки на файл: «<хранилище>:<ключ>»', () => {
+  const rel = keys.generateKey('a.txt', 'x/');
+  const ref = keys.formatRef('main', rel);
+  assert.deepEqual(keys.parseRef(ref), { storageId: 'main', rel });
+  for (const bad of [rel, `:${rel}`, `Main:${rel}`, `a b:${rel}`, 'main:../x', 'main:', null, `${'a'.repeat(30)}:${rel}`]) {
+    assert.equal(keys.parseRef(bad), null, String(bad));
+  }
+});
+
+test('compareKeys: порядок как в S3 (байты UTF-8)', () => {
+  // U+FF5E (BMP) > U+1F600 по UTF-16, но < по UTF-8 — как сортирует S3.
+  assert.ok(keys.compareKeys('\uFF5E', '\u{1F600}') < 0);
+  assert.ok('\uFF5E' > '\u{1F600}');
+  assert.ok(keys.compareKeys('Документы/', 'Фото/') < 0);
 });
 
 test('isValidFolder', () => {
@@ -130,33 +147,33 @@ test('настройки: проверка значений', () => {
   assert.throws(() => cfg.parseField('PORT', '70000'), /PORT/);
   assert.equal(cfg.parseField('APP_ORIGIN', 'https://files.example.com/path/'), 'https://files.example.com');
   assert.throws(() => cfg.parseField('APP_ORIGIN', 'ftp://x'), /http/);
-  assert.equal(cfg.parseField('S3_PREFIX', '/files/'), 'files/');
-  assert.throws(() => cfg.parseField('S3_PREFIX', 'a/../'), /S3_PREFIX/);
-  assert.throws(() => cfg.parseField('S3_PREFIX', 'no-slash'), /S3_PREFIX/);
-  assert.equal(cfg.parseField('S3_FORCE_PATH_STYLE', 'false'), false);
-  assert.equal(cfg.parseField('S3_REGION', ''), 'us-east-1', 'пустое — значение по умолчанию');
+  const prefix = cfg.STORAGE_FIELDS.prefix;
+  assert.equal(cfg.parseField('prefix', '/files/', prefix), 'files/');
+  assert.throws(() => cfg.parseField('prefix', 'a/../', prefix), /prefix/);
+  assert.throws(() => cfg.parseField('prefix', 'no-slash', prefix), /prefix/);
+  assert.equal(cfg.parseField('x', 'false', cfg.STORAGE_FIELDS.forcePathStyle), false);
+  assert.equal(cfg.parseField('x', '', cfg.STORAGE_FIELDS.region), 'us-east-1', 'пустое — значение по умолчанию');
 });
 
 test('настройки: изменение из интерфейса применяется сразу и сбрасывается к .env', () => {
   const seen = [];
   const off = cfg.onConfigChange((keys) => seen.push(...keys));
-  cfg.updateSettings({ MAX_FILE_SIZE_MB: '10', S3_REGION: 'ru-central-1' });
+  cfg.updateSettings({ MAX_FILE_SIZE_MB: '10', SESSION_TTL_HOURS: '24' });
   assert.equal(cfg.config.limits.maxFileSize, 10 * 1024 * 1024);
-  assert.equal(cfg.config.s3.region, 'ru-central-1');
-  assert.deepEqual(seen.sort(), ['MAX_FILE_SIZE_MB', 'S3_REGION']);
+  assert.equal(cfg.config.auth.sessionTtlSec, 24 * 3600);
+  assert.deepEqual(seen.sort(), ['MAX_FILE_SIZE_MB', 'SESSION_TTL_HOURS']);
   const desc = Object.fromEntries(cfg.describeSettings().map((f) => [f.key, f]));
   assert.equal(desc.MAX_FILE_SIZE_MB.source, 'ui');
-  assert.equal(desc.S3_SECRET_KEY.value, null, 'секрет не раскрывается');
-  assert.equal(desc.S3_SECRET_KEY.isSet, true);
+  assert.equal(desc.SESSION_SECRET.value, null, 'секрет не раскрывается');
+  assert.equal(desc.SESSION_SECRET.isSet, true);
   // значение, совпадающее с .env, снимает переопределение
-  cfg.updateSettings({ S3_BUCKET: 'bucket' });
-  assert.equal(Object.fromEntries(cfg.describeSettings().map((f) => [f.key, f.source])).S3_BUCKET, 'env');
-  cfg.resetSettings(['MAX_FILE_SIZE_MB', 'S3_REGION']);
+  cfg.updateSettings({ SESSION_TTL_HOURS: '12' });
+  assert.equal(Object.fromEntries(cfg.describeSettings().map((f) => [f.key, f.source])).SESSION_TTL_HOURS, 'default');
+  cfg.resetSettings(['MAX_FILE_SIZE_MB']);
   assert.equal(cfg.config.limits.maxFileSize, 5120 * 1024 * 1024);
-  assert.equal(cfg.config.s3.region, 'us-east-1');
   // пустой секрет — «не менять»; некорректное значение — ошибка, ничего не меняется
-  cfg.updateSettings({ S3_SECRET_KEY: '' });
-  assert.equal(cfg.config.s3.secretAccessKey, 'b');
+  cfg.updateSettings({ SESSION_SECRET: '' });
+  assert.equal(cfg.config.auth.sessionSecret, 'x'.repeat(32));
   assert.throws(() => cfg.updateSettings({ PORT: 'abc', MAX_FILE_SIZE_MB: '7' }), /PORT/);
   assert.equal(cfg.config.limits.maxFileSize, 5120 * 1024 * 1024);
   // HOST/PORT требуют перезапуска
@@ -170,6 +187,82 @@ test('настройки: секрет сессий создаётся авто�
   assert.ok(cfg.config.auth.sessionSecret.length >= 32);
   const mode = fs.statSync(cfg.settingsFilePath()).mode & 0o777;
   assert.equal(mode, 0o600);
+});
+
+// ---------- хранилища ----------
+test('хранилища: первое создаётся из S3_* в .env, секрет не раскрывается', () => {
+  assert.equal(cfg.config.storages.length, 1);
+  const main = cfg.config.storages[0];
+  assert.deepEqual([main.id, main.name, main.bucket, main.prefix], ['main', 'Основное', 'bucket', 'uploads/']);
+  const pub = cfg.publicStorage(main);
+  assert.equal(pub.secretAccessKey, undefined);
+  assert.equal(pub.hasSecret, true);
+});
+
+test('хранилища: добавление, изменение (пустой секрет — прежний), порядок, удаление', () => {
+  const seen = [];
+  const off = cfg.onConfigChange((k) => seen.push(...k));
+  assert.throws(() => cfg.addStorage({ name: 'X' }), /обязательное/);
+  const second = cfg.addStorage({ name: 'Cloud.ru', endpoint: 'https://s3.cloud.ru', region: 'ru-central-1',
+    bucket: 'b2', accessKeyId: 'tenant:key', secretAccessKey: 's2', quotaGb: '100' });
+  assert.match(second.id, /^[a-z0-9]{1,24}$/);
+  assert.equal(second.quotaGb, 100);
+  assert.equal(second.acceptUploads, true);
+  const upd = cfg.updateStorage(second.id, { name: 'Cloud.ru архив', secretAccessKey: '', acceptUploads: false });
+  assert.equal(upd.secretAccessKey, 's2', 'пустой секрет — оставить прежний');
+  assert.equal(upd.acceptUploads, false);
+  assert.equal(upd.bucket, 'b2');
+  cfg.reorderStorages([second.id, 'main']);
+  assert.deepEqual(cfg.config.storages.map((s) => s.id), [second.id, 'main']);
+  assert.throws(() => cfg.reorderStorages(['main']), /порядок/);
+  cfg.setPlacement('balance');
+  assert.equal(cfg.config.placement, 'balance');
+  assert.throws(() => cfg.setPlacement('random'), /политика/);
+  cfg.removeStorage(second.id);
+  cfg.setPlacement('fill');
+  assert.deepEqual(cfg.config.storages.map((s) => s.id), ['main']);
+  assert.ok(seen.includes('STORAGES'));
+  const saved = JSON.parse(fs.readFileSync(cfg.settingsFilePath(), 'utf8'));
+  assert.equal(saved.storages.length, 1);
+  off();
+});
+
+const reg = await import('../src/storages.js');
+
+test('единый диск: слияние страниц разных хранилищ — точный порядок и курсор', () => {
+  const A = { id: 'a' }; const B = { id: 'b' };
+  const f = (rel) => ({ rel, size: 1, lastModified: null });
+  // ключи файлов сортируются «новые сверху»; папки — по имени; у обоих хранилищ есть «Фото/»
+  const pages = [
+    { st: A, page: { folders: ['Фото/'], files: [f('1~a'), f('3~c'), f('5~e')], truncated: true } },
+    { st: B, page: { folders: ['Документы/', 'Фото/'], files: [f('2~b'), f('4~d')], truncated: false } },
+  ];
+  const p1 = reg.mergePages(pages, { limit: 4 });
+  assert.deepEqual(p1.files.map((x) => `${x.st.id}:${x.rel}`), ['a:1~a', 'b:2~b', 'a:3~c', 'b:4~d']);
+  assert.equal(p1.nextCursor, '4~d');
+  assert.equal(p1.folders.length, 0, 'папки (кириллица) по байтам идут после цифр');
+  // следующая страница: StartAfter = курсор; дубль папки, совпадающий с курсором, отбрасывается
+  const p2 = reg.mergePages([
+    { st: A, page: { folders: ['Фото/'], files: [f('5~e')], truncated: false } },
+    { st: B, page: { folders: ['Документы/', 'Фото/'], files: [], truncated: false } },
+  ], { cursor: '4~d', limit: 4 });
+  assert.deepEqual(p2.files.map((x) => x.rel), ['5~e']);
+  assert.deepEqual(p2.folders.map((x) => x.name), ['Документы', 'Фото'], 'одинаковые папки — одна');
+  assert.equal(p2.nextCursor, null);
+});
+
+test('единый диск: выбор хранилища для нового файла', () => {
+  const GB = 1024 ** 3;
+  const c = [
+    { id: 'a', quota: 10 * GB, used: 9.5 * GB, acceptUploads: true },
+    { id: 'b', quota: 0, used: 50 * GB, acceptUploads: true },
+    { id: 'c', quota: 100 * GB, used: 1 * GB, acceptUploads: true },
+    { id: 'd', quota: 0, used: 0, acceptUploads: false },
+  ];
+  assert.equal(reg.choosePlacement(c, 0.1 * GB, 'fill').id, 'a', 'по порядку: первое с местом');
+  assert.equal(reg.choosePlacement(c, 1 * GB, 'fill').id, 'b', 'в «a» не помещается');
+  assert.equal(reg.choosePlacement(c, 1 * GB, 'balance').id, 'c', 'наименьшая заполненность');
+  assert.equal(reg.choosePlacement([c[0], c[3]], 1 * GB, 'fill'), null, 'места нет нигде');
 });
 
 // ---------- HTTP-слой ----------

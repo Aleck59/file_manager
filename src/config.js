@@ -6,7 +6,11 @@
 //   3. изменения из интерфейса администратора — data/settings.json.
 //
 // Большинство настроек применяется сразу (config обновляется на месте, подписчики
-// onConfigChange пересоздают S3-клиент и т.п.). HOST и PORT требуют перезапуска.
+// onConfigChange пересоздают S3-клиенты и т.п.). HOST и PORT требуют перезапуска.
+//
+// Хранилища S3 (их может быть несколько — они образуют единый диск) хранятся списком
+// в data/settings.json. Переменные S3_* из .env используются только при первом запуске,
+// чтобы создать первое хранилище «Основное».
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,23 +34,29 @@ export const FIELDS = {
   SESSION_TTL_HOURS: { section: 'security', type: 'int', default: 12, min: 1, max: 720, apply: 'live' },
   SESSION_SECRET: { section: 'security', type: 'secret', minLength: 32, apply: 'live' },
 
-  S3_ENDPOINT: { section: 's3', type: 'url', apply: 'live' },
-  S3_REGION: { section: 's3', type: 'string', default: 'us-east-1', apply: 'live' },
-  S3_BUCKET: { section: 's3', type: 'string', apply: 'live' },
-  S3_ACCESS_KEY: { section: 's3', type: 'string', apply: 'live' },
-  S3_SECRET_KEY: { section: 's3', type: 'secret', apply: 'live' },
-  S3_FORCE_PATH_STYLE: { section: 's3', type: 'bool', default: true, apply: 'live' },
-  S3_PREFIX: { section: 's3', type: 'prefix', default: 'uploads/', apply: 'live' },
-
   MAX_FILE_SIZE_MB: { section: 'limits', type: 'int', default: 5120, min: 1, max: 5 * 1024 * 1024, apply: 'live' },
   MULTIPART_THRESHOLD_MB: { section: 'limits', type: 'int', default: 64, min: 5, max: 5120, apply: 'live' },
   MULTIPART_PART_SIZE_MB: { section: 'limits', type: 'int', default: 16, min: 5, max: 5120, apply: 'live' },
   UPLOAD_URL_TTL_MIN: { section: 'limits', type: 'int', default: 60, min: 1, max: 7 * 24 * 60, apply: 'live' },
 };
 
+// Поля одного хранилища S3 (и соответствующие переменные .env для первого запуска).
+export const STORAGE_FIELDS = {
+  name: { type: 'string', label: 'Название', maxLength: 60 },
+  endpoint: { type: 'url', label: 'Адрес (endpoint)', env: 'S3_ENDPOINT', required: true },
+  region: { type: 'string', label: 'Регион', default: 'us-east-1', env: 'S3_REGION' },
+  bucket: { type: 'string', label: 'Бакет', env: 'S3_BUCKET', required: true },
+  accessKeyId: { type: 'string', label: 'Access Key ID', env: 'S3_ACCESS_KEY', required: true },
+  secretAccessKey: { type: 'secret', label: 'Secret Access Key', env: 'S3_SECRET_KEY', required: true },
+  forcePathStyle: { type: 'bool', label: 'Path-style', default: true, env: 'S3_FORCE_PATH_STYLE' },
+  prefix: { type: 'prefix', label: 'Папка в бакете', default: 'uploads/', env: 'S3_PREFIX' },
+  quotaGb: { type: 'int', label: 'Квота, ГБ', default: 0, min: 0, max: 1_000_000 },
+  acceptUploads: { type: 'bool', label: 'Принимать новые файлы', default: true },
+};
+export const PLACEMENTS = ['fill', 'balance'];
+
 /** Приводит и проверяет значение поля. Бросает Error с понятным текстом. */
-export function parseField(key, raw) {
-  const f = FIELDS[key];
+export function parseField(key, raw, f = FIELDS[key]) {
   if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) {
     if (f.default !== undefined) return f.default;
     return null;
@@ -80,7 +90,7 @@ export function parseField(key, raw) {
       if (f.minLength && str.length < f.minLength) throw new Error(`${key}: не короче ${f.minLength} символов`);
       return str;
     default:
-      if (str.length > 512) throw new Error(`${key}: слишком длинное значение`);
+      if (str.length > (f.maxLength ?? 512)) throw new Error(`${key}: слишком длинное значение`);
       return str;
   }
 }
@@ -98,12 +108,19 @@ for (const key of Object.keys(FIELDS)) {
 const dataDir = path.resolve(ROOT, process.env.DATA_DIR || 'data');
 const settingsFile = path.join(dataDir, 'settings.json');
 
-// ---------- переопределения из интерфейса ----------
+// ---------- переопределения и хранилища из интерфейса ----------
 let overrides = {};
+let storages = null; // null — список ещё не создавался (первый запуск или старая версия)
+let placement = 'fill';
+const legacyS3 = {}; // S3_* из settings.json прошлой версии (одно хранилище) — для переноса
 if (fs.existsSync(settingsFile)) {
   try {
-    const raw = JSON.parse(fs.readFileSync(settingsFile, 'utf8')).overrides ?? {};
+    const file = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    if (Array.isArray(file.storages)) storages = file.storages;
+    if (PLACEMENTS.includes(file.placement)) placement = file.placement;
+    const raw = file.overrides ?? {};
     for (const [key, value] of Object.entries(raw)) {
+      if (key.startsWith('S3_')) { legacyS3[key] = value; continue; }
       if (!FIELDS[key]) continue;
       try {
         overrides[key] = parseField(key, value);
@@ -120,8 +137,52 @@ function persist() {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const tmp = `${settingsFile}.${process.pid}.tmp`;
   // В файле есть секреты (ключ S3, секрет сессий) — доступ только владельцу.
-  fs.writeFileSync(tmp, JSON.stringify({ overrides }, null, 2), { mode: 0o600 });
+  fs.writeFileSync(tmp, JSON.stringify({ overrides, storages, placement }, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, settingsFile);
+}
+
+// ---------- хранилища ----------
+const newStorageId = () => crypto.randomBytes(5).toString('hex').slice(0, 8);
+
+/**
+ * Проверяет описание хранилища. Пустой секрет означает «оставить прежний» (existing).
+ * @returns {object} нормализованное описание
+ */
+export function parseStorageDef(input, existing = null) {
+  const def = { id: existing?.id ?? newStorageId() };
+  const errors = [];
+  for (const [key, f] of Object.entries(STORAGE_FIELDS)) {
+    let raw = input?.[key];
+    if (raw === undefined && existing) raw = existing[key];
+    if (f.type === 'secret' && (raw === undefined || raw === null || raw === '') && existing) raw = existing[key];
+    try {
+      const value = parseField(f.label, raw, f);
+      if (f.required && (value === null || value === '')) throw new Error(`${f.label}: обязательное поле`);
+      def[key] = value;
+    } catch (err) {
+      errors.push(err.message);
+    }
+  }
+  if (!def.name) def.name = def.bucket || 'Хранилище';
+  if (errors.length) throw Object.assign(new Error(errors.join('; ')), { status: 400 });
+  return def;
+}
+
+// Первый запуск или обновление со старой версии: одно хранилище из .env / прежних настроек.
+if (storages === null) {
+  const seed = {};
+  for (const [key, f] of Object.entries(STORAGE_FIELDS)) {
+    if (f.env) seed[key] = legacyS3[f.env] ?? process.env[f.env];
+  }
+  storages = [];
+  if (seed.endpoint && seed.bucket && seed.accessKeyId && seed.secretAccessKey) {
+    try {
+      storages.push({ ...parseStorageDef({ ...seed, name: 'Основное' }), id: 'main' });
+    } catch (err) {
+      throw new Error(`Ошибка в параметрах S3 (.env): ${err.message}`);
+    }
+  }
+  if (fs.existsSync(settingsFile) || storages.length) persist();
 }
 
 // Секрет сессий генерируется автоматически, если не задан ни в .env, ни ранее.
@@ -148,7 +209,8 @@ export const config = {
     bootstrapPasswordHash,
   },
   limits: {},
-  s3: {},
+  storages: [],
+  placement: 'fill',
 };
 
 function apply(v) {
@@ -161,16 +223,9 @@ function apply(v) {
   config.port = v.PORT;
   config.auth.sessionSecret = v.SESSION_SECRET;
   config.auth.sessionTtlSec = v.SESSION_TTL_HOURS * 3600;
-  config.s3 = {
-    endpoint: v.S3_ENDPOINT,
-    region: v.S3_REGION,
-    bucket: v.S3_BUCKET,
-    accessKeyId: v.S3_ACCESS_KEY,
-    secretAccessKey: v.S3_SECRET_KEY,
-    forcePathStyle: v.S3_FORCE_PATH_STYLE,
-    prefix: v.S3_PREFIX,
-  };
-  config.s3Configured = Boolean(v.S3_ENDPOINT && v.S3_BUCKET && v.S3_ACCESS_KEY && v.S3_SECRET_KEY);
+  config.storages = storages;
+  config.placement = placement;
+  config.s3Configured = storages.length > 0;
   config.limits = {
     maxFileSize: v.MAX_FILE_SIZE_MB * MB,
     // Файлы больше порога грузятся multipart-ом (частями), меньше — одним PUT.
@@ -260,4 +315,59 @@ export function describeSettings() {
 
 export function settingsFilePath() {
   return settingsFile;
+}
+
+// ---------- управление хранилищами ----------
+function storagesChanged() {
+  apply(effective());
+  persist();
+  for (const fn of listeners) fn(['STORAGES']);
+}
+
+/** Описание хранилища для интерфейса: без секретного ключа. */
+export function publicStorage(def) {
+  const { secretAccessKey, ...rest } = def;
+  return { ...rest, hasSecret: Boolean(secretAccessKey) };
+}
+
+export function findStorageDef(id) {
+  return storages.find((s) => s.id === id) ?? null;
+}
+
+export function addStorage(input) {
+  const def = parseStorageDef(input);
+  while (findStorageDef(def.id)) def.id = newStorageId();
+  storages = [...storages, def];
+  storagesChanged();
+  return def;
+}
+
+export function updateStorage(id, input) {
+  const existing = findStorageDef(id);
+  if (!existing) throw Object.assign(new Error('Хранилище не найдено'), { status: 404 });
+  const def = parseStorageDef(input, existing);
+  storages = storages.map((s) => (s.id === id ? def : s));
+  storagesChanged();
+  return def;
+}
+
+export function removeStorage(id) {
+  if (!findStorageDef(id)) throw Object.assign(new Error('Хранилище не найдено'), { status: 404 });
+  storages = storages.filter((s) => s.id !== id);
+  storagesChanged();
+}
+
+/** Новый порядок хранилищ (важен для политики «заполнять по порядку»). */
+export function reorderStorages(ids) {
+  if (!Array.isArray(ids) || ids.length !== storages.length || !storages.every((s) => ids.includes(s.id))) {
+    throw Object.assign(new Error('Некорректный порядок хранилищ'), { status: 400 });
+  }
+  storages = ids.map((id) => findStorageDef(id));
+  storagesChanged();
+}
+
+export function setPlacement(value) {
+  if (!PLACEMENTS.includes(value)) throw Object.assign(new Error('Неизвестная политика размещения'), { status: 400 });
+  placement = value;
+  storagesChanged();
 }

@@ -34,7 +34,12 @@ authRouter.post('/logout', (req, res) => {
 });
 
 authRouter.get('/me', requireAuth, (req, res) => {
-  res.json({ user: publicUser(req.user), storageConfigured: config.s3Configured });
+  res.json({
+    user: publicUser(req.user),
+    storageConfigured: config.s3Configured,
+    // Названия хранилищ единого диска (без параметров подключения).
+    storages: config.storages.map((s) => ({ id: s.id, name: s.name })),
+  });
 });
 
 // Смена собственного пароля. После неё выдаём новую cookie — старые сессии

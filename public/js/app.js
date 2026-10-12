@@ -33,6 +33,13 @@ const ctx = {
   newFolderHere: null,
   storageConfigured: true,
   setStorageConfigured,
+  // Хранилища единого диска: [{id, name}]. Названия показываются, только если их больше одного.
+  storages: [],
+  storageName: (id) => ctx.storages.find((s) => s.id === id)?.name ?? id,
+  setStorages(list) {
+    ctx.storages = list.map(({ id, name }) => ({ id, name }));
+    setStorageConfigured(list.length > 0);
+  },
 };
 
 // Пока администратор не указал хранилище S3 — баннер и никаких запросов к нему.
@@ -44,7 +51,7 @@ function setStorageConfigured(value) {
   banner.classList.toggle('flex', !value);
   if (!value) {
     banner.replaceChildren(icon('alert'), h('span', { class: 'flex-1' },
-      ctx.can('admin') ? 'Хранилище S3 не настроено — файлы пока недоступны.' : 'Хранилище файлов ещё не настроено. Обратитесь к администратору.'),
+      ctx.can('admin') ? 'Не подключено ни одного хранилища S3 — файлы пока недоступны.' : 'Хранилище файлов ещё не настроено. Обратитесь к администратору.'),
     ctx.can('admin') && h('a', { href: '#/settings', class: 'font-medium underline' }, 'Настроить'));
   }
   if (value && !was) {
@@ -254,6 +261,7 @@ async function start() {
     const me = await api.me();
     ctx.user = me.user;
     ctx.storageConfigured = me.storageConfigured;
+    ctx.storages = me.storages ?? [];
   } catch {
     return; // при 401 api сам перенаправит на /login
   }

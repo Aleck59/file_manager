@@ -152,7 +152,8 @@ export async function showPreview(file, { folder, onDelete, onRename, onMove }) 
       metaRow('Размер', formatSize(info.size)),
       metaRow('Тип', info.contentType),
       metaRow('Изменён', formatDate(info.lastModified)),
-      metaRow('Расположение', folderLabel(folder))),
+      metaRow('Расположение', folderLabel(folder)),
+      info.storage && metaRow('Хранилище', info.storage.name)),
   );
 
   async function download() {

@@ -3,7 +3,7 @@
 // в data/settings.json. Секреты в браузер не передаются — их можно только заменить.
 import { api } from '../api.js';
 import { detectPreset, S3_PRESETS } from '../s3-presets.js';
-import { confirmDialog, h, icon, openDialog, toast } from '../ui.js';
+import { confirmDialog, FILES, formatSize, h, icon, openDialog, pluralize, toast } from '../ui.js';
 
 const SOURCE = {
   env: ['.env', 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300', 'Значение из файла .env'],
@@ -94,7 +94,7 @@ export function adminSettings(ctx) {
 
   function applyResult(res, message) {
     data = res;
-    ctx.setStorageConfigured?.(res.s3Configured);
+    ctx.setStorages?.(res.storages);
     render();
     if (message) toast(message, 'success');
   }
@@ -115,115 +115,226 @@ export function adminSettings(ctx) {
 
   function render() {
     const f = Object.fromEntries(data.fields.map((x) => [x.key, x]));
-    root.replaceChildren(storageCard(f), limitsCard(f), appCard(f), infoCard());
+    root.replaceChildren(storagesCard(), limitsCard(f), appCard(f), infoCard());
   }
 
-  // ---------- Хранилище S3 ----------
-  function storageCard(f) {
-    const fields = {
-      endpoint: settingField(f.S3_ENDPOINT, { label: 'Адрес (endpoint)', placeholder: 'https://s3.example.com', wide: true, onReset: reset, inputType: 'url' }),
-      region: settingField(f.S3_REGION, { label: 'Регион', onReset: reset }),
-      bucket: settingField(f.S3_BUCKET, { label: 'Бакет', placeholder: 'my-bucket', onReset: reset }),
-      access: settingField(f.S3_ACCESS_KEY, { label: 'Access Key ID', onReset: reset }),
-      secret: settingField(f.S3_SECRET_KEY, { label: 'Secret Access Key', onReset: reset }),
-      prefix: settingField(f.S3_PREFIX, { label: 'Папка в бакете', hint: 'Все файлы хранятся под этим префиксом, например uploads/. Пусто — корень бакета. Смена префикса показывает другой набор файлов.', onReset: reset }),
-      pathStyle: settingField(f.S3_FORCE_PATH_STYLE, { label: 'Адресация', hint: 'Path-style (endpoint/бакет) — нужна большинству S3-совместимых хранилищ', onReset: reset }),
-    };
-    const all = Object.values(fields);
+  // ---------- Хранилища (единый диск) ----------
+  function storagesCard() {
+    const list = data.storages;
+    const usage = h('div');
+    const placementSelect = h('select', { id: 'set-placement', class: 'input', disabled: list.length < 2,
+      onchange: async () => {
+        try {
+          applyResult(await api.setPlacement(placementSelect.value), 'Политика размещения сохранена');
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      } },
+    h('option', { value: 'fill', selected: data.placement === 'fill' }, 'По порядку — заполнять хранилища по очереди (с учётом квот)'),
+    h('option', { value: 'balance', selected: data.placement === 'balance' }, 'Балансировка — в наименее заполненное хранилище'));
 
-    // Провайдер: подставляет endpoint, регион и адресацию.
-    const hintBox = h('div', { class: 'hidden rounded-xl bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:bg-sky-950/50 dark:text-sky-200' });
+    const stats = {};
+    if (list.length) {
+      api.stats().then((s) => {
+        for (const x of s.storages ?? []) stats[x.id] = x;
+        for (const el of usage.closest('section')?.querySelectorAll('[data-usage]') ?? []) {
+          const x = stats[el.dataset.usage];
+          if (!x) continue;
+          el.textContent = x.error ? `недоступно: ${x.error}`
+            : `${formatSize(x.size)}${x.quota ? ` из ${formatSize(x.quota)}` : ''} · ${pluralize(x.files, FILES)}${x.complete ? '' : '+'}`;
+          el.classList.toggle('text-rose-600', Boolean(x.error));
+        }
+      }).catch(() => {});
+    }
+
+    const move = async (i, dir) => {
+      const ids = list.map((x) => x.id);
+      [ids[i], ids[i + dir]] = [ids[i + dir], ids[i]];
+      try {
+        applyResult(await api.reorderStorages(ids));
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    };
+
+    const row = (st, i) => {
+      const status = h('p', { class: 'mt-1 text-xs text-slate-500 dark:text-slate-400', role: 'status' });
+      const action = (iconName, label, onclick, extra = '') => h('button', { type: 'button', class: `icon-btn ${extra}`, title: label, 'aria-label': `${label}: ${st.name}`, onclick }, icon(iconName));
+      return h('li', { class: 'flex flex-wrap items-start gap-3 py-4 first:pt-0 last:pb-0' },
+        h('span', { class: 'mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-sm font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400', title: 'Порядок' }, String(i + 1)),
+        h('div', { class: 'min-w-0 flex-1' },
+          h('p', { class: 'flex flex-wrap items-center gap-2 font-medium' }, st.name,
+            st.acceptUploads
+              ? h('span', { class: 'badge bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300' }, 'принимает файлы')
+              : h('span', { class: 'badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300' }, 'только чтение'),
+            st.quotaGb > 0 && h('span', { class: 'badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300' }, `квота ${st.quotaGb} ГБ`)),
+          h('p', { class: 'truncate text-sm text-slate-500 dark:text-slate-400', title: `${st.endpoint} · ${st.bucket}/${st.prefix}` },
+            `${detectPreset(st.endpoint)?.name ?? new URL(st.endpoint).host} · ${st.bucket}/${st.prefix}`),
+          h('p', { class: 'mt-0.5 text-xs tabular-nums text-slate-500 dark:text-slate-400', dataset: { usage: st.id } }, ' '),
+          status),
+        h('div', { class: 'flex shrink-0 gap-0.5' },
+          list.length > 1 && action('chevronRight', 'Выше', () => move(i, -1), `-rotate-90 ${i === 0 ? 'invisible' : ''}`),
+          list.length > 1 && action('chevronRight', 'Ниже', () => move(i, 1), `rotate-90 ${i === list.length - 1 ? 'invisible' : ''}`),
+          action('server', 'Проверить подключение', async () => {
+            setStatus(status, 'info', 'Проверяем…');
+            const r = await api.checkStorage({}, st.id).catch((err) => ({ ok: false, error: err.message }));
+            setStatus(status, r.ok ? 'ok' : 'error', r.ok ? `Подключение в порядке · ${r.latencyMs} мс` : r.error);
+          }),
+          action('key', 'Настроить CORS бакета', async () => {
+            try {
+              const r = await api.applyCors(st.id);
+              setStatus(status, 'ok', `CORS настроен для ${r.origin}`);
+            } catch (err) {
+              setStatus(status, 'error', err.message);
+            }
+          }),
+          action('pencil', 'Изменить', () => editStorage(st)),
+          action('trash', 'Отключить', () => removeStorage(st), 'icon-btn-danger')));
+    };
+
+    return card('Хранилища', 'S3-хранилища, объединённые в один диск. Папки общие, каждый файл лежит в одном из бакетов.', 'server',
+      !list.length && h('div', { class: 'flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-950/50 dark:text-amber-200' },
+        icon('alert', 'mt-0.5 h-4 w-4'), 'Не подключено ни одного хранилища — добавьте первое, чтобы начать загружать файлы.'),
+      list.length > 0 && h('ul', { class: 'divide-y divide-slate-100 dark:divide-slate-800' }, list.map(row)),
+      usage,
+      h('div', {}, h('button', { type: 'button', class: 'btn-primary', onclick: () => editStorage(null) }, icon('plus'), 'Добавить хранилище')),
+      h('div', { class: 'border-t border-slate-200 pt-5 dark:border-slate-800' },
+        h('label', { for: 'set-placement', class: 'mb-1.5 block text-sm font-medium' }, 'Куда загружать новые файлы'),
+        placementSelect,
+        h('p', { class: 'mt-1 text-xs text-slate-500 dark:text-slate-400' },
+          list.length < 2 ? 'Имеет смысл, когда хранилищ несколько.'
+            : 'Хранилища «только чтение» и с исчерпанной квотой новые файлы не получают. Переименование и перемещение выполняются внутри бакета, где лежит файл.')));
+  }
+
+  async function removeStorage(st) {
+    const ok = await confirmDialog(`Отключить «${st.name}»?`,
+      'Хранилище будет убрано из диска: его файлы перестанут отображаться, но останутся в бакете. Подключив его снова с теми же параметрами, вы вернёте их.',
+      'Отключить');
+    if (!ok) return;
+    try {
+      applyResult(await api.removeStorage(st.id), 'Хранилище отключено');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  // Окно добавления / изменения хранилища.
+  function editStorage(st) {
+    const isNew = !st;
+    const v = st ?? { name: '', endpoint: '', region: 'us-east-1', bucket: '', accessKeyId: '', forcePathStyle: true, prefix: 'uploads/', quotaGb: 0, acceptUploads: true, hasSecret: false };
+    const input = (name, label, { wide, hint, ...attrs } = {}) => {
+      const el = h('input', { id: `st-${name}`, name, class: 'input', autocomplete: 'off', spellcheck: 'false', ...attrs });
+      el.value = attrs.type === 'password' ? '' : String(v[name] ?? '');
+      return { el, wrap: h('div', { class: wide ? 'sm:col-span-2' : '' }, h('label', { for: `st-${name}`, class: 'mb-1.5 block text-sm font-medium' }, label), el,
+        hint && h('p', { class: 'mt-1 text-xs text-slate-500 dark:text-slate-400' }, hint)) };
+    };
+    const toggle = (name, label) => {
+      const el = h('input', { id: `st-${name}`, type: 'checkbox', class: 'peer sr-only', checked: Boolean(v[name]) });
+      return { el, wrap: h('label', { for: `st-${name}`, class: 'inline-flex cursor-pointer items-center gap-3' }, el,
+        h('span', { class: "relative h-6 w-11 shrink-0 rounded-full bg-slate-300 transition after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:shadow after:transition after:content-[''] peer-checked:bg-brand-600 peer-checked:after:translate-x-5 peer-focus-visible:ring-2 peer-focus-visible:ring-brand-500 dark:bg-slate-700" }),
+        h('span', { class: 'text-sm' }, label)) };
+    };
+    const f = {
+      name: input('name', 'Название', { wide: true, placeholder: 'Например: Cloud.ru — архив', maxlength: 60 }),
+      endpoint: input('endpoint', 'Адрес (endpoint)', { wide: true, type: 'url', placeholder: 'https://s3.example.com' }),
+      region: input('region', 'Регион'),
+      bucket: input('bucket', 'Бакет', { placeholder: 'my-bucket' }),
+      accessKeyId: input('accessKeyId', 'Access Key ID'),
+      secretAccessKey: input('secretAccessKey', 'Secret Access Key', { type: 'password', autocomplete: 'new-password',
+        placeholder: v.hasSecret ? '•••••••• задан (пусто — не менять)' : '' }),
+      prefix: input('prefix', 'Папка в бакете', { hint: 'Например uploads/. Пусто — корень бакета.' }),
+      quotaGb: input('quotaGb', 'Квота, ГБ', { type: 'number', min: 0, hint: '0 — без ограничения. При заполнении новые файлы пойдут в другие хранилища.' }),
+      forcePathStyle: toggle('forcePathStyle', 'Path-style адресация (нужна большинству S3-совместимых хранилищ)'),
+      acceptUploads: toggle('acceptUploads', 'Принимать новые файлы (выключите, чтобы хранилище было только для чтения)'),
+    };
+
+    const hintBox = h('div', { class: 'hidden rounded-xl bg-sky-50 px-4 py-3 text-sm text-sky-800 sm:col-span-2 dark:bg-sky-950/50 dark:text-sky-200' });
     const showHint = (preset) => {
       hintBox.classList.toggle('hidden', !preset?.hint);
       hintBox.replaceChildren(h('span', { class: 'font-medium' }, `${preset?.name ?? ''}: `), preset?.hint ?? '');
-      fields.access.input.placeholder = preset?.accessKeyPlaceholder ?? '';
+      f.accessKeyId.el.placeholder = preset?.accessKeyPlaceholder ?? '';
     };
-    const current = detectPreset(f.S3_ENDPOINT.value);
-    const select = h('select', { id: 'set-preset', class: 'input', onchange: () => {
-      const preset = S3_PRESETS.find((p) => p.id === select.value);
-      if (!preset) return showHint(null);
-      fields.endpoint.input.value = preset.endpoint;
-      fields.region.input.value = preset.region;
-      fields.pathStyle.input.checked = preset.pathStyle;
-      showHint(preset);
-      if (preset.endpoint.includes('<')) fields.endpoint.input.focus();
-      else (fields.bucket.input.value ? fields.access.input : fields.bucket.input).focus();
+    const current = detectPreset(v.endpoint);
+    const preset = h('select', { id: 'st-preset', class: 'input', onchange: () => {
+      const p = S3_PRESETS.find((x) => x.id === preset.value);
+      showHint(p);
+      if (!p) return;
+      f.endpoint.el.value = p.endpoint;
+      f.region.el.value = p.region;
+      f.forcePathStyle.el.checked = p.pathStyle;
+      if (!f.name.el.value.trim()) f.name.el.value = p.name;
+      (p.endpoint.includes('<') ? f.endpoint.el : f.bucket.el).focus();
     } },
     h('option', { value: '' }, 'Другой S3-совместимый провайдер'),
     S3_PRESETS.map((p) => h('option', { value: p.id, selected: p.id === current?.id }, p.name)));
     showHint(current);
 
+    const values = () => ({
+      name: f.name.el.value.trim(),
+      endpoint: f.endpoint.el.value.trim(),
+      region: f.region.el.value.trim(),
+      bucket: f.bucket.el.value.trim(),
+      accessKeyId: f.accessKeyId.el.value.trim(),
+      secretAccessKey: f.secretAccessKey.el.value.trim(),
+      prefix: f.prefix.el.value.trim(),
+      quotaGb: f.quotaGb.el.value.trim() || '0',
+      forcePathStyle: f.forcePathStyle.el.checked,
+      acceptUploads: f.acceptUploads.el.checked,
+    });
+
     const status = statusLine();
-    const saveBtn = h('button', { type: 'button', class: 'btn-primary', onclick: () => save() }, 'Сохранить');
-    const checkBtn = h('button', { type: 'button', class: 'btn-ghost border border-slate-200 dark:border-slate-700', onclick: check }, icon('server'), 'Проверить подключение');
-    const corsBtn = h('button', { type: 'button', class: 'btn-ghost border border-slate-200 dark:border-slate-700', onclick: cors, disabled: !data.s3Configured,
-      title: 'Разрешить браузеру загружать и скачивать файлы с адреса этого сайта' }, icon('key'), 'Настроить CORS бакета');
-
-    async function check() {
-      checkBtn.disabled = true;
+    const save = h('button', { type: 'submit', class: 'btn-primary' }, isNew ? 'Добавить' : 'Сохранить');
+    const check = h('button', { type: 'button', class: 'btn-ghost border border-slate-200 dark:border-slate-700', onclick: async () => {
+      check.disabled = true;
       setStatus(status, 'info', 'Проверяем подключение…');
-      try {
-        const r = await api.checkStorage(changedValues(all));
-        setStatus(status, r.ok ? 'ok' : 'error', r.ok ? `Подключение в порядке · ${r.latencyMs} мс` : r.error);
-      } catch (err) {
-        setStatus(status, 'error', err.message);
-      } finally {
-        checkBtn.disabled = false;
-      }
-    }
+      const r = await api.checkStorage(values(), st?.id).catch((err) => ({ ok: false, error: err.message }));
+      setStatus(status, r.ok ? 'ok' : 'error', r.ok ? `Подключение в порядке · ${r.latencyMs} мс` : r.error);
+      check.disabled = false;
+    } }, icon('server'), 'Проверить');
 
-    async function save(skipCheck = false) {
-      const values = changedValues(all);
-      if (!Object.keys(values).length) return setStatus(status, 'info', 'Изменений нет');
-      saveBtn.disabled = true;
+    const form = h('form', { class: 'space-y-5 p-6', novalidate: true },
+      h('h3', { class: 'text-lg font-semibold' }, isNew ? 'Новое хранилище' : `Хранилище «${st.name}»`),
+      h('div', { class: 'grid gap-4 sm:grid-cols-2' },
+        h('div', { class: 'sm:col-span-2' }, h('label', { for: 'st-preset', class: 'mb-1.5 block text-sm font-medium' }, 'Провайдер'), preset),
+        hintBox,
+        ...['name', 'endpoint', 'region', 'bucket', 'accessKeyId', 'secretAccessKey', 'prefix', 'quotaGb'].map((k) => f[k].wrap),
+        h('div', { class: 'space-y-3 sm:col-span-2' }, f.forcePathStyle.wrap, f.acceptUploads.wrap)),
+      status,
+      h('div', { class: 'flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-5 dark:border-slate-800' },
+        check,
+        h('button', { type: 'button', class: 'btn-ghost', onclick: () => dialog.close() }, 'Отмена'),
+        save));
+    const dialog = h('dialog', { class: 'max-h-[calc(100dvh-2rem)] w-[min(40rem,calc(100%-2rem))] rounded-2xl bg-white p-0 text-slate-800 shadow-xl dark:bg-slate-900 dark:text-slate-200' }, form);
+
+    async function submit(skipCheck) {
+      save.disabled = true;
       setStatus(status, 'info', skipCheck ? 'Сохраняем…' : 'Проверяем подключение и сохраняем…');
       try {
-        const res = await api.saveSettings(values, { skipCheck });
-        const moved = res.changed.some((k) => k === 'S3_ENDPOINT' || k === 'S3_BUCKET');
-        if (!moved) return applyResult(res, 'Настройки хранилища сохранены');
-
-        // Новый бакет: сразу разрешаем браузеру доступ к нему (CORS)…
-        let corsNote = 'CORS бакета настроен.';
-        try {
-          await api.applyCors();
-        } catch {
-          corsNote = 'CORS настроить не удалось — задайте его в панели провайдера (см. deploy/s3-cors.json).';
-        }
+        const res = isNew ? await api.addStorage(values(), { skipCheck }) : await api.updateStorage(st.id, values(), { skipCheck });
+        dialog.close();
         applyResult(res);
-        // …и перезагружаем страницу: политика безопасности (CSP) браузера фиксируется
-        // при загрузке страницы и должна разрешить обращения к новому адресу хранилища.
-        toast(`Хранилище подключено. ${corsNote} Страница сейчас обновится…`, 'success');
-        setTimeout(() => window.location.reload(), 2500);
+        if (res.cors) {
+          // Новый адрес хранилища: браузер должен заново получить политику безопасности (CSP),
+          // разрешающую обращения к нему, — перезагружаем страницу.
+          toast(`Хранилище «${res.storage.name}» ${isNew ? 'подключено' : 'сохранено'}. ${res.cors.ok ? 'CORS бакета настроен.' : res.cors.error} Страница сейчас обновится…`, res.cors.ok ? 'success' : 'error');
+          setTimeout(() => window.location.reload(), 2500);
+        } else {
+          toast('Хранилище сохранено', 'success');
+        }
       } catch (err) {
         setStatus(status, 'error', err.message);
         if (err.status === 422 && !skipCheck) {
-          status.append(h('button', { type: 'button', class: 'ml-2 shrink-0 font-medium underline', onclick: () => save(true) }, 'Сохранить без проверки'));
+          status.append(h('button', { type: 'button', class: 'ml-2 shrink-0 font-medium underline', onclick: () => submit(true) }, 'Сохранить без проверки'));
         }
       } finally {
-        saveBtn.disabled = false;
+        save.disabled = false;
       }
     }
-
-    async function cors() {
-      corsBtn.disabled = true;
-      try {
-        const r = await api.applyCors();
-        setStatus(status, 'ok', `CORS настроен: браузеру разрешён доступ с ${r.origin}`);
-      } catch (err) {
-        setStatus(status, 'error', err.message);
-      } finally {
-        corsBtn.disabled = false;
-      }
-    }
-
-    return card('Хранилище S3', 'Где хранятся файлы. Новые параметры проверяются подключением перед сохранением.', 'server',
-      !data.s3Configured && h('div', { class: 'flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-950/50 dark:text-amber-200' },
-        icon('alert', 'mt-0.5 h-4 w-4'), 'Хранилище ещё не настроено — заполните параметры ниже, чтобы начать загружать файлы.'),
-      h('div', {}, h('label', { for: 'set-preset', class: 'mb-1.5 block text-sm font-medium' }, 'Провайдер'), select),
-      hintBox,
-      h('div', { class: 'grid gap-4 sm:grid-cols-2' }, ...all.map((x) => x.el)),
-      h('div', { class: 'flex flex-wrap items-center gap-2 border-t border-slate-200 pt-5 dark:border-slate-800' }, saveBtn, checkBtn, corsBtn),
-      status);
+    form.addEventListener('submit', (e) => { e.preventDefault(); submit(false); });
+    dialog.addEventListener('close', () => dialog.remove());
+    document.body.append(dialog);
+    dialog.showModal();
+    (isNew ? preset : f.name.el).focus();
   }
 
   // ---------- Лимиты загрузки ----------
