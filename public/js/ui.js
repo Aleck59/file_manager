@@ -53,7 +53,41 @@ const ICONS = {
   alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>',
   server: '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01M6 18h.01"/>',
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  pencil: '<path d="M21.17 6.81a1 1 0 0 0-3.98-3.98L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z"/><path d="m15 5 4 4"/>',
+  move: '<path d="M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1"/><path d="M2 13h10"/><path d="m9 16 3-3-3-3"/>',
+  more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
 };
+
+// Тип данных для перетаскивания файлов внутри приложения (не путать с файлами с компьютера).
+export const DRAG_TYPE = 'application/x-fm-file';
+
+// Делает элемент целью для перетаскивания файла из списка (подсвечивается при наведении).
+export function makeDropTarget(el, onDrop) {
+  let depth = 0;
+  const accepts = (e) => [...(e.dataTransfer?.types ?? [])].includes(DRAG_TYPE);
+  const reset = () => { depth = 0; el.classList.remove('drop-target'); };
+  el.addEventListener('dragenter', (e) => {
+    if (!accepts(e)) return;
+    e.preventDefault();
+    depth++;
+    el.classList.add('drop-target');
+  });
+  el.addEventListener('dragover', (e) => {
+    if (!accepts(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  });
+  el.addEventListener('dragleave', (e) => {
+    if (accepts(e) && --depth <= 0) reset();
+  });
+  el.addEventListener('drop', (e) => {
+    if (!accepts(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    reset();
+    onDrop(e.dataTransfer.getData(DRAG_TYPE));
+  });
+}
 
 export function icon(name, cls = 'h-4 w-4') {
   const span = document.createElement('span');
@@ -192,8 +226,61 @@ export function openDialog({ title, text, fields = [], confirmLabel = 'OK', dang
     });
     document.body.append(dialog);
     dialog.showModal();
-    (form.querySelector('input, select') ?? submit).focus();
+    const first = form.querySelector('input, select') ?? submit;
+    first.focus();
+    // Например, при переименовании выделяем имя без расширения.
+    if (fields[0]?.select && first.setSelectionRange) first.setSelectionRange(...fields[0].select);
   });
+}
+
+// ---------- выпадающее меню ----------
+let closeOpenMenu = null;
+
+/** items: [{label, icon, onSelect, danger}] — меню у кнопки anchor, закрывается кликом вне/Esc. */
+export function openMenu(anchor, items) {
+  closeOpenMenu?.();
+  const menu = h('div', {
+    class: 'fixed z-[55] min-w-[12rem] rounded-xl border border-slate-200 bg-white p-1 shadow-xl animate-toast-in dark:border-slate-700 dark:bg-slate-900',
+    role: 'menu',
+  }, items.filter(Boolean).map((item) => h('button', {
+    type: 'button', role: 'menuitem',
+    class: `flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition ${item.danger
+      ? 'text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950'
+      : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`,
+    onclick: (e) => { e.stopPropagation(); close(); item.onSelect(); },
+  }, icon(item.icon), item.label)));
+  document.body.append(menu);
+
+  const r = anchor.getBoundingClientRect();
+  const top = r.bottom + 4 + menu.offsetHeight > window.innerHeight ? r.top - menu.offsetHeight - 4 : r.bottom + 4;
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.style.left = `${Math.max(8, Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))}px`;
+  anchor.setAttribute('aria-expanded', 'true');
+
+  const buttons = [...menu.querySelectorAll('button')];
+  buttons[0]?.focus();
+  const onKey = (e) => {
+    const i = buttons.indexOf(document.activeElement);
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); anchor.focus(); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); buttons[(i + 1) % buttons.length].focus(); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); buttons[(i - 1 + buttons.length) % buttons.length].focus(); }
+    if (e.key === 'Tab') close();
+  };
+  const onOutside = (e) => { if (!menu.contains(e.target)) close(); };
+  function close() {
+    menu.remove();
+    anchor.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('keydown', onKey, true);
+    document.removeEventListener('pointerdown', onOutside, true);
+    window.removeEventListener('resize', close);
+    document.removeEventListener('scroll', close, true);
+    closeOpenMenu = null;
+  }
+  document.addEventListener('keydown', onKey, true);
+  document.addEventListener('pointerdown', onOutside, true);
+  window.addEventListener('resize', close);
+  document.addEventListener('scroll', close, true);
+  closeOpenMenu = close;
 }
 
 export const confirmDialog = (title, text, confirmLabel = 'Удалить') =>

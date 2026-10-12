@@ -13,7 +13,9 @@ location / {
     proxy_set_header   Connection        "";
 
     proxy_connect_timeout 5s;
-    proxy_read_timeout    60s;
+    # Переименование/перемещение очень больших файлов — это копирование внутри S3,
+    # которое может занять несколько минут. Обычные запросы отвечают за доли секунды.
+    proxy_read_timeout    300s;
     proxy_send_timeout    60s;
 
     # Файлы идут напрямую в S3, через Nginx проходит только JSON — тело запроса маленькое.

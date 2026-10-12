@@ -89,6 +89,13 @@ export function nameFromKey(key) {
   return key.slice(key.lastIndexOf('/') + 1).slice(ID_LENGTH + 1);
 }
 
+// Ключ после переименования/перемещения. Идентификатор (метка времени + случайная часть)
+// сохраняется — файл остаётся на своём месте в сортировке «новые сверху».
+export function rebuildKey(key, { folder = folderFromKey(key), name = nameFromKey(key) } = {}) {
+  const segment = key.slice(key.lastIndexOf('/') + 1);
+  return `${PREFIX}${folder}${segment.slice(0, ID_LENGTH)}~${sanitizeFileName(name)}`;
+}
+
 export function folderFromKey(key) {
   const rel = key.slice(PREFIX.length);
   return rel.slice(0, rel.lastIndexOf('/') + 1);

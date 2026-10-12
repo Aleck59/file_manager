@@ -48,3 +48,8 @@
     background-image: conic-gradient(theme('colors.slate.800') 25%, transparent 0 50%, theme('colors.slate.800') 0 75%, transparent 0);
   }
 }
+
+@layer components {
+  /* Подсветка цели при перетаскивании файла в папку */
+  .drop-target { @apply bg-brand-100 ring-2 ring-inset ring-brand-500 dark:bg-brand-900/60; }
+}

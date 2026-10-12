@@ -14,6 +14,8 @@ import {
   AbortMultipartUploadCommand,
   DeleteObjectsCommand,
   HeadBucketCommand,
+  CopyObjectCommand,
+  UploadPartCopyCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from './config.js';
@@ -183,4 +185,48 @@ export function completeMultipart(key, uploadId, parts) {
 
 export function abortMultipart(key, uploadId) {
   return s3.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }));
+}
+
+// ---------- копирование (для переименования и перемещения) ----------
+// Копирование выполняется внутри S3: байты файла не проходят через VDS.
+const MAX_SINGLE_COPY = 5 * 1024 ** 3; // предел CopyObject — 5 ГБ
+const COPY_PART_SIZE = 512 * 1024 ** 2;
+const COPY_CONCURRENCY = 4;
+
+// CopySource должен быть URL-кодирован (кириллица, пробелы и т.п. в имени).
+const copySource = (key) => `${bucket}/${key.split('/').map(encodeURIComponent).join('/')}`;
+
+export async function copyObject(srcKey, dstKey, size, contentType) {
+  if (size <= MAX_SINGLE_COPY) {
+    await s3.send(new CopyObjectCommand({
+      Bucket: bucket, Key: dstKey, CopySource: copySource(srcKey), MetadataDirective: 'COPY',
+    }));
+    return;
+  }
+
+  // Больше 5 ГБ — multipart-копирование диапазонами (UploadPartCopy).
+  const uploadId = await createMultipart(dstKey, contentType);
+  try {
+    const ranges = [];
+    for (let start = 0; start < size; start += COPY_PART_SIZE) {
+      ranges.push([start, Math.min(start + COPY_PART_SIZE, size) - 1]);
+    }
+    const parts = new Array(ranges.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < ranges.length) {
+        const i = next++;
+        const out = await s3.send(new UploadPartCopyCommand({
+          Bucket: bucket, Key: dstKey, UploadId: uploadId, PartNumber: i + 1,
+          CopySource: copySource(srcKey), CopySourceRange: `bytes=${ranges[i][0]}-${ranges[i][1]}`,
+        }));
+        parts[i] = { PartNumber: i + 1, ETag: out.CopyPartResult?.ETag };
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(COPY_CONCURRENCY, ranges.length) }, worker));
+    await completeMultipart(dstKey, uploadId, parts);
+  } catch (err) {
+    await abortMultipart(dstKey, uploadId).catch(() => {});
+    throw err;
+  }
 }

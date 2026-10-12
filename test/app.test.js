@@ -106,3 +106,18 @@ test('сессия: токен привязан к паролю пользова
   assert.equal(auth.hasRole({ role: 'editor' }, 'viewer'), true);
   assert.equal(auth.hasRole({ role: 'editor' }, 'admin'), false);
 });
+
+test('rebuildKey: переименование и перемещение сохраняют id', () => {
+  const key = keys.generateKey('черновик.txt', 'Документы/');
+  const id = key.slice(key.lastIndexOf('/') + 1, key.indexOf('~'));
+  const renamed = keys.rebuildKey(key, { name: 'Итог (v2).txt' });
+  assert.equal(keys.nameFromKey(renamed), 'Итог (v2).txt');
+  assert.equal(keys.folderFromKey(renamed), 'Документы/');
+  const moved = keys.rebuildKey(renamed, { folder: '' });
+  assert.equal(keys.folderFromKey(moved), '');
+  assert.ok(moved.includes(`${id}~`));
+  assert.ok(keys.isValidKey(renamed) && keys.isValidKey(moved));
+  // Попытка выйти из папки через имя обезвреживается.
+  assert.equal(keys.nameFromKey(keys.rebuildKey(key, { name: '../../etc/passwd' })), '_.._etc_passwd');
+  assert.equal(keys.rebuildKey(key), key);
+});

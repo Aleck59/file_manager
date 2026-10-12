@@ -50,6 +50,7 @@ export const api = {
   downloadLink: (key, ttl) => request('POST', '/api/files/link', { key, ttl }),
   preview: (key) => request('POST', '/api/files/preview', { key }),
   deleteFile: (key) => request('DELETE', `/api/files${q({ key })}`),
+  moveFile: (key, { folder, name } = {}) => request('POST', '/api/files/move', { key, folder, name }),
 
   listUsers: () => request('GET', '/api/users'),
   createUser: (user) => request('POST', '/api/users', user),

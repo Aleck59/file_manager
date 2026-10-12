@@ -1,9 +1,12 @@
-// Раздел «Диск»: содержимое папки, хлебные крошки, загрузка (drag-and-drop), удаление.
+// Раздел «Диск»: содержимое папки, хлебные крошки, загрузка (drag-and-drop),
+// переименование, перемещение (меню, окно выбора папки, перетаскивание на папку) и удаление.
 import { api } from '../api.js';
 import { closePreview, copyFileLink, isPreviewing, setPreviewEnabled, showPreview } from '../preview.js';
+import { pickFolder } from '../folder-picker.js';
 import * as tree from '../tree.js';
 import {
-  confirmDialog, FILES, fileBadge, FOLDERS, formatDate, formatSize, h, icon, openDialog, pluralize, toast,
+  confirmDialog, DRAG_TYPE, FILES, fileBadge, folderLabel, FOLDERS, formatDate, formatSize, h, icon, makeDropTarget,
+  openDialog, openMenu, pluralize, toast,
 } from '../ui.js';
 
 export const diskHash = (folder) => `#/disk/${folder.split('/').filter(Boolean).map(encodeURIComponent).join('/')}${folder ? '/' : ''}`;
@@ -14,6 +17,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   const cleanup = [];
 
   setPreviewEnabled(true);
+  if (canEdit) tree.setDropHandler((key, path) => moveByKey(key, path));
   tree.reveal(folder);
   ctx.onPreviewClosed = () => { state.selected = null; markSelected(); };
   ctx.onPreviewMissing = () => load();
@@ -27,7 +31,9 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
       const last = i === crumbs.length - 1;
       const item = last
         ? h('span', { class: 'truncate font-semibold text-slate-900 dark:text-white', 'aria-current': 'page' }, label)
-        : h('a', { href: diskHash(path), class: 'shrink-0 truncate text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white max-w-[10rem]' }, label);
+        : h('a', { href: diskHash(path), class: 'shrink-0 truncate rounded px-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white max-w-[10rem]' }, label);
+      // Файл можно перетащить на родительскую папку в хлебных крошках.
+      if (!last && canEdit) makeDropTarget(item, (key) => moveByKey(key, path));
       return i === 0 ? [item] : [icon('chevronRight', 'h-3.5 w-3.5 text-slate-300 dark:text-slate-600'), item];
     }));
   // На узких экранах показываем только последнюю пару крошек.
@@ -89,7 +95,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   }, icon(name));
 
   function folderRow(f) {
-    return h('li', {
+    const li = h('li', {
       class: rowClass, role: 'option', 'aria-selected': 'false', tabindex: '0',
       onclick: () => ctx.navigate(diskHash(f.path)),
       onkeydown: (e) => { if (e.key === 'Enter') ctx.navigate(diskHash(f.path)); },
@@ -103,17 +109,28 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     h('span', { class: 'hidden text-sm text-slate-500 md:block dark:text-slate-400' }, 'Папка'),
     h('div', { class: 'flex justify-end gap-0.5' },
       canEdit && actionBtn('trash', 'Удалить папку', () => deleteFolder(f), true)));
+    if (canEdit) makeDropTarget(li, (key) => moveByKey(key, f.path));
+    return li;
   }
 
   function fileRow(file) {
     const li = h('li', {
       class: rowClass, role: 'option', 'aria-selected': String(state.selected === file.key), tabindex: '0',
       dataset: { key: file.key },
+      draggable: canEdit ? 'true' : undefined,
       onclick: () => select(file),
       onkeydown: (e) => {
+        if (e.target !== e.currentTarget) return;
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(file); }
         if (e.key === 'Delete' && canEdit) deleteFile(file);
+        if (e.key === 'F2' && canEdit) { e.preventDefault(); renameFile(file); }
       },
+      ondragstart: (e) => {
+        e.dataTransfer.setData(DRAG_TYPE, file.key);
+        e.dataTransfer.effectAllowed = 'move';
+        li.classList.add('opacity-50');
+      },
+      ondragend: () => li.classList.remove('opacity-50'),
     },
     h('div', { class: 'flex min-w-0 items-center gap-3' },
       fileBadge(file.name),
@@ -125,7 +142,11 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     h('div', { class: 'flex justify-end gap-0.5' },
       actionBtn('download', 'Скачать', () => download(file)),
       actionBtn('link', 'Скопировать ссылку для скачивания', () => copyFileLink(file)),
-      canEdit && actionBtn('trash', 'Удалить', () => deleteFile(file), true)));
+      canEdit && actionBtn('more', 'Ещё действия', (btn) => openMenu(btn, [
+        { label: 'Переименовать', icon: 'pencil', onSelect: () => renameFile(file) },
+        { label: 'Переместить…', icon: 'move', onSelect: () => moveFile(file) },
+        { label: 'Удалить', icon: 'trash', danger: true, onSelect: () => deleteFile(file) },
+      ]))));
     return li;
   }
 
@@ -161,7 +182,9 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   function select(file) {
     state.selected = file.key;
     markSelected();
-    showPreview(file, { folder, onDelete: canEdit ? deleteFile : undefined });
+    showPreview(file, canEdit
+      ? { folder, onDelete: deleteFile, onRename: renameFile, onMove: moveFile }
+      : { folder });
   }
 
   // ---------- данные ----------
@@ -216,6 +239,63 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     } catch (err) {
       toast(err.message, 'error');
     }
+  }
+
+  // Применяет результат переименования/перемещения к списку и панели предпросмотра.
+  function applyMoved(oldKey, file, targetFolder) {
+    const wasSelected = state.selected === oldKey;
+    if (targetFolder === folder) {
+      state.files = state.files.map((f) => (f.key === oldKey ? file : f));
+      if (wasSelected) select(file);
+    } else {
+      state.files = state.files.filter((f) => f.key !== oldKey);
+      if (wasSelected) closePreview();
+    }
+    renderList();
+    ctx.refreshStats();
+  }
+
+  async function renameFile(file) {
+    const dot = file.name.lastIndexOf('.');
+    await openDialog({
+      title: 'Переименовать файл',
+      text: 'Ссылки на скачивание, выданные раньше, перестанут работать.',
+      confirmLabel: 'Переименовать',
+      fields: [{ name: 'name', label: 'Новое имя', value: file.name, maxlength: 180,
+        select: [0, dot > 0 ? dot : file.name.length] }],
+      async onSubmit({ name }) {
+        const trimmed = name.trim();
+        if (!trimmed) throw new Error('Введите имя файла');
+        if (trimmed === file.name) return {};
+        const res = await api.moveFile(file.key, { name: trimmed });
+        applyMoved(file.key, res.file, res.folder);
+        toast(`Переименовано в «${res.file.name}»`, 'success');
+        return res;
+      },
+    });
+  }
+
+  async function moveFile(file) {
+    const target = await pickFolder({ title: `Переместить «${file.name}»`, current: folder });
+    if (target !== null) await moveTo(file, target);
+  }
+
+  async function moveTo(file, target) {
+    if (target === folder) return;
+    try {
+      const res = await api.moveFile(file.key, { folder: target });
+      applyMoved(file.key, res.file, res.folder);
+      toast(`«${res.file.name}» перемещён в «${folderLabel(target)}»`, 'success');
+    } catch (err) {
+      toast(err.message, 'error');
+      if (err.status === 404) load();
+    }
+  }
+
+  // Цель перетаскивания: папка в списке, в дереве или в хлебных крошках.
+  function moveByKey(key, target) {
+    const file = state.files.find((f) => f.key === key);
+    if (file) moveTo(file, target);
   }
 
   async function deleteFolder(f) {
@@ -293,6 +373,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     unmount() {
       cleanup.forEach((fn) => fn());
       ctx.newFolderHere = null;
+      tree.setDropHandler(null);
       ctx.onPreviewClosed = null;
       setPreviewEnabled(false);
       tree.clearActive();

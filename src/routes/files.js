@@ -3,7 +3,7 @@ import { requireRole } from '../auth.js';
 import { config } from '../config.js';
 import {
   categoryOf, folderFromKey, folderToPrefix, generateKey, isValidFolder, isValidKey,
-  nameFromKey, previewKind, safeContentType, sanitizeFolderName,
+  nameFromKey, previewKind, rebuildKey, safeContentType, sanitizeFileName, sanitizeFolderName,
 } from '../keys.js';
 import { HttpError } from '../middleware/security.js';
 import * as storage from '../s3.js';
@@ -232,6 +232,32 @@ filesRouter.post('/files/preview', async (req, res) => {
   if (!preview) return res.json({ kind: null, ...meta });
   const url = await storage.presignGet(key, PREVIEW_TTL, { inline: true, contentType: preview.contentType });
   res.json({ kind: preview.kind, url, ...meta });
+});
+
+// POST /api/files/move {key, folder?, name?} — переименование и/или перемещение файла.
+// В S3 нет операции rename: объект копируется под новым ключом (внутри хранилища),
+// затем исходный удаляется. Ссылки, выданные на старый ключ, перестают работать.
+filesRouter.post('/files/move', canEdit, async (req, res) => {
+  const key = requireKey(req.body?.key);
+  const folder = req.body?.folder === undefined ? folderFromKey(key) : requireFolder(req.body.folder);
+  let name = nameFromKey(key);
+  if (req.body?.name !== undefined) {
+    if (typeof req.body.name !== 'string' || !req.body.name.trim()) throw new HttpError(400, 'Введите имя файла');
+    if (req.body.name.length > 500) throw new HttpError(400, 'Слишком длинное имя файла');
+    name = sanitizeFileName(req.body.name);
+  }
+  const target = rebuildKey(key, { folder, name });
+  if (!isValidKey(target)) throw new HttpError(400, 'Слишком длинный путь или имя файла');
+
+  const head = await storage.headObject(key);
+  if (!head) throw new HttpError(404, 'Файл не найден');
+  const size = head.ContentLength ?? 0;
+  if (target === key) return res.json({ file: fileInfo(key, size, head.LastModified), folder });
+
+  await storage.copyObject(key, target, size, head.ContentType);
+  await storage.deleteObject(key);
+  invalidateStats();
+  res.json({ file: fileInfo(target, size), folder });
 });
 
 // DELETE /api/files?key=... — удаление файла.

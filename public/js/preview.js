@@ -108,9 +108,10 @@ function metaRow(label, value) {
 
 /**
  * @param {{key:string,name:string,size:number,lastModified:string}} file
- * @param {{ folder: string, onDelete?: (file) => Promise<void> }} opts
+ * @param {{ folder: string, onDelete?: Function, onRename?: Function, onMove?: Function }} opts
+ *   onDelete/onRename/onMove передаются только при наличии прав редактора.
  */
-export async function showPreview(file, { folder, onDelete }) {
+export async function showPreview(file, { folder, onDelete, onRename, onMove }) {
   current = file.key;
   openDrawer(true);
   const body = h('div', { class: 'flex-1 space-y-5 overflow-y-auto p-4' },
@@ -128,11 +129,18 @@ export async function showPreview(file, { folder, onDelete }) {
   }
   if (current !== file.key) return;
 
+  const outline = 'btn-ghost border border-slate-200 dark:border-slate-700';
+  const secondary = [
+    h('button', { type: 'button', class: outline, onclick: copyLink }, icon('link'), 'Ссылка'),
+    onRename && h('button', { type: 'button', class: outline, onclick: () => onRename(file) }, icon('pencil'), 'Переименовать'),
+    onMove && h('button', { type: 'button', class: outline, onclick: () => onMove(file) }, icon('move'), 'Переместить'),
+    onDelete && h('button', { type: 'button', class: `${outline} text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950`, onclick: () => onDelete(file) }, icon('trash'), 'Удалить'),
+  ].filter(Boolean);
+  // Нечётное число кнопок — последняя растягивается на всю ширину.
+  if (secondary.length % 2) secondary.at(-1).classList.add('col-span-2');
   const actions = h('div', { class: 'grid grid-cols-2 gap-2' },
     h('button', { type: 'button', class: 'btn-primary col-span-2', onclick: download }, icon('download'), 'Скачать'),
-    h('button', { type: 'button', class: 'btn-ghost border border-slate-200 dark:border-slate-700', onclick: copyLink }, icon('link'), 'Ссылка'),
-    onDelete && h('button', { type: 'button', class: 'btn-ghost border border-slate-200 text-rose-600 hover:bg-rose-50 dark:border-slate-700 dark:text-rose-400 dark:hover:bg-rose-950', onclick: () => onDelete(file) }, icon('trash'), 'Удалить'));
-  if (!onDelete) actions.lastElementChild?.classList.add('col-span-2');
+    ...secondary);
 
   body.replaceChildren(
     await mediaFor(info, file),

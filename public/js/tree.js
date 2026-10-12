@@ -1,12 +1,13 @@
 // Дерево папок в левой панели. Подпапки подгружаются лениво при раскрытии;
 // при переходе в глубокую папку автоматически раскрываются все её предки.
 import { api } from './api.js';
-import { h, icon, toast } from './ui.js';
+import { h, icon, makeDropTarget, toast } from './ui.js';
 
 const nodes = new Map(); // path -> { children: [{path,name}] | null, expanded, loading }
 let container;
 let activePath = null;
 let onNavigate = () => {};
+let dropHandler = null; // (key, folderPath) => void — перетаскивание файла на папку дерева
 
 const node = (path) => {
   if (!nodes.has(path)) nodes.set(path, { children: null, expanded: false, loading: null });
@@ -97,6 +98,7 @@ function renderNode(path, name, depth) {
   h('span', { class: 'ml-1.5 truncate' }, name));
   // Отступ уровня через CSSOM (inline style-атрибуты запрещены CSP).
   row.style.paddingLeft = `${depth * 14 + 2}px`;
+  if (dropHandler) makeDropTarget(row, (key) => dropHandler(key, path));
 
   const items = [row];
   if (n.expanded) {
@@ -116,6 +118,11 @@ function renderNode(path, name, depth) {
 export function render() {
   if (!container) return;
   container.replaceChildren(...renderNode('', 'Мой диск', 0));
+}
+
+export function setDropHandler(fn) {
+  dropHandler = fn;
+  render();
 }
 
 export function initTree(el, navigate) {
