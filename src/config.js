@@ -119,6 +119,14 @@ const dataDir = path.resolve(ROOT, process.env.DATA_DIR || 'data');
 const settingsFile = path.join(dataDir, 'settings.json');
 
 const safeHost = (url) => { try { return new URL(url).hostname; } catch { return ''; } };
+const isCloudRu = (endpoint) => /(^|\.)cloud\.ru$/.test(safeHost(endpoint));
+
+// Cloud.ru применяет правила CORS только к адресам вида <бакет>.s3.cloud.ru: на path-style
+// (s3.cloud.ru/<бакет>) предварительный запрос браузера получает «Access Denied», и загрузка
+// падает с «Нет ответа от S3». Поэтому для Cloud.ru — всегда virtual-hosted (кроме бакетов с
+// точкой в имени: для них не подойдёт TLS-сертификат *.s3.cloud.ru).
+const fixAddressing = (def) => (isCloudRu(def.endpoint) && def.forcePathStyle && !String(def.bucket).includes('.')
+  ? { ...def, forcePathStyle: false } : def);
 
 // ---------- переопределения и хранилища из интерфейса ----------
 let overrides = {};
@@ -131,8 +139,8 @@ if (fs.existsSync(settingsFile)) {
     if (Array.isArray(file.storages)) {
       // Хранилища из версий до появления «класса хранения»: для Cloud.ru — STANDARD
       // (нужный класс по умолчанию), для остальных — класс бакета.
-      storages = file.storages.map((s) => (s.storageClass !== undefined ? s
-        : { ...s, storageClass: /(^|\.)cloud\.ru$/.test(safeHost(s.endpoint)) ? 'STANDARD' : '' }));
+      storages = file.storages.map((s) => fixAddressing(s.storageClass !== undefined ? s
+        : { ...s, storageClass: isCloudRu(s.endpoint) ? 'STANDARD' : '' }));
     }
     if (PLACEMENTS.includes(file.placement)) placement = file.placement;
     const raw = file.overrides ?? {};
@@ -182,7 +190,7 @@ export function parseStorageDef(input, existing = null) {
   }
   if (!def.name) def.name = def.bucket || 'Хранилище';
   if (errors.length) throw Object.assign(new Error(errors.join('; ')), { status: 400 });
-  return def;
+  return fixAddressing(def);
 }
 
 // Первый запуск или обновление со старой версии: одно хранилище из .env / прежних настроек.

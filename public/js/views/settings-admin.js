@@ -279,6 +279,9 @@ export function adminSettings(ctx) {
       if (location.protocol === 'https:' && r.test.url.startsWith('http:')) {
         return add(false, 'Браузер заблокировал смешанный контент (сайт https, хранилище http).', 'Укажите endpoint хранилища с https://.');
       }
+      if (r.checks.some((c) => c.id === 'preflight' && c.ok === false)) {
+        return add(false, 'Браузер не получил разрешения CORS от бакета — причина указана выше.');
+      }
       return add(false, 'Браузер не получил разрешения CORS от бакета — поэтому загрузки падают с «Нет ответа от S3».',
         `Нажмите «Настроить CORS бакета» (ключ) в списке хранилищ. Если провайдер не принимает правила через API, задайте их в консоли бакета: AllowedOrigin = ${r.origin}, AllowedMethod = GET, PUT, HEAD, AllowedHeader = *, ExposeHeader = ETag.`);
     }

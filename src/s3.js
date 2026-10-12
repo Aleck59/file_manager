@@ -23,6 +23,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import crypto from 'node:crypto';
+import { createRequire } from 'node:module';
 import { config } from './config.js';
 import { contentDisposition, isValidFolder, isValidKey, nameFromKey } from './keys.js';
 
@@ -92,10 +93,69 @@ export function corsRules(origin) {
   return [{
     AllowedOrigins: [origin],
     AllowedMethods: ['GET', 'PUT', 'HEAD'],
-    AllowedHeaders: ['*'],
+    // «*» плюс явные имена: не все хранилища понимают «*» как «любой заголовок».
+    AllowedHeaders: ['*', 'content-type', 'x-amz-storage-class'],
     ExposeHeaders: ['ETag'],
     MaxAgeSeconds: 3600,
   }];
+}
+
+// node:https через require: ESM-импорт node:http подтягивает undici (лишняя память).
+const httpsLib = createRequire(import.meta.url)('node:https');
+const httpLib = createRequire(import.meta.url)('node:http');
+
+/**
+ * Предварительный запрос CORS (OPTIONS) — такой же, какой браузер шлёт перед PUT.
+ * Позволяет с сервера увидеть, почему хранилище не пускает браузер.
+ * @returns {Promise<{status:number, allowOrigin:string|null, code:string|null, message:string|null}>}
+ */
+export function probePreflight(url, origin, requestHeaders = []) {
+  return new Promise((resolve) => {
+    const u = new URL(url);
+    const lib = u.protocol === 'https:' ? httpsLib : httpLib;
+    const headers = { Origin: origin, 'Access-Control-Request-Method': 'PUT' };
+    if (requestHeaders.length) headers['Access-Control-Request-Headers'] = requestHeaders.join(',');
+    const req = lib.request(u, { method: 'OPTIONS', headers, timeout: 8000 }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { if (body.length < 4096) body += c; });
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        allowOrigin: res.headers['access-control-allow-origin'] ?? null,
+        code: body.match(/<Code>([^<]{1,100})<\/Code>/)?.[1] ?? null,
+        message: body.match(/<Message>([^<]{1,300})<\/Message>/)?.[1] ?? null,
+      }));
+    });
+    req.on('timeout', () => req.destroy(new Error('таймаут')));
+    req.on('error', (err) => resolve({ status: 0, allowOrigin: null, code: null, message: err.message }));
+    req.end();
+  });
+}
+
+// Предварительный запрос CORS с сервера — как его отправит браузер. Если хранилище отказывает,
+// пробуем варианты (без заголовков, другой стиль адреса), чтобы назвать точную причину.
+export async function preflightCheck(def, test, origin) {
+  const names = Object.keys(test.headers).map((k) => k.toLowerCase());
+  const allowed = (r) => r.status >= 200 && r.status < 300 && (r.allowOrigin === origin || r.allowOrigin === '*');
+  const main = await probePreflight(test.url, origin, names);
+  if (allowed(main)) return { id: 'preflight', ok: true, text: 'Хранилище разрешает браузеру загрузку (проверка CORS с сервера)' };
+  const why = main.status ? `HTTP ${main.status}${main.code ? ` ${main.code}` : ''}${main.message ? `: ${main.message}` : ''}` : main.message;
+
+  const u = new URL(test.url);
+  if (def.forcePathStyle && !def.bucket.includes('.')) {
+    const alt = new URL(test.url);
+    alt.hostname = `${def.bucket}.${u.hostname}`;
+    alt.pathname = u.pathname.replace(`/${def.bucket}`, '') || '/';
+    if (allowed(await probePreflight(alt.href, origin, names))) {
+      return { id: 'preflight', ok: false, text: `Хранилище применяет CORS только к адресам вида ${def.bucket}.${u.host} — выключите «Path-style» в параметрах хранилища (${why})` };
+    }
+  }
+  for (const h of names) {
+    if (allowed(await probePreflight(test.url, origin, names.filter((n) => n !== h)))) {
+      return { id: 'preflight', ok: false, text: `Правила CORS не разрешают заголовок ${h} — добавьте его в «Заголовки запроса» (AllowedHeader) или нажмите «Настроить CORS бакета» (${why})` };
+    }
+  }
+  return { id: 'preflight', ok: false, text: `Хранилище отклоняет предварительный запрос CORS с ${origin} (${why})` };
 }
 
 // ---------- копирование (для переименования и перемещения) ----------

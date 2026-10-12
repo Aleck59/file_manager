@@ -99,7 +99,7 @@ npm ci --omit=dev                    # только runtime-зависимост
 | Провайдер | Endpoint | Регион | Path-style | Особенности |
 |---|---|---|---|---|
 | Yandex Object Storage | `https://storage.yandexcloud.net` | `ru-central1` | да | статический ключ сервисного аккаунта |
-| **Cloud.ru Object Storage** | `https://s3.cloud.ru` | `ru-central-1` | да | Access Key ID в формате `<tenant_id>:<key_id>` |
+| **Cloud.ru Object Storage** | `https://s3.cloud.ru` | `ru-central-1` | **нет** | Access Key ID в формате `<tenant_id>:<key_id>`; CORS работает только на адресах `<бакет>.s3.cloud.ru`, поэтому path-style выключается автоматически |
 | Selectel | `https://s3.ru-1.storage.selcloud.ru` | `ru-1` | да | |
 | Timeweb Cloud | `https://s3.timeweb.cloud` | `ru-1` | да | |
 | VK Cloud | `https://hb.ru-msk.vkcloud-storage.ru` | `ru-msk` | да | |
@@ -334,6 +334,9 @@ MALLOC_TRIM_THRESHOLD_=131072
    🔑 «Настроить CORS бакета»; если провайдер их не принимает — задайте в консоли бакета
    (у Cloud.ru: бакет → CORS): `AllowedOrigin` — адрес сайта в точности (схема, домен, без `/`
    в конце), методы `GET`, `PUT`, `HEAD`, `AllowedHeader` `*`, `ExposeHeader` `ETag`.
+   Сервер сам отправляет предварительный запрос CORS так же, как браузер, и, если хранилище
+   отказывает, проверяет варианты: стиль адреса (path-style / `<бакет>.хост`), отдельные
+   заголовки — и пишет, что именно исправить.
 6. Если сразу после входа снова открывается `/login` — сайт открыт по `http`, а не `https`,
    или `APP_ORIGIN` не совпадает с адресом в браузере.
 

@@ -24,10 +24,11 @@ export const S3_PRESETS = [
   },
   {
     id: 'cloudru', name: 'Cloud.ru Object Storage',
-    endpoint: 'https://s3.cloud.ru', region: 'ru-central-1', pathStyle: true,
+    // Path-style выключен: CORS Cloud.ru работает только на адресах <бакет>.s3.cloud.ru.
+    endpoint: 'https://s3.cloud.ru', region: 'ru-central-1', pathStyle: false,
     // https://cloud.ru/docs/s3e/ug/topics/concepts__storage-class
     classes: ['STANDARD', 'COLD', 'ICE', 'SINGLE', ''], defaultClass: 'STANDARD',
-    hint: 'Access Key ID — в формате <tenant_id>:<key_id>. Класс хранения по умолчанию — STANDARD. Если CORS не настроится автоматически, задайте его в консоли: бакет → CORS (Origin — адрес сайта, методы GET, PUT, HEAD, заголовки *).',
+    hint: 'Access Key ID — в формате <tenant_id>:<key_id>. Класс хранения по умолчанию — STANDARD. Path-style должен быть выключен (иначе Cloud.ru не применит CORS). Если CORS не настроится автоматически, задайте его в консоли: бакет → CORS (Origin — адрес сайта, методы GET, PUT, HEAD, заголовки *).',
     accessKeyPlaceholder: 'tenant_id:key_id',
   },
   {

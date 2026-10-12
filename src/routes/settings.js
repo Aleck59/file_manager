@@ -10,7 +10,7 @@ import {
 } from '../config.js';
 import { Router } from '../http.js';
 import { HttpError } from '../middleware/security.js';
-import { Storage, testConnection } from '../s3.js';
+import { Storage, testConnection, preflightCheck } from '../s3.js';
 import * as storagesRegistry from '../storages.js';
 import { getUser } from '../users.js';
 
@@ -229,6 +229,7 @@ settingsRouter.post('/storages/:id/diagnose', async (req, res) => {
   if (conn.ok) {
     const key = `.fm-check-${crypto.randomBytes(6).toString('hex')}`;
     test = { key, ...(await st.presignPut(key, 'text/plain', 2)) };
+    checks.push(await preflightCheck(def, test, config.appOrigin));
   }
   res.json({ origin: config.appOrigin, storageClass: def.storageClass || null, checks, test });
 });

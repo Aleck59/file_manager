@@ -380,3 +380,10 @@ test('S3: PutBucketCors и DeleteObjects шлют Content-MD5 вместо CRC32
     assert.match(h.authorization, /SignedHeaders=[^,]*content-md5/);
   }
 });
+
+test('Cloud.ru: всегда virtual-hosted (CORS работает только на <бакет>.s3.cloud.ru)', () => {
+  const base = { endpoint: 'https://s3.cloud.ru', region: 'ru-central-1', accessKeyId: 't:k', secretAccessKey: 's', forcePathStyle: true };
+  assert.equal(cfg.parseStorageDef({ ...base, bucket: 'bucket-cbd082' }).forcePathStyle, false);
+  assert.equal(cfg.parseStorageDef({ ...base, bucket: 'with.dot' }).forcePathStyle, true, 'бакет с точкой — path-style (TLS)');
+  assert.equal(cfg.parseStorageDef({ ...base, endpoint: 'https://storage.yandexcloud.net', bucket: 'b' }).forcePathStyle, true);
+});
