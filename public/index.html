@@ -74,9 +74,9 @@
   </div>
 
   <!-- Очередь загрузок -->
-  <section id="uploads" class="fixed bottom-4 right-4 z-50 hidden w-[min(24rem,calc(100%-2rem))] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-900" aria-live="polite">
+  <section id="uploads" class="fixed bottom-4 right-4 z-50 hidden w-[min(24rem,calc(100%-2rem))] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-900">
     <div class="flex items-center justify-between border-b border-slate-200 px-4 py-2.5 dark:border-slate-800">
-      <h2 id="uploads-title" class="text-sm font-semibold">Загрузка</h2>
+      <h2 id="uploads-title" class="text-sm font-semibold" role="status" aria-live="polite">Загрузка</h2>
       <button id="uploads-hide" class="icon-btn h-7 w-7" type="button" aria-label="Скрыть"></button>
     </div>
     <ul id="upload-list" class="max-h-72 divide-y divide-slate-100 overflow-y-auto dark:divide-slate-800"></ul>

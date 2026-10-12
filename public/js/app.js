@@ -2,6 +2,7 @@
 // заголовок страницы, очередь загрузок. Разделы — в ./views/*.
 import { api } from './api.js';
 import { initPreview } from './preview.js';
+import { ProgressView } from './progress.js';
 import * as tree from './tree.js';
 import { $, applyTheme, FILES, formatSize, h, icon, pluralize, prefs, toast } from './ui.js';
 import { uploadFile, UploadCancelled } from './uploader.js';
@@ -183,10 +184,10 @@ function enqueue(files, folder) {
   for (const file of files) {
     const controller = new AbortController();
     const status = h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400' }, `${formatSize(file.size)} · в очереди`);
-    const bar = h('div', { class: 'w-0' });
+    const bar = h('div');
     const cancel = h('button', { type: 'button', class: 'icon-btn h-7 w-7', title: 'Отменить', 'aria-label': `Отменить загрузку ${file.name}` }, icon('close'));
     cancel.onclick = () => controller.abort();
-    const row = h('li', { class: 'flex items-center gap-3 px-4 py-3' },
+    const row = h('li', { class: 'upload-row flex items-center gap-3 px-4 py-3' },
       h('div', { class: 'min-w-0 flex-1' },
         h('div', { class: 'flex items-baseline justify-between gap-3' },
           h('p', { class: 'truncate text-sm font-medium', title: file.name }, file.name),
@@ -219,21 +220,16 @@ function pump() {
 async function runUpload({ file, folder, controller, ui }) {
   const { status, bar, row, cancel } = ui;
   if (controller.signal.aborted) { row.remove(); return; }
-  const started = performance.now();
+  const progress = new ProgressView(bar, status, file.size);
+  status.textContent = '0%';
   try {
     const result = await uploadFile(file, {
       folder,
       signal: controller.signal,
-      onProgress(loaded, total) {
-        const pct = total ? Math.min(100, (loaded / total) * 100) : 100;
-        bar.style.width = `${pct}%`; // CSSOM разрешён CSP, в отличие от inline style
-        const seconds = (performance.now() - started) / 1000;
-        const speed = seconds > 0.5 ? ` · ${formatSize(loaded / seconds)}/с` : '';
-        status.textContent = `${Math.floor(pct)}%${speed}`;
-      },
+      onProgress: (loaded) => progress.update(loaded),
     });
     finished++;
-    bar.style.width = '100%';
+    progress.finish(true);
     status.textContent = 'Готово';
     cancel.replaceChildren(icon('check'));
     cancel.disabled = true;
@@ -241,8 +237,7 @@ async function runUpload({ file, folder, controller, ui }) {
   } catch (err) {
     if (err instanceof UploadCancelled) { row.remove(); return; }
     failed++;
-    bar.classList.add('!bg-rose-500');
-    bar.style.width = '100%';
+    progress.finish(false);
     status.textContent = 'Ошибка';
     status.classList.add('text-rose-600');
     cancel.title = 'Скрыть';

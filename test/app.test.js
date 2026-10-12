@@ -150,7 +150,14 @@ test('настройки: проверка значений', () => {
   const prefix = cfg.STORAGE_FIELDS.prefix;
   assert.equal(cfg.parseField('prefix', '/files/', prefix), 'files/');
   assert.throws(() => cfg.parseField('prefix', 'a/../', prefix), /prefix/);
-  assert.throws(() => cfg.parseField('prefix', 'no-slash', prefix), /prefix/);
+  assert.equal(cfg.parseField('prefix', 'no-slash', prefix), 'no-slash/');
+  assert.equal(cfg.parseField('prefix', '', prefix), '', 'пусто — корень бакета, а не uploads/');
+  assert.equal(cfg.parseField('prefix', ' / ', prefix), '');
+  assert.equal(cfg.parseField('prefix', undefined, prefix), 'uploads/', 'не задано — по умолчанию');
+  // Изменение папки у существующего хранилища сохраняется
+  const st = cfg.parseStorageDef({ prefix: 'docs/files' }, { id: 'x', name: 'X', endpoint: 'https://s3.example.com', region: 'r', bucket: 'b', accessKeyId: 'a', secretAccessKey: 's', prefix: 'uploads/' });
+  assert.equal(st.prefix, 'docs/files/');
+  assert.equal(cfg.parseStorageDef({ prefix: '' }, st).prefix, '');
   assert.equal(cfg.parseField('x', 'false', cfg.STORAGE_FIELDS.forcePathStyle), false);
   assert.equal(cfg.parseField('x', '', cfg.STORAGE_FIELDS.region), 'us-east-1', 'пустое — значение по умолчанию');
 });

@@ -332,7 +332,7 @@ export function adminSettings(ctx) {
       accessKeyId: input('accessKeyId', 'Access Key ID'),
       secretAccessKey: input('secretAccessKey', 'Secret Access Key', { type: 'password', autocomplete: 'new-password',
         placeholder: v.hasSecret ? '•••••••• задан (пусто — не менять)' : '' }),
-      prefix: input('prefix', 'Папка в бакете', { hint: 'Например uploads/. Пусто — корень бакета.' }),
+      prefix: input('prefix', 'Папка в бакете', { hint: 'Например uploads/. Пусто — корень бакета. При смене папки файлы из прежней остаются в бакете, но в диске не видны.' }),
       quotaGb: input('quotaGb', 'Квота, ГБ', { type: 'number', min: 0, hint: '0 — без ограничения. При заполнении новые файлы пойдут в другие хранилища.' }),
       forcePathStyle: toggle('forcePathStyle', 'Path-style адресация (нужна большинству S3-совместимых хранилищ)'),
       acceptUploads: toggle('acceptUploads', 'Принимать новые файлы (выключите, чтобы хранилище было только для чтения)'),

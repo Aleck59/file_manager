@@ -7,6 +7,8 @@
   body { @apply bg-slate-50 text-slate-800 antialiased dark:bg-slate-950 dark:text-slate-200; }
   :focus-visible { @apply outline-none ring-2 ring-brand-500 ring-offset-2 ring-offset-white dark:ring-offset-slate-950; }
   [hidden] { display: none !important; }
+  h1, h2, h3 { text-wrap: balance; }
+  p { text-wrap: pretty; }
 }
 
 @layer components {
@@ -20,7 +22,17 @@
   .input { @apply w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30 dark:border-slate-700 dark:bg-slate-900; }
   .select { @apply rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30 dark:border-slate-700 dark:bg-slate-900; }
   .progress { @apply h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800; }
-  .progress > div { @apply h-full rounded-full bg-brand-500 transition-[width] duration-200; }
+  /* Полоса двигается только transform-ом из progress.js (requestAnimationFrame), без transition. */
+  .progress > div { @apply h-full w-full rounded-full bg-brand-500; transform: translateX(-100%); will-change: transform; transition-property: background-color; transition-duration: 200ms; }
+  .progress.is-error > div { @apply bg-rose-500; }
+  /* Байты отправлены, хранилище завершает приём — мягкая пульсация вместо «застывших» 100%. */
+  .progress.is-finishing > div { animation: progress-pulse 1.2s ease-in-out infinite; }
+  @keyframes progress-pulse { 50% { opacity: .55; } }
+  .upload-row { animation: row-in .2s ease-out both; }
+  @keyframes row-in { from { opacity: 0; transform: translateY(6px); } }
+  @media (prefers-reduced-motion: reduce) {
+    .progress.is-finishing > div, .upload-row { animation: none; }
+  }
   .dropzone-active { @apply border-brand-500 bg-brand-50 dark:bg-brand-950/40; }
   dialog::backdrop { background: rgb(15 23 42 / 0.5); backdrop-filter: blur(2px); }
 }
@@ -52,4 +64,26 @@
 @layer components {
   /* Подсветка цели при перетаскивании файла в папку */
   .drop-target { @apply bg-brand-100 ring-2 ring-inset ring-brand-500 dark:bg-brand-900/60; }
+}
+
+/* Детали «ощущения» интерфейса (skills: make-interfaces-feel-better, accessibility). */
+@layer components {
+  /* Тактильное нажатие; только transform, без transition: all. */
+  .btn, .icon-btn { transition-property: color, background-color, border-color, box-shadow, transform, opacity; transition-duration: 150ms; transition-timing-function: ease-out; }
+  .btn:active:not(:disabled), .icon-btn:active:not(:disabled) { transform: scale(.96); }
+  /* Иконки-кнопки 36px: зона нажатия расширяется до 44px, не меняя раскладку. */
+  .icon-btn { position: relative; }
+  .icon-btn::after { content: ''; position: absolute; inset: -4px; }
+  /* Появление диалогов: прозрачность + небольшой подъём; фон затемняется плавно. */
+  dialog[open] { animation: dialog-in .2s cubic-bezier(.22, 1, .36, 1); }
+  dialog[open]::backdrop { animation: backdrop-in .2s ease-out; }
+  @keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+  @keyframes backdrop-in { from { opacity: 0; } }
+  /* Нейтральная обводка у изображений предпросмотра, чтобы края не сливались с фоном. */
+  #preview img { outline: 1px solid rgb(0 0 0 / .08); outline-offset: -1px; }
+  [data-theme="dark"] #preview img { outline-color: rgb(255 255 255 / .08); }
+  @media (prefers-reduced-motion: reduce) {
+    dialog[open], dialog[open]::backdrop { animation: none; }
+    .btn:active:not(:disabled), .icon-btn:active:not(:disabled) { transform: none; }
+  }
 }

@@ -64,6 +64,8 @@ export const isField = (key) => typeof key === 'string' && Object.hasOwn(FIELDS,
 
 /** Приводит и проверяет значение поля. Бросает Error с понятным текстом. */
 export function parseField(key, raw, f = FIELDS[key]) {
+  // Пустая папка в бакете — это корень бакета, а не «значение по умолчанию».
+  if (f.type === 'prefix' && typeof raw === 'string' && raw.trim().replace(/^\/+|\/+$/g, '') === '') return '';
   if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) {
     if (f.default !== undefined) return f.default;
     return null;
@@ -88,11 +90,11 @@ export function parseField(key, raw, f = FIELDS[key]) {
       if (!/^[A-Z][A-Z0-9_]{0,31}$/.test(str.toUpperCase())) throw new Error(`${key}: например STANDARD`);
       return str.toUpperCase();
     case 'prefix': {
-      const p = str.replace(/^\/+/, '');
-      if (p === '') return '';
+      // Слеш на конце добавляем сами: «files» → «files/».
+      const p = `${str.replace(/^\/+|\/+$/g, '')}/`;
       // eslint-disable-next-line no-control-regex
-      if (!p.endsWith('/') || p.includes('//') || /[\u0000-\u001f\\]/.test(p) || p.split('/').some((s) => s === '.' || s === '..')) {
-        throw new Error(`${key}: путь вида «uploads/» — со слешем на конце, без «..» и «//»`);
+      if (p.includes('//') || /[\u0000-\u001f\\]/.test(p) || p.split('/').some((s) => s === '.' || s === '..')) {
+        throw new Error(`${key}: путь вида «uploads/», без «..» и «//»`);
       }
       return p;
     }
