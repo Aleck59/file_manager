@@ -6,6 +6,7 @@
   <meta name="robots" content="noindex, nofollow">
   <title>Вход — Файлообменник</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <script src="/js/theme.js"></script>
   <link rel="stylesheet" href="/css/app.css">
   <script type="module" src="/js/login.js"></script>
 </head>
@@ -19,8 +20,12 @@
 
     <form id="login-form" class="card space-y-4 p-6" novalidate>
       <div>
+        <label for="username" class="mb-1.5 block text-sm font-medium">Логин</label>
+        <input id="username" name="username" type="text" class="input" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+      </div>
+      <div>
         <label for="password" class="mb-1.5 block text-sm font-medium">Пароль</label>
-        <input id="password" name="password" type="password" class="input" autocomplete="current-password" required autofocus>
+        <input id="password" name="password" type="password" class="input" autocomplete="current-password" required>
       </div>
       <p id="login-error" class="hidden rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/60 dark:text-rose-300" role="alert"></p>
       <button type="submit" class="btn-primary w-full py-2.5">Войти</button>

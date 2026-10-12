@@ -1,0 +1,108 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+// Минимальное окружение, чтобы config.js загрузился без .env
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-test-'));
+Object.assign(process.env, {
+  APP_ORIGIN: 'https://files.example.com',
+  SESSION_SECRET: 'x'.repeat(32),
+  S3_ENDPOINT: 'https://s3.example.com',
+  S3_BUCKET: 'bucket',
+  S3_ACCESS_KEY: 'a',
+  S3_SECRET_KEY: 'b',
+  S3_PREFIX: 'uploads/',
+  DATA_DIR: dataDir,
+  ADMIN_USERNAME: 'admin',
+});
+const { hashPassword, verifyPassword } = await import('../src/password.js');
+process.env.ADMIN_PASSWORD_HASH = await hashPassword('admin-password');
+
+const keys = await import('../src/keys.js');
+const users = await import('../src/users.js');
+const auth = await import('../src/auth.js');
+
+test('generateKey: валидный ключ в папке, кириллица сохраняется', () => {
+  const key = keys.generateKey('Отчёт 2026.pdf', 'Документы/2026/');
+  assert.ok(keys.isValidKey(key));
+  assert.equal(keys.nameFromKey(key), 'Отчёт 2026.pdf');
+  assert.equal(keys.folderFromKey(key), 'Документы/2026/');
+});
+
+test('новые ключи сортируются раньше старых', async () => {
+  const older = keys.generateKey('a');
+  await new Promise((r) => setTimeout(r, 5));
+  assert.ok(keys.generateKey('a') < older);
+});
+
+test('isValidKey отклоняет чужие и опасные ключи', () => {
+  for (const key of ['secret/file', 'uploads/../x', 'uploads/abc~x', 'uploads/', '', null,
+    'uploads/../2wqsre1rt-OVWOwbIfUMkMzvVC~a', 'other/2wqsre1rt-OVWOwbIfUMkMzvVC~a']) {
+    assert.equal(keys.isValidKey(key), false, String(key));
+  }
+});
+
+test('isValidFolder', () => {
+  assert.ok(keys.isValidFolder(''));
+  assert.ok(keys.isValidFolder('Документы/2026/'));
+  for (const f of ['a', '/a/', 'a//', '../', 'a/./', 'a\\b/', ' a/', 'a\u0000/', `${'x/'.repeat(25)}`]) {
+    assert.equal(keys.isValidFolder(f), false, JSON.stringify(f));
+  }
+});
+
+test('sanitizeFileName / sanitizeFolderName', () => {
+  assert.equal(keys.sanitizeFileName('../../etc/passwd'), '_.._etc_passwd');
+  assert.equal(keys.sanitizeFileName('a\u0000b\nc.txt'), 'a_b_c.txt');
+  assert.equal(keys.sanitizeFileName('   '), 'file');
+  assert.ok(keys.sanitizeFileName('я'.repeat(500) + '.txt').endsWith('.txt'));
+  assert.equal(keys.sanitizeFolderName('../секрет'), '_секрет');
+  assert.equal(keys.sanitizeFolderName('  '), null);
+});
+
+test('contentDisposition кодирует имя (attachment / inline)', () => {
+  assert.equal(keys.contentDisposition('отчёт "1".pdf'),
+    `attachment; filename="_____ _1_.pdf"; filename*=UTF-8''%D0%BE%D1%82%D1%87%D1%91%D1%82%20%221%22.pdf`);
+  assert.ok(keys.contentDisposition('a.png', 'inline').startsWith('inline;'));
+});
+
+test('предпросмотр: HTML и SVG-исходники не отдаются как исполняемые', () => {
+  assert.deepEqual(keys.previewKind('index.html'), { kind: 'text', contentType: 'text/plain; charset=utf-8' });
+  assert.equal(keys.previewKind('photo.JPG').contentType, 'image/jpeg');
+  assert.equal(keys.previewKind('setup.exe'), null);
+});
+
+test('safeContentType пропускает только валидные MIME', () => {
+  assert.equal(keys.safeContentType('image/PNG'), 'image/png');
+  assert.equal(keys.safeContentType('text/html\r\nX: y'), 'application/octet-stream');
+});
+
+test('scrypt-хеш пароля проверяется', async () => {
+  const hash = await hashPassword('correct horse');
+  assert.equal(await verifyPassword('correct horse', hash), true);
+  assert.equal(await verifyPassword('wrong', hash), false);
+});
+
+test('пользователи: первый админ из .env, защита последнего админа', async () => {
+  users.initUsers();
+  assert.equal(users.getUser('ADMIN').role, 'admin');
+  assert.ok(await auth.authenticate('admin', 'admin-password'));
+  assert.equal(await auth.authenticate('admin', 'nope'), null);
+  assert.equal(await auth.authenticate('ghost', 'admin-password'), null);
+  assert.match(users.deleteUser('admin').error, /единственного/);
+  assert.match(users.updateUser('admin', { role: 'viewer' }).error, /единственного/);
+  assert.equal(users.normalizeUsername('Bad Name'), null);
+});
+
+test('сессия: токен привязан к паролю пользователя', async () => {
+  users.createUser({ username: 'ivan', role: 'viewer', passwordHash: await hashPassword('ivan-password') });
+  const token = auth.issueToken(users.getUser('ivan'));
+  assert.equal(auth.userFromToken(token).username, 'ivan');
+  assert.equal(auth.userFromToken(token.slice(0, -2) + 'xx'), null);
+  users.updateUser('ivan', { passwordHash: await hashPassword('new-password-1') });
+  assert.equal(auth.userFromToken(token), null, 'после смены пароля старый токен недействителен');
+  users.deleteUser('ivan');
+  assert.equal(auth.hasRole({ role: 'editor' }, 'viewer'), true);
+  assert.equal(auth.hasRole({ role: 'editor' }, 'admin'), false);
+});

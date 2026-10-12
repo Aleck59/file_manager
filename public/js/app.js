@@ -1,201 +1,174 @@
+// Оболочка приложения: роутер (#/...), левая панель (навигация + дерево диска),
+// заголовок страницы, очередь загрузок. Разделы — в ./views/*.
 import { api } from './api.js';
+import { initPreview } from './preview.js';
+import * as tree from './tree.js';
+import { $, applyTheme, FILES, formatSize, h, icon, pluralize, prefs, toast } from './ui.js';
 import { uploadFile, UploadCancelled } from './uploader.js';
+import { diskHash, mountDisk } from './views/disk.js';
+import { mountHome } from './views/home.js';
+import { mountSettings } from './views/settings.js';
+import { mountUsers } from './views/users.js';
 
+const ROLE_LABELS = { viewer: 'Просмотр', editor: 'Редактор', admin: 'Администратор' };
+const ROLE_ORDER = ['viewer', 'editor', 'admin'];
 const FILE_CONCURRENCY = 2;
 
-const $ = (id) => document.getElementById(id);
-const els = {
-  dropzone: $('dropzone'),
-  fileInput: $('file-input'),
-  uploadList: $('upload-list'),
-  fileList: $('file-list'),
-  summary: $('files-summary'),
-  empty: $('empty-state'),
-  skeleton: $('list-skeleton'),
-  loadMoreWrap: $('load-more-wrap'),
-  loadMore: $('load-more'),
-  search: $('search'),
-  linkTtl: $('link-ttl'),
-  refresh: $('refresh'),
-  logout: $('logout'),
-  dialog: $('confirm-dialog'),
-  confirmName: $('confirm-name'),
-  toasts: $('toasts'),
-  fileRowTpl: $('file-row'),
-  uploadRowTpl: $('upload-row'),
+const ctx = {
+  user: null,
+  can: (role) => ROLE_ORDER.indexOf(ctx.user?.role) >= ROLE_ORDER.indexOf(role),
+  roleLabel: (role) => ROLE_LABELS[role] ?? role,
+  navigate: (hash) => { if (location.hash === hash) route(); else location.hash = hash; },
+  setHeader(title, actions = []) {
+    $('#page-title').replaceChildren(title);
+    $('#page-actions').replaceChildren(...actions);
+  },
+  pickFiles(folder) {
+    uploadTarget = folder;
+    $('#file-input').click();
+  },
+  enqueue,
+  refreshStats,
+  selectAfterNavigate: null,
+  newFolderHere: null,
 };
 
-const state = { files: [], cursor: null, loading: false };
+// ---------- левая панель ----------
+function initSidebar() {
+  const navIcons = { home: ['home', 'Главная'], users: ['users', 'Пользователи'], settings: ['settings', 'Настройки'] };
+  for (const a of document.querySelectorAll('[data-nav]')) {
+    const [ic, label] = navIcons[a.dataset.nav];
+    a.replaceChildren(icon(ic), label);
+  }
+  for (const el of document.querySelectorAll('[data-role]')) {
+    if (!ctx.can(el.dataset.role)) el.remove();
+  }
+  $('#sidebar-open').append(icon('menu', 'h-5 w-5'));
+  $('#sidebar-close').append(icon('close'));
+  $('#logout').append(icon('logout'));
+  $('#tree-new-folder')?.append(icon('plus'));
+  $('#uploads-hide').append(icon('close'));
 
-// ---------- форматирование ----------
-const sizeFmt = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 });
-function formatSize(bytes) {
-  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
-  let i = 0;
-  let n = bytes;
-  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
-  return `${sizeFmt.format(n)} ${units[i]}`;
-}
-const dateFmt = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-const plural = new Intl.PluralRules('ru-RU');
-const FILE_WORDS = { one: 'файл', few: 'файла', many: 'файлов', other: 'файла' };
-const filesWord = (n) => FILE_WORDS[plural.select(n)];
-const formatDate = (iso) => (iso ? dateFmt.format(new Date(iso)) : '—');
-function extOf(name) {
-  const dot = name.lastIndexOf('.');
-  return dot > 0 && name.length - dot <= 5 ? name.slice(dot + 1) : 'file';
-}
-
-// ---------- уведомления ----------
-function toast(message, type = 'info') {
-  const el = document.createElement('div');
-  const palette = {
-    info: 'bg-slate-900 text-white dark:bg-white dark:text-slate-900',
-    success: 'bg-brand-700 text-white',
-    error: 'bg-rose-600 text-white',
+  const sidebar = $('#sidebar');
+  const backdrop = $('#sidebar-backdrop');
+  const open = (on) => {
+    sidebar.classList.toggle('-translate-x-full', !on);
+    backdrop.classList.toggle('hidden', !on);
   };
-  el.className = `pointer-events-auto max-w-md animate-toast-in rounded-xl px-4 py-2.5 text-sm shadow-lg ${palette[type]}`;
-  el.setAttribute('role', type === 'error' ? 'alert' : 'status');
-  el.textContent = message; // только textContent — никакого HTML из данных
-  els.toasts.append(el);
-  setTimeout(() => el.remove(), type === 'error' ? 6000 : 3000);
-}
+  $('#sidebar-open').addEventListener('click', () => open(true));
+  $('#sidebar-close').addEventListener('click', () => open(false));
+  backdrop.addEventListener('click', () => open(false));
+  window.addEventListener('hashchange', () => open(false));
 
-// ---------- список файлов ----------
-function renderFiles() {
-  const query = els.search.value.trim().toLowerCase();
-  const visible = query ? state.files.filter((f) => f.name.toLowerCase().includes(query)) : state.files;
-
-  const fragment = document.createDocumentFragment();
-  for (const file of visible) {
-    const row = els.fileRowTpl.content.firstElementChild.cloneNode(true);
-    row.dataset.key = file.key;
-    row.querySelector('[data-ext]').textContent = extOf(file.name).slice(0, 4);
-    const nameEl = row.querySelector('[data-name]');
-    nameEl.textContent = file.name;
-    nameEl.title = file.name;
-    row.querySelector('[data-size]').textContent = formatSize(file.size);
-    row.querySelector('[data-date]').textContent = formatDate(file.lastModified);
-    row.querySelector('[data-meta]').textContent = `${formatSize(file.size)} · ${formatDate(file.lastModified)}`;
-    fragment.append(row);
-  }
-  els.fileList.replaceChildren(fragment);
-
-  const total = state.files.reduce((sum, f) => sum + f.size, 0);
-  const more = state.cursor ? '+' : '';
-  els.summary.textContent = state.files.length
-    ? `${state.files.length}${more} ${filesWord(state.files.length)} · ${formatSize(total)}${more}`
-    : 'Нет файлов';
-  els.empty.classList.toggle('hidden', state.files.length > 0 || state.loading);
-  els.loadMoreWrap.classList.toggle('hidden', !state.cursor);
-}
-
-async function loadFiles({ append = false } = {}) {
-  if (state.loading) return;
-  state.loading = true;
-  els.refresh.disabled = els.loadMore.disabled = true;
-  try {
-    const { files, nextCursor } = await api.listFiles(append ? state.cursor : null);
-    state.files = append ? state.files.concat(files) : files;
-    state.cursor = nextCursor;
-  } catch (err) {
-    toast(err.message, 'error');
-  } finally {
-    state.loading = false;
-    els.skeleton.classList.add('hidden');
-    els.refresh.disabled = els.loadMore.disabled = false;
-    renderFiles();
-  }
-}
-
-async function copyToClipboard(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    // Фолбэк для старых браузеров / небезопасного контекста.
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.className = 'fixed -left-[9999px]';
-    document.body.append(ta);
-    ta.select();
-    const ok = document.execCommand('copy');
-    ta.remove();
-    if (!ok) throw new Error('Не удалось скопировать ссылку');
-  }
-}
-
-function confirmDelete(name) {
-  els.confirmName.textContent = name;
-  els.dialog.returnValue = '';
-  els.dialog.showModal();
-  return new Promise((resolve) => {
-    els.dialog.addEventListener('close', () => resolve(els.dialog.returnValue === 'confirm'), { once: true });
+  $('#user-avatar').textContent = ctx.user.username.slice(0, 1);
+  $('#user-name').textContent = ctx.user.username;
+  $('#user-role').textContent = ctx.roleLabel(ctx.user.role);
+  $('#logout').addEventListener('click', async () => {
+    if (active > 0 && !window.confirm('Идёт загрузка файлов. Выйти и прервать её?')) return;
+    await api.logout().catch(() => {});
+    window.location.replace('/login');
   });
+
+  // «+» у дерева: новая папка в текущей папке диска (или в корне с других страниц).
+  $('#tree-new-folder')?.addEventListener('click', () => {
+    if (ctx.newFolderHere) ctx.newFolderHere();
+    else { ctx.navigate(diskHash('')); setTimeout(() => ctx.newFolderHere?.(), 0); }
+  });
+
+  tree.initTree($('#tree'), (path) => ctx.navigate(diskHash(path)));
 }
 
-els.fileList.addEventListener('click', async (event) => {
-  const button = event.target.closest('button[data-action]');
-  if (!button) return;
-  const row = button.closest('li');
-  const file = state.files.find((f) => f.key === row.dataset.key);
-  if (!file) return;
+let statsTimer;
+function refreshStats() {
+  clearTimeout(statsTimer);
+  statsTimer = setTimeout(async () => {
+    try {
+      const s = await api.stats();
+      $('#storage-summary').replaceChildren(
+        h('div', { class: 'flex items-center justify-between' },
+          h('span', {}, 'Занято'),
+          h('span', { class: 'font-medium tabular-nums text-slate-700 dark:text-slate-200' }, formatSize(s.size))),
+        h('div', { class: 'mt-0.5' }, `${pluralize(s.files, FILES)}${s.complete ? '' : '+'}`));
+    } catch { /* не критично */ }
+  }, 300);
+}
 
-  button.disabled = true;
-  try {
-    switch (button.dataset.action) {
-      case 'download': {
-        const { url } = await api.downloadLink(file.key, 3600);
-        // Ссылка отдаётся с Content-Disposition: attachment — страница не уходит.
-        window.location.assign(url);
-        break;
-      }
-      case 'copy': {
-        const ttl = Number(els.linkTtl.value);
-        const { url } = await api.downloadLink(file.key, ttl);
-        await copyToClipboard(url);
-        toast(`Ссылка скопирована · действует ${els.linkTtl.selectedOptions[0].textContent}`, 'success');
-        break;
-      }
-      case 'delete': {
-        if (!(await confirmDelete(file.name))) break;
-        await api.deleteFile(file.key);
-        state.files = state.files.filter((f) => f.key !== file.key);
-        renderFiles();
-        toast('Файл удалён', 'success');
-        break;
-      }
-    }
-  } catch (err) {
-    toast(err.message, 'error');
-    if (err.status === 404) loadFiles();
-  } finally {
-    button.disabled = false;
+// ---------- роутер ----------
+let current = null;
+let currentRoute = '';
+
+function parseHash() {
+  const raw = location.hash.replace(/^#\/?/, '');
+  if (raw === 'disk' || raw.startsWith('disk/')) {
+    let folder = '';
+    try {
+      folder = raw.slice(5).split('/').filter(Boolean).map(decodeURIComponent).join('/');
+    } catch { /* битый URL — в корень */ }
+    return { name: 'disk', folder: folder ? `${folder}/` : '' };
   }
-});
+  return { name: ['users', 'settings'].includes(raw) ? raw : 'home' };
+}
 
-// ---------- загрузка ----------
+function route() {
+  let r = parseHash();
+  if (r.name === 'users' && !ctx.can('admin')) r = { name: 'home' };
+  const id = `${r.name}:${r.folder ?? ''}`;
+  if (id === currentRoute && !ctx.selectAfterNavigate) return;
+  currentRoute = id;
+
+  current?.unmount();
+  for (const a of document.querySelectorAll('[data-nav]')) {
+    if (a.dataset.nav === r.name) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  }
+  const view = $('#view');
+  view.scrollTop = 0;
+  if (r.name === 'disk') {
+    const selectKey = ctx.selectAfterNavigate;
+    ctx.selectAfterNavigate = null;
+    current = mountDisk(view, ctx, r.folder, { selectKey });
+  } else if (r.name === 'users') current = mountUsers(view, ctx);
+  else if (r.name === 'settings') current = mountSettings(view, ctx);
+  else current = mountHome(view, ctx);
+  const titles = { home: 'Главная', disk: 'Диск', users: 'Пользователи', settings: 'Настройки' };
+  document.title = `${titles[r.name]} — Файлообменник`;
+}
+
+// ---------- загрузки ----------
 const queue = [];
 let active = 0;
+let uploadTarget = '';
+let finished = 0;
+let failed = 0;
+let hideTimer;
 
-function addUploadRow(file) {
-  const row = els.uploadRowTpl.content.firstElementChild.cloneNode(true);
-  row.querySelector('[data-name]').textContent = file.name;
-  const status = row.querySelector('[data-status]');
-  const bar = row.querySelector('[data-bar]');
-  const cancel = row.querySelector('[data-action="cancel"]');
-  status.textContent = `${formatSize(file.size)} · в очереди`;
-  els.uploadList.append(row);
-  return { row, status, bar, cancel };
+function updateUploadsTitle() {
+  const pending = active + queue.length;
+  $('#uploads-title').textContent = pending ? `Загрузка · осталось ${pending}` : `Готово · ${pluralize(finished, FILES)}`;
 }
 
-function enqueue(files) {
+function enqueue(files, folder) {
+  if (!ctx.can('editor')) return toast('Недостаточно прав для загрузки', 'error');
+  clearTimeout(hideTimer);
+  if (!active && !queue.length) { finished = 0; failed = 0; $('#upload-list').replaceChildren(); }
+  $('#uploads').classList.remove('hidden');
   for (const file of files) {
     const controller = new AbortController();
-    const ui = addUploadRow(file);
-    ui.cancel.addEventListener('click', () => controller.abort(), { once: true });
-    queue.push({ file, controller, ui });
+    const status = h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400' }, `${formatSize(file.size)} · в очереди`);
+    const bar = h('div', { class: 'w-0' });
+    const cancel = h('button', { type: 'button', class: 'icon-btn h-7 w-7', title: 'Отменить', 'aria-label': `Отменить загрузку ${file.name}` }, icon('close'));
+    cancel.onclick = () => controller.abort();
+    const row = h('li', { class: 'flex items-center gap-3 px-4 py-3' },
+      h('div', { class: 'min-w-0 flex-1' },
+        h('div', { class: 'flex items-baseline justify-between gap-3' },
+          h('p', { class: 'truncate text-sm font-medium', title: file.name }, file.name),
+          status),
+        h('div', { class: 'progress mt-2' }, bar)),
+      cancel);
+    $('#upload-list').append(row);
+    queue.push({ file, folder, controller, ui: { row, status, bar, cancel } });
   }
+  updateUploadsTitle();
   pump();
 }
 
@@ -204,20 +177,24 @@ function pump() {
     active++;
     runUpload(queue.shift()).finally(() => {
       active--;
+      updateUploadsTitle();
+      if (!active && !queue.length) {
+        refreshStats();
+        // Всё загрузилось без ошибок — панель прячется сама; при ошибках остаётся.
+        if (!failed) hideTimer = setTimeout(() => $('#uploads').classList.add('hidden'), 4000);
+      }
       pump();
     });
   }
 }
 
-async function runUpload({ file, controller, ui }) {
+async function runUpload({ file, folder, controller, ui }) {
   const { status, bar, row, cancel } = ui;
-  if (controller.signal.aborted) {
-    row.remove();
-    return;
-  }
+  if (controller.signal.aborted) { row.remove(); return; }
   const started = performance.now();
   try {
     const result = await uploadFile(file, {
+      folder,
       signal: controller.signal,
       onProgress(loaded, total) {
         const pct = total ? Math.min(100, (loaded / total) * 100) : 100;
@@ -227,77 +204,51 @@ async function runUpload({ file, controller, ui }) {
         status.textContent = `${Math.floor(pct)}%${speed}`;
       },
     });
+    finished++;
     bar.style.width = '100%';
     status.textContent = 'Готово';
-    cancel.remove();
-    if (!state.files.some((f) => f.key === result.key)) state.files.unshift(result);
-    renderFiles();
-    setTimeout(() => row.remove(), 2500);
+    cancel.replaceChildren(icon('check'));
+    cancel.disabled = true;
+    current?.onUploaded?.(result, folder);
   } catch (err) {
-    if (err instanceof UploadCancelled) {
-      row.remove();
-      return;
-    }
+    if (err instanceof UploadCancelled) { row.remove(); return; }
+    failed++;
     bar.classList.add('!bg-rose-500');
     bar.style.width = '100%';
     status.textContent = 'Ошибка';
     status.classList.add('text-rose-600');
     cancel.title = 'Скрыть';
-    cancel.addEventListener('click', () => row.remove(), { once: true });
+    cancel.onclick = () => row.remove();
     toast(`${file.name}: ${err.message}`, 'error');
   }
 }
 
-// Предупреждаем, если пользователь закрывает вкладку во время загрузки.
 window.addEventListener('beforeunload', (event) => {
   if (active > 0 || queue.length > 0) event.preventDefault();
 });
 
-els.fileInput.addEventListener('change', () => {
-  enqueue([...els.fileInput.files]);
-  els.fileInput.value = '';
-});
+// ---------- старт ----------
+async function start() {
+  try {
+    ({ user: ctx.user } = await api.me());
+  } catch {
+    return; // при 401 api сам перенаправит на /login
+  }
+  initSidebar();
+  initPreview(ctx);
 
-// Drag-and-drop: счётчик нужен, т.к. dragenter/dragleave срабатывают на дочерних элементах.
-let dragDepth = 0;
-const hasFiles = (e) => [...(e.dataTransfer?.types ?? [])].includes('Files');
-window.addEventListener('dragenter', (e) => {
-  if (!hasFiles(e)) return;
-  e.preventDefault();
-  dragDepth++;
-  els.dropzone.classList.add('dropzone-active');
-});
-window.addEventListener('dragleave', (e) => {
-  if (!hasFiles(e)) return;
-  dragDepth = Math.max(0, dragDepth - 1);
-  if (dragDepth === 0) els.dropzone.classList.remove('dropzone-active');
-});
-window.addEventListener('dragover', (e) => {
-  if (!hasFiles(e)) return;
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'copy';
-});
-window.addEventListener('drop', (e) => {
-  if (!hasFiles(e)) return;
-  e.preventDefault();
-  dragDepth = 0;
-  els.dropzone.classList.remove('dropzone-active');
-  // Папки отфильтровываем: загружаем только сами файлы.
-  const files = [...e.dataTransfer.items]
-    .filter((item) => item.kind === 'file' && !item.webkitGetAsEntry?.()?.isDirectory)
-    .map((item) => item.getAsFile())
-    .filter(Boolean);
-  if (files.length) enqueue(files);
-  else toast('Папки не поддерживаются — перетащите сами файлы', 'error');
-});
+  $('#file-input').addEventListener('change', (e) => {
+    enqueue([...e.target.files], uploadTarget);
+    e.target.value = '';
+  });
+  $('#uploads-hide').addEventListener('click', () => $('#uploads').classList.add('hidden'));
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (prefs.get('theme', 'system') === 'system') applyTheme('system');
+  });
 
-// ---------- прочее ----------
-els.search.addEventListener('input', renderFiles);
-els.refresh.addEventListener('click', () => loadFiles());
-els.loadMore.addEventListener('click', () => loadFiles({ append: true }));
-els.logout.addEventListener('click', async () => {
-  await api.logout().catch(() => {});
-  window.location.replace('/login');
-});
+  window.addEventListener('hashchange', route);
+  route();
+  refreshStats();
+}
 
-loadFiles();
+start();

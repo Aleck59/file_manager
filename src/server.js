@@ -1,10 +1,15 @@
 import path from 'node:path';
 import express from 'express';
 import { config } from './config.js';
-import { isAuthenticated, requireAuth } from './auth.js';
+import { currentUser, requireAuth, requireRole } from './auth.js';
 import { errorHandler, rateLimit, sameOriginOnly, securityHeaders } from './middleware/security.js';
 import { authRouter } from './routes/auth.js';
 import { filesRouter } from './routes/files.js';
+import { settingsRouter } from './routes/settings.js';
+import { usersRouter } from './routes/users.js';
+import { initUsers } from './users.js';
+
+initUsers();
 
 const app = express();
 const publicDir = path.join(config.root, 'public');
@@ -26,7 +31,10 @@ api.use((req, res, next) => {
   next();
 });
 api.use('/auth', authRouter);
-api.use(requireAuth, rateLimit({ windowMs: 60 * 1000, max: 600 }), filesRouter);
+api.use(requireAuth, rateLimit({ windowMs: 60 * 1000, max: 600 }));
+api.use('/users', requireRole('admin'), usersRouter);
+api.use('/settings', requireRole('admin'), settingsRouter);
+api.use(filesRouter);
 api.use((req, res) => res.status(404).json({ error: 'Маршрут не найден' }));
 app.use('/api', api);
 
@@ -35,10 +43,10 @@ const sendPage = (file) => (req, res) =>
   res.set('Cache-Control', 'no-cache').sendFile(path.join(publicDir, file));
 
 app.get(['/', '/index.html'], (req, res, next) =>
-  isAuthenticated(req) ? sendPage('index.html')(req, res, next) : res.redirect(302, '/login'),
+  currentUser(req) ? sendPage('index.html')(req, res, next) : res.redirect(302, '/login'),
 );
 app.get(['/login', '/login.html'], (req, res, next) =>
-  isAuthenticated(req) ? res.redirect(302, '/') : sendPage('login.html')(req, res, next),
+  currentUser(req) ? res.redirect(302, '/') : sendPage('login.html')(req, res, next),
 );
 
 app.use(express.static(publicDir, { index: false, maxAge: '1h' }));

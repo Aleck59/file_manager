@@ -47,8 +47,10 @@ if (sessionSecret.length < 32) {
   throw new Error('SESSION_SECRET должен быть не короче 32 символов (openssl rand -hex 32)');
 }
 
-const passwordHash = required('ADMIN_PASSWORD_HASH');
-if (!passwordHash.startsWith('scrypt$')) {
+// Хеш пароля первого администратора. Нужен только при первом запуске, пока не создан
+// data/users.json; дальше пользователи управляются из интерфейса.
+const bootstrapPasswordHash = process.env.ADMIN_PASSWORD_HASH?.trim() || null;
+if (bootstrapPasswordHash && !bootstrapPasswordHash.startsWith('scrypt$')) {
   throw new Error('ADMIN_PASSWORD_HASH должен быть создан командой `npm run hash-password`');
 }
 
@@ -61,8 +63,11 @@ export const config = Object.freeze({
   secureCookies: parsedOrigin.protocol === 'https:',
   trustProxy: int('TRUST_PROXY', 1, { min: 0, max: 10 }),
 
+  dataDir: path.resolve(ROOT, process.env.DATA_DIR || 'data'),
+
   auth: {
-    passwordHash,
+    bootstrapUsername: (process.env.ADMIN_USERNAME || 'admin').trim().toLowerCase(),
+    bootstrapPasswordHash,
     sessionSecret,
     sessionTtlSec: int('SESSION_TTL_HOURS', 12, { min: 1, max: 24 * 30 }) * 3600,
   },

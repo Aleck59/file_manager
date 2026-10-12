@@ -24,3 +24,27 @@
   .dropzone-active { @apply border-brand-500 bg-brand-50 dark:bg-brand-950/40; }
   dialog::backdrop { background: rgb(15 23 42 / 0.5); backdrop-filter: blur(2px); }
 }
+
+@layer components {
+  .nav-link { @apply flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white; }
+  .nav-link[aria-current="page"] { @apply bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300; }
+  .tree-row { @apply flex h-8 items-center gap-1 rounded-lg pr-2 text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800; }
+  .tree-row[aria-current="true"] { @apply bg-brand-50 font-medium text-brand-700 dark:bg-brand-950/60 dark:text-brand-300; }
+  .badge { @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium; }
+  .segmented { @apply inline-flex rounded-xl bg-slate-100 p-1 dark:bg-slate-800; }
+  .segmented > button { @apply rounded-lg px-3 py-1.5 text-sm font-medium text-slate-600 transition dark:text-slate-300; }
+  .segmented > button[aria-pressed="true"] { @apply bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white; }
+  .file-row[aria-selected="true"] { @apply bg-brand-50/70 dark:bg-brand-950/40; }
+}
+
+@layer components {
+  .checkerboard {
+    background-color: theme('colors.slate.50');
+    background-image: conic-gradient(theme('colors.slate.200') 25%, transparent 0 50%, theme('colors.slate.200') 0 75%, transparent 0);
+    background-size: 16px 16px;
+  }
+  [data-theme="dark"] .checkerboard {
+    background-color: theme('colors.slate.900');
+    background-image: conic-gradient(theme('colors.slate.800') 25%, transparent 0 50%, theme('colors.slate.800') 0 75%, transparent 0);
+  }
+}

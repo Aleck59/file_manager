@@ -12,12 +12,14 @@ import {
   ListPartsCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
+  DeleteObjectsCommand,
+  HeadBucketCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from './config.js';
-import { contentDisposition, nameFromKey } from './keys.js';
+import { contentDisposition, folderToPrefix, isValidFolder, isValidKey, nameFromKey } from './keys.js';
 
-const { bucket, prefix } = config.s3;
+const { bucket } = config.s3;
 
 export const s3 = new S3Client({
   endpoint: config.s3.endpoint,
@@ -33,24 +35,73 @@ export const s3 = new S3Client({
   responseChecksumValidation: 'WHEN_REQUIRED',
 });
 
-export async function listFiles({ cursor, limit = 100 } = {}) {
+const toFile = (o) => ({
+  key: o.Key,
+  name: nameFromKey(o.Key),
+  size: o.Size ?? 0,
+  lastModified: o.LastModified?.toISOString() ?? null,
+});
+
+// Содержимое одной папки: подпапки (CommonPrefixes) + файлы (Contents), постранично.
+export async function listFolder(folder, { cursor, limit = 200 } = {}) {
+  const base = folderToPrefix(folder);
   const out = await s3.send(
     new ListObjectsV2Command({
       Bucket: bucket,
-      Prefix: prefix,
+      Prefix: base,
+      Delimiter: '/',
       MaxKeys: limit,
       ContinuationToken: cursor || undefined,
     }),
   );
-  const files = (out.Contents ?? [])
-    .filter((o) => !o.Key.endsWith('/'))
-    .map((o) => ({
-      key: o.Key,
-      name: nameFromKey(o.Key),
-      size: o.Size ?? 0,
-      lastModified: o.LastModified?.toISOString() ?? null,
-    }));
-  return { files, nextCursor: out.IsTruncated ? out.NextContinuationToken : null };
+  const folders = (out.CommonPrefixes ?? [])
+    .map((p) => p.Prefix.slice(config.s3.prefix.length))
+    .filter(isValidFolder)
+    .map((path) => ({ path, name: path.slice(0, -1).split('/').pop() }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'ru', { numeric: true }));
+  // Маркер самой папки и посторонние объекты (не нашего формата) не показываем.
+  const files = (out.Contents ?? []).filter((o) => isValidKey(o.Key)).map(toFile);
+  return { folders, files, nextCursor: out.IsTruncated ? out.NextContinuationToken : null };
+}
+
+// Обход всех объектов под префиксом (для статистики и рекурсивного удаления).
+export async function forEachObject(prefix, fn, { max = Infinity } = {}) {
+  let cursor;
+  let seen = 0;
+  do {
+    const out = await s3.send(
+      new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, MaxKeys: 1000, ContinuationToken: cursor }),
+    );
+    for (const o of out.Contents ?? []) {
+      if (seen++ >= max) return false;
+      await fn(o);
+    }
+    cursor = out.IsTruncated ? out.NextContinuationToken : undefined;
+  } while (cursor);
+  return true;
+}
+
+export async function deleteMany(keys) {
+  for (let i = 0; i < keys.length; i += 1000) {
+    const out = await s3.send(
+      new DeleteObjectsCommand({
+        Bucket: bucket,
+        Delete: { Objects: keys.slice(i, i + 1000).map((Key) => ({ Key })), Quiet: true },
+      }),
+    );
+    if (out.Errors?.length) {
+      const e = out.Errors[0];
+      throw Object.assign(new Error(`DeleteObjects: ${e.Code} ${e.Message}`), { $fault: 'server' });
+    }
+  }
+}
+
+export function putFolderMarker(folder) {
+  return s3.send(new PutObjectCommand({ Bucket: bucket, Key: folderToPrefix(folder), Body: new Uint8Array(0), ContentLength: 0 }));
+}
+
+export function headBucket() {
+  return s3.send(new HeadBucketCommand({ Bucket: bucket }));
 }
 
 export function presignPut(key, contentType) {
@@ -61,14 +112,16 @@ export function presignPut(key, contentType) {
   );
 }
 
-export function presignGet(key, expiresIn) {
+// По умолчанию — как вложение: HTML/SVG из бакета не исполнится в браузере.
+// Для предпросмотра (inline) сервер обязан передать безопасный contentType из белого списка.
+export function presignGet(key, expiresIn, { inline = false, contentType } = {}) {
   return getSignedUrl(
     s3,
     new GetObjectCommand({
       Bucket: bucket,
       Key: key,
-      // Всегда отдаём как вложение: HTML/SVG из бакета не исполнится в браузере.
-      ResponseContentDisposition: contentDisposition(nameFromKey(key)),
+      ResponseContentDisposition: contentDisposition(nameFromKey(key), inline ? 'inline' : 'attachment'),
+      ResponseContentType: contentType,
     }),
     { expiresIn },
   );

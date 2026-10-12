@@ -22,6 +22,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+# Единственный каталог, куда приложению можно писать (users.json)
+ReadWritePaths=/var/www/USER/data/www/files.example.com/data
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true

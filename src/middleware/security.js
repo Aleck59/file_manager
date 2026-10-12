@@ -15,7 +15,10 @@ export const securityHeaders = helmet({
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'"],
-      imgSrc: ["'self'", 'data:'],
+      // S3 — для предпросмотра изображений, видео/аудио и PDF по presigned-ссылкам.
+      imgSrc: ["'self'", 'data:', ...s3Origins()],
+      mediaSrc: ["'self'", ...s3Origins()],
+      frameSrc: s3Origins(),
       fontSrc: ["'self'"],
       connectSrc: ["'self'", ...s3Origins()],
       formAction: ["'self'"],

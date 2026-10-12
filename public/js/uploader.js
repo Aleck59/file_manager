@@ -44,11 +44,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * @param {File} file
- * @param {{ onProgress: (loaded: number, total: number) => void, signal: AbortSignal }} opts
+ * @param {{ folder?: string, onProgress: (loaded: number, total: number) => void, signal: AbortSignal }} opts
  * @returns {Promise<{key: string, name: string, size: number, lastModified: string}>}
  */
-export async function uploadFile(file, { onProgress, signal }) {
-  const plan = await api.startUpload(file);
+export async function uploadFile(file, { folder = '', onProgress, signal }) {
+  const plan = await api.startUpload(file, folder);
 
   if (plan.mode === 'single') {
     await putBlob(plan.url, file, plan.headers, (loaded) => onProgress(loaded, file.size), signal);

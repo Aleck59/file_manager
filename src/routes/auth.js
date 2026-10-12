@@ -1,8 +1,12 @@
 import { Router } from 'express';
-import { checkPassword, clearSessionCookie, isAuthenticated, setSessionCookie } from '../auth.js';
-import { rateLimit } from '../middleware/security.js';
+import { authenticate, clearSessionCookie, requireAuth, setSessionCookie } from '../auth.js';
+import { HttpError, rateLimit } from '../middleware/security.js';
+import { hashPassword, verifyPassword } from '../password.js';
+import { getUser, publicUser, updateUser } from '../users.js';
 
 export const authRouter = Router();
+
+export const MIN_PASSWORD_LENGTH = 10;
 
 // 10 попыток входа за 15 минут с одного IP — защита от перебора пароля.
 const loginLimiter = rateLimit({
@@ -12,15 +16,15 @@ const loginLimiter = rateLimit({
 });
 
 authRouter.post('/login', loginLimiter, async (req, res) => {
-  const password = req.body?.password;
-  if (typeof password !== 'string' || !password || password.length > 256) {
-    return res.status(400).json({ error: 'Введите пароль' });
+  const { username, password } = req.body ?? {};
+  if (typeof username !== 'string' || !username || username.length > 64 ||
+      typeof password !== 'string' || !password || password.length > 256) {
+    throw new HttpError(400, 'Введите логин и пароль');
   }
-  if (!(await checkPassword(password))) {
-    return res.status(401).json({ error: 'Неверный пароль' });
-  }
-  setSessionCookie(res);
-  res.json({ ok: true });
+  const user = await authenticate(username, password);
+  if (!user) throw new HttpError(401, 'Неверный логин или пароль');
+  setSessionCookie(res, user);
+  res.json({ user: publicUser(user) });
 });
 
 authRouter.post('/logout', (req, res) => {
@@ -28,6 +32,22 @@ authRouter.post('/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-authRouter.get('/me', (req, res) => {
-  res.json({ authenticated: isAuthenticated(req) });
+authRouter.get('/me', requireAuth, (req, res) => {
+  res.json({ user: publicUser(req.user) });
+});
+
+// Смена собственного пароля. После неё выдаём новую cookie — старые сессии
+// (на других устройствах) становятся недействительными.
+authRouter.post('/password', requireAuth, loginLimiter, async (req, res) => {
+  const { currentPassword, newPassword } = req.body ?? {};
+  if (typeof currentPassword !== 'string' || !(await verifyPassword(currentPassword, req.user.passwordHash))) {
+    throw new HttpError(400, 'Текущий пароль указан неверно');
+  }
+  if (typeof newPassword !== 'string' || newPassword.length < MIN_PASSWORD_LENGTH || newPassword.length > 256) {
+    throw new HttpError(400, `Новый пароль должен быть не короче ${MIN_PASSWORD_LENGTH} символов`);
+  }
+  const result = updateUser(req.user.username, { passwordHash: await hashPassword(newPassword) });
+  if (result.error) throw new HttpError(result.status ?? 400, result.error);
+  setSessionCookie(res, getUser(req.user.username));
+  res.json({ ok: true });
 });
