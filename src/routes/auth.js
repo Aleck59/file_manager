@@ -1,5 +1,6 @@
-import { Router } from 'express';
+import { Router } from '../http.js';
 import { authenticate, clearSessionCookie, requireAuth, setSessionCookie } from '../auth.js';
+import { config } from '../config.js';
 import { HttpError, rateLimit } from '../middleware/security.js';
 import { hashPassword, verifyPassword } from '../password.js';
 import { getUser, publicUser, updateUser } from '../users.js';
@@ -33,7 +34,7 @@ authRouter.post('/logout', (req, res) => {
 });
 
 authRouter.get('/me', requireAuth, (req, res) => {
-  res.json({ user: publicUser(req.user) });
+  res.json({ user: publicUser(req.user), storageConfigured: config.s3Configured });
 });
 
 // Смена собственного пароля. После неё выдаём новую cookie — старые сессии

@@ -10,12 +10,16 @@ Type=simple
 User=USER
 Group=USER
 WorkingDirectory=/var/www/USER/data/www/files.example.com
-ExecStart=/usr/bin/node --max-old-space-size=96 --max-semi-space-size=2 src/server.js
+ExecStart=/usr/bin/node --jitless --no-expose-wasm --optimize-for-size --max-old-space-size=64 --max-semi-space-size=1 src/server.js
 Environment=NODE_ENV=production
+# glibc: возвращать освобождённую память системе (иначе каждый вход по паролю,
+# scrypt = 16 МБ, оседает в куче процесса: 60 МБ → 120+ МБ).
+Environment=MALLOC_ARENA_MAX=2
+Environment=MALLOC_TRIM_THRESHOLD_=131072
 Restart=always
 RestartSec=3
 # Жёсткий лимит памяти на уровне cgroup
-MemoryMax=180M
+MemoryMax=150M
 
 # Песочница
 NoNewPrivileges=true

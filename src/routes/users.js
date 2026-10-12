@@ -1,5 +1,5 @@
 // Управление пользователями (только для администратора).
-import { Router } from 'express';
+import { Router } from '../http.js';
 import { HttpError } from '../middleware/security.js';
 import { hashPassword } from '../password.js';
 import { createUser, deleteUser, listUsers, normalizeUsername, ROLES, updateUser } from '../users.js';

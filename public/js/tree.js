@@ -125,11 +125,12 @@ export function setDropHandler(fn) {
   render();
 }
 
-export function initTree(el, navigate) {
+export function initTree(el, navigate, { load = true } = {}) {
   container = el;
   onNavigate = navigate;
   node('').expanded = true;
-  loadChildren('').then(render);
+  if (load) loadChildren('').then(render);
+  else node('').children = [];
   render();
 }
 

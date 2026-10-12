@@ -1,8 +1,10 @@
 // Обёртка над fetch для API бэкенда: JSON, понятные ошибки, редирект на вход при 401.
 export class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, data = {}) {
     super(message);
     this.status = status;
+    this.code = data.code;
+    this.data = data;
   }
 }
 
@@ -23,7 +25,7 @@ async function request(method, url, body) {
     window.location.replace('/login');
     throw new ApiError('Сессия истекла', 401);
   }
-  if (!res.ok) throw new ApiError(data.error || `Ошибка сервера (${res.status})`, res.status);
+  if (!res.ok) throw new ApiError(data.error || `Ошибка сервера (${res.status})`, res.status, data);
   return data;
 }
 
@@ -38,7 +40,11 @@ export const api = {
   changePassword: (currentPassword, newPassword) => request('POST', '/api/auth/password', { currentPassword, newPassword }),
 
   stats: () => request('GET', '/api/stats'),
-  listFolder: (folder, cursor) => request('GET', `/api/files${q({ folder, cursor })}`),
+  // Папки сортируются здесь, «по-русски» и с учётом чисел (на сервере — без ICU ради памяти).
+  listFolder: (folder, cursor) => request('GET', `/api/files${q({ folder, cursor })}`).then((res) => {
+    res.folders.sort((a, b) => a.name.localeCompare(b.name, 'ru', { numeric: true }));
+    return res;
+  }),
   createFolder: (parent, name) => request('POST', '/api/folders', { parent, name }),
   deleteFolder: (path) => request('POST', '/api/folders/delete', { path }),
 
@@ -57,6 +63,11 @@ export const api = {
   updateUser: (username, changes) => request('PATCH', `/api/users/${encodeURIComponent(username)}`, changes),
   deleteUser: (username) => request('DELETE', `/api/users/${encodeURIComponent(username)}`),
 
-  storageInfo: () => request('GET', '/api/settings/storage'),
-  checkStorage: () => request('POST', '/api/settings/storage/check'),
+  getSettings: () => request('GET', '/api/settings'),
+  saveSettings: (values, opts = {}) => request('PUT', '/api/settings', { values, ...opts }),
+  resetSettings: (keys, opts = {}) => request('POST', '/api/settings/reset', { keys, ...opts }),
+  checkStorage: (values) => request('POST', '/api/settings/storage/check', { values }),
+  applyCors: () => request('POST', '/api/settings/storage/cors'),
+  resetSessions: () => request('POST', '/api/settings/sessions/reset'),
+  restart: () => request('POST', '/api/settings/restart'),
 };

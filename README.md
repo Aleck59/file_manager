@@ -1,8 +1,9 @@
 # Файлообменник на S3
 
-Лёгкий self-hosted файлообменник: Node.js (Express 5) + AWS SDK v3 + Tailwind CSS + Vanilla JS.
+Лёгкий self-hosted файлообменник: Node.js + AWS SDK v3 + Tailwind CSS + Vanilla JS.
 Загрузка и скачивание идут **напрямую между браузером и S3** по presigned URL — VDS только
-подписывает ссылки, поэтому ему хватает ~80–90 МБ ОЗУ и почти не нужен канал.
+подписывает ссылки, поэтому ему хватает **~60 МБ ОЗУ** и почти не нужен канал.
+Единственная runtime-зависимость — AWS SDK; все настройки меняются в интерфейсе.
 
 ![Диск с предпросмотром](docs/screenshots/disk-light.png)
 
@@ -21,8 +22,11 @@
 - **Главная:** сводка (файлы, занятое место, папки, пользователи), структура хранилища по типам,
   недавние файлы.
 - **Пользователи и роли:** «Просмотр», «Редактор», «Администратор»; без БД — `data/users.json`.
-- **Настройки:** смена пароля, тема (системная/светлая/тёмная), срок ссылок по умолчанию,
-  сведения о хранилище и проверка подключения к S3 (для администратора).
+- **Настройки:** смена пароля, тема (системная/светлая/тёмная), срок ссылок по умолчанию.
+  Администратору доступны **все параметры `.env`**: хранилище S3 (с готовыми настройками для
+  Yandex, **Cloud.ru**, Selectel, Timeweb, VK Cloud, Cloudflare R2, Amazon S3, MinIO, проверкой
+  подключения и автонастройкой CORS), лимиты загрузки, адрес сайта, сессии, HOST/PORT
+  (с перезапуском из интерфейса). Изменения применяются сразу и хранятся в `data/settings.json`.
 - Файлы до `MULTIPART_THRESHOLD_MB` — одним PUT; крупнее — **multipart** частями
   (3 параллельно, повтор упавших частей), до 5 ТБ.
 
@@ -40,6 +44,32 @@
    └──(4) POST /api/files/link ────────────▶ Node.js → presigned GET → браузер качает с S3
 ```
 
+## Память
+
+| | В простое | После входов и нагрузки |
+|---|---|---|
+| Первая версия (Express + helmet) | ~77 МБ | ~125 МБ |
+| Сейчас | **~58 МБ** | **~62 МБ** |
+
+За счёт чего:
+- **Свой HTTP-слой** (`src/http.js`, ~250 строк на `node:http`) вместо Express 5 и helmet:
+  у Express глубокое дерево зависимостей (`qs`, `body-parser`, `send`, `router`, `iconv-lite`…).
+  API совместимый (`Router`, `req.body`, `res.json`, обработчики ошибок), так что роуты не изменились.
+- **`node:http` загружается через `require`**: ESM-импорт в Node 22 подтягивал встроенный
+  undici (fetch/WebSocket), который приложению не нужен.
+- **Флаги V8**: `--jitless --optimize-for-size --max-old-space-size=64 --max-semi-space-size=1`.
+  Без JIT V8 экономит ~15 МБ; приложение ждёт сеть, а не считает, так что скорость не падает.
+- **Аллокатор glibc** (`MALLOC_ARENA_MAX=2 MALLOC_TRIM_THRESHOLD_=131072`): каждый вход по
+  паролю — это scrypt с буфером 16 МБ в пуле потоков. По умолчанию glibc оставляет эту память
+  в куче процесса, и после нескольких входов RSS вырастал до 120+ МБ. С этими переменными
+  память сразу возвращается системе.
+- Сравнение строк на сервере без `localeCompare` (он подгружает данные ICU, ~5 МБ):
+  сортировка «по-русски» выполняется в браузере.
+- Рекурсивное удаление папки идёт пачками по 1000 ключей, без накопления списка в памяти.
+
+Переменные и флаги уже прописаны в `npm start`, `ecosystem.config.cjs` (PM2) и
+`deploy/file-manager.service` (systemd).
+
 ## Хранение в S3
 
 Папка — это S3-префикс (пустая папка хранится как объект-маркер `путь/`). Файл лежит прямо
@@ -54,19 +84,20 @@ Id в ключе при этом сохраняется, поэтому файл
 
 ```
 ├── src/
-│   ├── server.js              # Express: middleware, роуты, статика, graceful shutdown
-│   ├── config.js              # загрузка и валидация .env
+│   ├── server.js              # сборка приложения: middleware, роуты, статика, graceful shutdown
+│   ├── http.js                # лёгкий HTTP-слой с Express-совместимым API (без зависимостей)
+│   ├── config.js              # настройки: .env + data/settings.json, проверка, применение на лету
 │   ├── s3.js                  # S3-клиент (AWS SDK v3), листинг папок, presigned URL
 │   ├── keys.js                # ключи и папки, санитизация имён, белый список предпросмотра
 │   ├── users.js               # пользователи и роли (data/users.json)
 │   ├── auth.js                # сессии (HMAC-токен в cookie), requireAuth / requireRole
 │   ├── password.js            # scrypt-хеширование пароля
-│   ├── middleware/security.js # helmet/CSP, проверка Origin, rate limit, обработчик ошибок
+│   ├── middleware/security.js # заголовки безопасности/CSP, проверка Origin, rate limit, ошибки
 │   └── routes/
 │       ├── auth.js            # вход/выход, профиль, смена пароля
 │       ├── files.js           # папки, файлы, загрузка, предпросмотр, статистика
 │       ├── users.js           # управление пользователями (админ)
-│       └── settings.js        # сведения о хранилище, проверка подключения (админ)
+│       └── settings.js        # все настройки сервера, проверка S3, CORS, перезапуск (админ)
 ├── public/                    # фронтенд (сборка на сервере не нужна)
 │   ├── index.html, login.html, favicon.svg
 │   ├── css/app.css            # собранный Tailwind (коммитится)
@@ -75,7 +106,8 @@ Id в ключе при этом сохраняется, поэтому файл
 │       ├── tree.js            # дерево папок
 │       ├── folder-picker.js   # окно выбора папки для перемещения
 │       ├── preview.js         # правая панель предпросмотра
-│       ├── views/             # home.js, disk.js, users.js, settings.js
+│       ├── views/             # home.js, disk.js, users.js, settings.js, settings-admin.js
+│       ├── s3-presets.js      # готовые настройки S3-провайдеров (в т.ч. Cloud.ru)
 │       ├── api.js, uploader.js, ui.js, theme.js, login.js
 ├── frontend/tailwind.css      # исходник стилей
 ├── scripts/                   # hash-password.js, apply-cors.js
@@ -110,16 +142,20 @@ Id в ключе при этом сохраняется, поэтому файл
 | POST | `/api/files/move` | ✏️ | `{key, folder?, name?}` — переименовать и/или переместить |
 | DELETE | `/api/files?key=` | ✏️ | удалить файл |
 | GET/POST | `/api/users`, PATCH/DELETE `/api/users/:username` | 🔑 | пользователи и роли |
-| GET | `/api/settings/storage`, POST `/api/settings/storage/check` | 🔑 | сведения о S3, проверка |
+| GET / PUT | `/api/settings` | 🔑 | все настройки (секреты не отдаются) / сохранить `{values}` |
+| POST | `/api/settings/reset` | 🔑 | `{keys}` — вернуть значения из `.env` |
+| POST | `/api/settings/storage/check` | 🔑 | `{values?}` — проверить подключение (в т.ч. несохранённое) |
+| POST | `/api/settings/storage/cors` | 🔑 | применить CORS к бакету |
+| POST | `/api/settings/sessions/reset` | 🔑 | новый секрет сессий — все выйдут |
+| POST | `/api/settings/restart` | 🔑 | перезапуск процесса (для HOST/PORT) |
 
 ## Локальный запуск
 
 ```bash
 npm install
-cp .env.example .env              # APP_ORIGIN=http://localhost:3000, данные S3
+cp .env.example .env              # APP_ORIGIN=http://localhost:3000 и хеш пароля
 npm run hash-password             # → ADMIN_PASSWORD_HASH (первый администратор)
-npm run s3:cors                   # CORS для бакета
-npm run dev                       # http://localhost:3000
+npm run dev                       # http://localhost:3000 → Настройки → Хранилище S3
 npm run watch:css                 # если меняете вёрстку
 npm test
 ```

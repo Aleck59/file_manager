@@ -18,7 +18,8 @@ const MAX_FOLDER_SEGMENT = 100;
 const MAX_FOLDER_DEPTH = 20;
 const ID_LENGTH = 26; // 9 (время) + 1 + 16 (случайная часть)
 
-const PREFIX = config.s3.prefix;
+// S3_PREFIX можно сменить в настройках на лету — читаем при каждом обращении.
+const prefix = () => config.s3.prefix;
 const FILE_SEGMENT_RE = /^[0-9a-z]{9}-[A-Za-z0-9_-]{16}~[^/]+$/;
 // eslint-disable-next-line no-control-regex
 const UNSAFE_CHARS = '\\u0000-\\u001f\\u007f-\\u009f/\\\\:*?"<>|';
@@ -66,20 +67,20 @@ export function isValidFolder(folder) {
 }
 
 export function folderToPrefix(folder) {
-  return PREFIX + folder;
+  return prefix() + folder;
 }
 
 export function generateKey(fileName, folder = '') {
   const inverted = (MAX_TS - Date.now()).toString(36).padStart(9, '0');
   const random = crypto.randomBytes(12).toString('base64url');
-  return `${PREFIX}${folder}${inverted}-${random}~${sanitizeFileName(fileName)}`;
+  return `${prefix()}${folder}${inverted}-${random}~${sanitizeFileName(fileName)}`;
 }
 
 // Любой ключ, пришедший от клиента, обязан пройти эту проверку —
 // иначе через API можно было бы удалить/скачать произвольный объект бакета.
 export function isValidKey(key) {
-  if (typeof key !== 'string' || key.length > 1200 || !key.startsWith(PREFIX)) return false;
-  const rel = key.slice(PREFIX.length);
+  if (typeof key !== 'string' || key.length > 1200 || !key.startsWith(prefix())) return false;
+  const rel = key.slice(prefix().length);
   const slash = rel.lastIndexOf('/');
   const folder = rel.slice(0, slash + 1);
   return FILE_SEGMENT_RE.test(rel.slice(slash + 1)) && isValidFolder(folder);
@@ -93,11 +94,11 @@ export function nameFromKey(key) {
 // сохраняется — файл остаётся на своём месте в сортировке «новые сверху».
 export function rebuildKey(key, { folder = folderFromKey(key), name = nameFromKey(key) } = {}) {
   const segment = key.slice(key.lastIndexOf('/') + 1);
-  return `${PREFIX}${folder}${segment.slice(0, ID_LENGTH)}~${sanitizeFileName(name)}`;
+  return `${prefix()}${folder}${segment.slice(0, ID_LENGTH)}~${sanitizeFileName(name)}`;
 }
 
 export function folderFromKey(key) {
-  const rel = key.slice(PREFIX.length);
+  const rel = key.slice(prefix().length);
   return rel.slice(0, rel.lastIndexOf('/') + 1);
 }
 

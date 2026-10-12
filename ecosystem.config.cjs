@@ -8,9 +8,17 @@ module.exports = {
       cwd: __dirname,
       exec_mode: 'fork', // cluster не нужен: сервер только подписывает ссылки
       instances: 1,
-      node_args: '--max-old-space-size=96 --max-semi-space-size=2',
-      max_memory_restart: '160M',
-      env: { NODE_ENV: 'production' },
+      // Экономия ОЗУ: интерпретатор без JIT (~-15 МБ) и компактные лимиты кучи V8.
+      // Для этого приложения скорость не меняется: время уходит на сеть, а не на JS.
+      node_args: '--jitless --no-expose-wasm --optimize-for-size --max-old-space-size=64 --max-semi-space-size=1',
+      max_memory_restart: '120M',
+      env: {
+        NODE_ENV: 'production',
+        // glibc: сразу возвращать системе освобождённую память. Без этого 16 МБ, которые
+        // берёт scrypt при каждом входе, оседают в куче процесса: 60 МБ → 120+ МБ.
+        MALLOC_ARENA_MAX: '2',
+        MALLOC_TRIM_THRESHOLD_: '131072',
+      },
       autorestart: true,
       restart_delay: 3000,
       max_restarts: 10,

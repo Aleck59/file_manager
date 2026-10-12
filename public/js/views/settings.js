@@ -1,7 +1,8 @@
-// Раздел «Настройки»: профиль и пароль, интерфейс, сведения о хранилище (админ).
+// Раздел «Настройки»: профиль и пароль, интерфейс; для администратора — все параметры сервера.
 import { api } from '../api.js';
 import { TTL_LABELS } from '../preview.js';
-import { applyTheme, formatSize, h, icon, prefs, toast } from '../ui.js';
+import { adminSettings } from './settings-admin.js';
+import { applyTheme, h, prefs, toast } from '../ui.js';
 
 function section(title, description, ...content) {
   return h('section', { class: 'card grid gap-6 p-5 sm:p-6 md:grid-cols-3' },
@@ -32,10 +33,6 @@ function segmented(options, value, onChange, label) {
   return group;
 }
 
-const dl = (rows) => h('dl', { class: 'divide-y divide-slate-100 text-sm dark:divide-slate-800' },
-  rows.map(([k, v]) => h('div', { class: 'flex justify-between gap-4 py-2.5' },
-    h('dt', { class: 'text-slate-500 dark:text-slate-400' }, k),
-    h('dd', { class: 'min-w-0 break-all text-right font-medium' }, v))));
 
 export function mountSettings(view, ctx) {
   ctx.setHeader(h('h1', { class: 'truncate text-base font-semibold' }, 'Настройки'), []);
@@ -89,49 +86,13 @@ export function mountSettings(view, ctx) {
 
   const sections = [profile, ui];
 
-  // ---------- хранилище (админ) ----------
-  if (ctx.can('admin')) {
-    const info = h('div', { class: 'h-40 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800' });
-    const result = h('span', { class: 'text-sm', role: 'status' });
-    const check = h('button', { type: 'button', class: 'btn-ghost border border-slate-200 dark:border-slate-700', onclick: async () => {
-      check.disabled = true;
-      result.textContent = 'Проверяем…';
-      result.className = 'text-sm text-slate-500';
-      try {
-        const r = await api.checkStorage();
-        result.replaceChildren(icon(r.ok ? 'check' : 'alert', 'h-4 w-4'),
-          r.ok ? ` Подключение в порядке · ${r.latencyMs} мс` : ` Ошибка: ${r.error}`);
-        result.className = `inline-flex items-center gap-1 text-sm ${r.ok ? 'text-brand-700 dark:text-brand-400' : 'text-rose-600 dark:text-rose-400'}`;
-      } catch (err) {
-        result.textContent = err.message;
-      } finally {
-        check.disabled = false;
-      }
-    } }, icon('server'), 'Проверить подключение');
-
-    sections.push(section('Хранилище S3', 'Задаётся в файле .env на сервере. Ключи доступа здесь не показываются.',
-      info, h('div', { class: 'flex flex-wrap items-center gap-3' }, check, result)));
-
-    api.storageInfo().then(({ storage, limits, session }) => {
-      info.replaceWith(dl([
-        ['Endpoint', storage.endpoint],
-        ['Бакет', storage.bucket],
-        ['Регион', storage.region],
-        ['Папка в бакете', storage.prefix || '/'],
-        ['Адресация', storage.forcePathStyle ? 'path-style' : 'virtual-hosted'],
-        ['Максимальный размер файла', formatSize(limits.maxFileSize)],
-        ['Загрузка частями от', formatSize(limits.multipartThreshold)],
-        ['Размер части', formatSize(limits.partSize)],
-        ['Срок ссылки на загрузку', `${Math.round(limits.uploadUrlTtlSec / 60)} мин`],
-        ['Длительность сессии', `${session.ttlHours} ч`],
-      ]));
-    }).catch((err) => toast(err.message, 'error'));
-  }
+  // Все параметры сервера (.env) — только для администратора.
+  if (ctx.can('admin')) sections.push(adminSettings(ctx));
 
   view.replaceChildren(h('div', { class: 'mx-auto max-w-4xl space-y-6 p-4 sm:p-6' },
     h('div', {},
       h('h2', { class: 'text-2xl font-semibold tracking-tight' }, 'Настройки'),
-      h('p', { class: 'mt-1 text-sm text-slate-500 dark:text-slate-400' }, 'Профиль, внешний вид и параметры хранилища.')),
+      h('p', { class: 'mt-1 text-sm text-slate-500 dark:text-slate-400' }, ctx.can('admin') ? 'Профиль, внешний вид, хранилище, загрузка и параметры сервера.' : 'Профиль и внешний вид.')),
     ...sections));
 
   return { unmount() {} };

@@ -1,7 +1,7 @@
 // Раздел «Главная»: сводка по диску, структура хранилища по типам и недавние файлы.
 import { api } from '../api.js';
 import { $, FILES, fileBadge, folderLabel, formatDate, formatSize, h, icon, pluralize, toast } from '../ui.js';
-import { diskHash } from './disk.js';
+import { diskHash, storageNotice } from './disk.js';
 
 // Категориальная палитра (проверена валидатором dataviz для светлой и тёмной темы):
 // порядок фиксирован, «Прочее» — нейтральный серый. Цвет дублируется подписями в легенде.
@@ -107,6 +107,10 @@ export function mountHome(view, ctx) {
         recent))));
 
   let alive = true;
+  if (!ctx.storageConfigured) {
+    tiles.closest('.space-y-6').replaceChildren(tiles.closest('.space-y-6').firstElementChild, storageNotice(ctx));
+    return { unmount() {} };
+  }
   (async () => {
     try {
       const [stats, usersCount] = await Promise.all([

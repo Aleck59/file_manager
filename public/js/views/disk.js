@@ -11,7 +11,21 @@ import {
 
 export const diskHash = (folder) => `#/disk/${folder.split('/').filter(Boolean).map(encodeURIComponent).join('/')}${folder ? '/' : ''}`;
 
+export function storageNotice(ctx) {
+  return h('div', { class: 'mx-auto max-w-xl px-6 py-20 text-center' },
+    h('span', { class: 'mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-50 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400' }, icon('server', 'h-6 w-6')),
+    h('p', { class: 'text-lg font-semibold' }, 'Хранилище не настроено'),
+    h('p', { class: 'mt-1 text-sm text-slate-500 dark:text-slate-400' },
+      ctx.can('admin') ? 'Укажите параметры S3-хранилища — после этого здесь появятся файлы.' : 'Администратор ещё не подключил хранилище файлов.'),
+    ctx.can('admin') && h('a', { href: '#/settings', class: 'btn-primary mt-6' }, icon('settings'), 'Открыть настройки'));
+}
+
 export function mountDisk(view, ctx, folder, { selectKey } = {}) {
+  if (!ctx.storageConfigured) {
+    ctx.setHeader(h('h1', { class: 'truncate text-base font-semibold' }, 'Мой диск'), []);
+    view.replaceChildren(storageNotice(ctx));
+    return { unmount() {} };
+  }
   const canEdit = ctx.can('editor');
   const state = { folders: [], files: [], cursor: null, loading: false, selected: selectKey ?? null, query: '' };
   const cleanup = [];

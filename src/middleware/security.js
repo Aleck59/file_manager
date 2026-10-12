@@ -1,37 +1,57 @@
-import helmet from 'helmet';
-import { config } from '../config.js';
+import { config, onConfigChange } from '../config.js';
 
-// Origin-ы S3, к которым браузеру разрешено обращаться (CSP connect-src).
+// Origin-ы S3, к которым браузеру разрешено обращаться (CSP connect-src и т.д.).
 // Покрываем и path-style (endpoint/bucket), и virtual-hosted-style (bucket.endpoint).
 function s3Origins() {
+  if (!config.s3.endpoint) return [];
   const url = new URL(config.s3.endpoint);
-  return [url.origin, `${url.protocol}//${config.s3.bucket}.${url.host}`];
+  return [url.origin, ...(config.s3.bucket ? [`${url.protocol}//${config.s3.bucket}.${url.host}`] : [])];
 }
 
-export const securityHeaders = helmet({
-  contentSecurityPolicy: {
-    useDefaults: false,
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
-      styleSrc: ["'self'"],
-      // S3 — для предпросмотра изображений, видео/аудио и PDF по presigned-ссылкам.
-      imgSrc: ["'self'", 'data:', ...s3Origins()],
-      mediaSrc: ["'self'", ...s3Origins()],
-      frameSrc: s3Origins(),
-      fontSrc: ["'self'"],
-      connectSrc: ["'self'", ...s3Origins()],
-      formAction: ["'self'"],
-      frameAncestors: ["'none'"],
-      baseUri: ["'none'"],
-      objectSrc: ["'none'"],
-      ...(config.secureCookies ? { upgradeInsecureRequests: [] } : {}),
-    },
-  },
-  // HSTS лучше включать в Nginx/FastPanel после проверки HTTPS; здесь — консервативно.
-  strictTransportSecurity: config.secureCookies ? { maxAge: 15552000 } : false,
-  referrerPolicy: { policy: 'no-referrer' },
+// Заголовки безопасности (то, что раньше делал helmet, без лишней зависимости).
+// Пересобираются, когда администратор меняет адрес сайта или хранилища.
+let headers;
+function buildHeaders() {
+  const s3 = s3Origins().join(' ');
+  const csp = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self'",
+    // S3 — для предпросмотра изображений, видео/аудио и PDF по presigned-ссылкам.
+    `img-src 'self' data: ${s3}`,
+    `media-src 'self' ${s3}`,
+    `frame-src ${s3 || "'none'"}`,
+    "font-src 'self'",
+    `connect-src 'self' ${s3}`,
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    ...(config.secureCookies ? ['upgrade-insecure-requests'] : []),
+  ].map((d) => d.trim()).join('; ');
+  headers = {
+    'Content-Security-Policy': csp,
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'Origin-Agent-Cluster': '?1',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-DNS-Prefetch-Control': 'off',
+    'X-Frame-Options': 'DENY',
+    'X-Permitted-Cross-Domain-Policies': 'none',
+    // HSTS лучше включать в Nginx/FastPanel после проверки HTTPS; здесь — консервативно.
+    ...(config.secureCookies ? { 'Strict-Transport-Security': 'max-age=15552000' } : {}),
+  };
+}
+buildHeaders();
+onConfigChange((changed) => {
+  if (changed.some((k) => k === 'APP_ORIGIN' || k === 'S3_ENDPOINT' || k === 'S3_BUCKET')) buildHeaders();
 });
+
+export function securityHeaders(req, res, next) {
+  for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
+  next();
+}
 
 // CSRF-защита: изменяющие запросы принимаются только с нашего Origin.
 // Вместе с SameSite=Strict cookie этого достаточно без CSRF-токенов.
@@ -81,6 +101,7 @@ export class HttpError extends Error {
 // eslint-disable-next-line no-unused-vars
 export function errorHandler(err, req, res, next) {
   if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+  if (err.code === 'S3_NOT_CONFIGURED') return res.status(503).json({ error: err.message, code: err.code });
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Некорректный JSON' });
   if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Слишком большой запрос' });
 

@@ -31,7 +31,27 @@ const ctx = {
   refreshStats,
   selectAfterNavigate: null,
   newFolderHere: null,
+  storageConfigured: true,
+  setStorageConfigured,
 };
+
+// Пока администратор не указал хранилище S3 — баннер и никаких запросов к нему.
+function setStorageConfigured(value) {
+  const was = ctx.storageConfigured;
+  ctx.storageConfigured = value;
+  const banner = $('#storage-banner');
+  banner.classList.toggle('hidden', value);
+  banner.classList.toggle('flex', !value);
+  if (!value) {
+    banner.replaceChildren(icon('alert'), h('span', { class: 'flex-1' },
+      ctx.can('admin') ? 'Хранилище S3 не настроено — файлы пока недоступны.' : 'Хранилище файлов ещё не настроено. Обратитесь к администратору.'),
+    ctx.can('admin') && h('a', { href: '#/settings', class: 'font-medium underline' }, 'Настроить'));
+  }
+  if (value && !was) {
+    tree.reload('');
+    refreshStats();
+  }
+}
 
 // ---------- левая панель ----------
 function initSidebar() {
@@ -75,12 +95,13 @@ function initSidebar() {
     else { ctx.navigate(diskHash('')); setTimeout(() => ctx.newFolderHere?.(), 0); }
   });
 
-  tree.initTree($('#tree'), (path) => ctx.navigate(diskHash(path)));
+  tree.initTree($('#tree'), (path) => ctx.navigate(diskHash(path)), { load: ctx.storageConfigured });
 }
 
 let statsTimer;
 function refreshStats() {
   clearTimeout(statsTimer);
+  if (!ctx.storageConfigured) return;
   statsTimer = setTimeout(async () => {
     try {
       const s = await api.stats();
@@ -230,12 +251,15 @@ window.addEventListener('beforeunload', (event) => {
 // ---------- старт ----------
 async function start() {
   try {
-    ({ user: ctx.user } = await api.me());
+    const me = await api.me();
+    ctx.user = me.user;
+    ctx.storageConfigured = me.storageConfigured;
   } catch {
     return; // при 401 api сам перенаправит на /login
   }
   initSidebar();
   initPreview(ctx);
+  setStorageConfigured(ctx.storageConfigured);
 
   $('#file-input').addEventListener('change', (e) => {
     enqueue([...e.target.files], uploadTarget);

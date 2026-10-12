@@ -8,9 +8,9 @@ import { config } from './config.js';
 import { verifyPassword } from './password.js';
 import { getUser, ROLES } from './users.js';
 
-const { sessionSecret, sessionTtlSec } = config.auth;
-
-export const COOKIE_NAME = config.secureCookies ? '__Host-fm_session' : 'fm_session';
+// Секрет и срок сессии можно менять в настройках — читаем их при каждом обращении.
+// Имя cookie зависит от схемы APP_ORIGIN: префикс __Host- допустим только по HTTPS.
+export const cookieName = () => (config.secureCookies ? '__Host-fm_session' : 'fm_session');
 
 // Хеш-пустышка: при несуществующем логине всё равно считаем scrypt,
 // чтобы по времени ответа нельзя было понять, есть ли такой пользователь.
@@ -23,11 +23,11 @@ export async function authenticate(username, password) {
 }
 
 function sign(payload, user) {
-  return crypto.createHmac('sha256', sessionSecret).update(`${payload}|${user.passwordHash}`).digest('base64url');
+  return crypto.createHmac('sha256', config.auth.sessionSecret).update(`${payload}|${user.passwordHash}`).digest('base64url');
 }
 
 export function issueToken(user) {
-  const payload = `v2.${Buffer.from(user.username).toString('base64url')}.${Math.floor(Date.now() / 1000) + sessionTtlSec}`;
+  const payload = `v2.${Buffer.from(user.username).toString('base64url')}.${Math.floor(Date.now() / 1000) + config.auth.sessionTtlSec}`;
   return `${payload}.${sign(payload, user)}`;
 }
 
@@ -62,21 +62,21 @@ function readCookie(req, name) {
 }
 
 export function currentUser(req) {
-  return userFromToken(readCookie(req, COOKIE_NAME));
+  return userFromToken(readCookie(req, cookieName()));
 }
 
 export function setSessionCookie(res, user) {
-  res.cookie(COOKIE_NAME, issueToken(user), {
+  res.cookie(cookieName(), issueToken(user), {
     httpOnly: true,
     secure: config.secureCookies,
     sameSite: 'strict',
     path: '/',
-    maxAge: sessionTtlSec * 1000,
+    maxAge: config.auth.sessionTtlSec * 1000,
   });
 }
 
 export function clearSessionCookie(res) {
-  res.clearCookie(COOKIE_NAME, { httpOnly: true, secure: config.secureCookies, sameSite: 'strict', path: '/' });
+  res.clearCookie(cookieName(), { httpOnly: true, secure: config.secureCookies, sameSite: 'strict', path: '/' });
 }
 
 export function requireAuth(req, res, next) {

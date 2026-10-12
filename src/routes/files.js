@@ -1,6 +1,6 @@
-import { Router } from 'express';
+import { Router } from '../http.js';
 import { requireRole } from '../auth.js';
-import { config } from '../config.js';
+import { config, onConfigChange } from '../config.js';
 import {
   categoryOf, folderFromKey, folderToPrefix, generateKey, isValidFolder, isValidKey,
   nameFromKey, previewKind, rebuildKey, safeContentType, sanitizeFileName, sanitizeFolderName,
@@ -11,7 +11,6 @@ import * as storage from '../s3.js';
 export const filesRouter = Router();
 
 const canEdit = requireRole('editor');
-const { maxFileSize, multipartThreshold, partSize: minPartSize } = config.limits;
 const MAX_PARTS = 10_000; // ограничение S3
 const MB = 1024 * 1024;
 const LINK_TTLS = new Set([3600, 24 * 3600, 7 * 24 * 3600]);
@@ -48,6 +47,11 @@ let statsGeneration = 0;
 // Сбрасывается ПОСЛЕ успешного изменения в S3. Счётчик поколений не даёт сохранить в кэш
 // результат подсчёта, который начался до изменения и закончился после.
 const invalidateStats = () => { statsCache = null; statsGeneration++; };
+// Другой бакет или папка в бакете — другая статистика.
+onConfigChange((changed) => { if (changed.some((k) => k.startsWith('S3_'))) invalidateStats(); });
+
+// ISO-даты сравниваются как строки — без localeCompare (он подгружает ICU).
+const byDateDesc = (a, b) => ((b.lastModified ?? '') > (a.lastModified ?? '') ? 1 : -1);
 
 async function computeStats() {
   const categories = Object.fromEntries(
@@ -72,9 +76,9 @@ async function computeStats() {
     // Папки, в которых есть файлы, но нет маркера.
     for (let f = file.folder; f; f = f.slice(0, f.slice(0, -1).lastIndexOf('/') + 1)) folders.add(folderToPrefix(f));
     recent.push(file);
-    if (recent.length > 64) recent = recent.sort((a, b) => (b.lastModified ?? '').localeCompare(a.lastModified ?? '')).slice(0, 8);
+    if (recent.length > 64) recent = recent.sort(byDateDesc).slice(0, 8);
   }, { max: STATS_MAX_OBJECTS });
-  recent = recent.sort((a, b) => (b.lastModified ?? '').localeCompare(a.lastModified ?? '')).slice(0, 8);
+  recent = recent.sort(byDateDesc).slice(0, 8);
   return { files, folders: folders.size, size, categories, recent, complete };
 }
 
@@ -111,11 +115,22 @@ filesRouter.post('/folders', canEdit, async (req, res) => {
 filesRouter.post('/folders/delete', canEdit, async (req, res) => {
   const path = requireFolder(req.body?.path);
   if (!path) throw new HttpError(400, 'Корневую папку удалить нельзя');
-  const keys = [];
-  await storage.forEachObject(folderToPrefix(path), (o) => { keys.push(o.Key); });
-  await storage.deleteMany(keys);
+  // Удаляем пачками по 1000 по мере обхода — список ключей не копится в памяти.
+  let batch = [];
+  let deleted = 0;
+  const flush = async () => {
+    if (!batch.length) return;
+    await storage.deleteMany(batch);
+    deleted += batch.length;
+    batch = [];
+  };
+  await storage.forEachObject(folderToPrefix(path), async (o) => {
+    batch.push(o.Key);
+    if (batch.length >= 1000) await flush();
+  });
+  await flush();
   invalidateStats();
-  res.json({ ok: true, deleted: keys.length });
+  res.json({ ok: true, deleted });
 });
 
 // ---------- загрузка ----------
@@ -126,20 +141,20 @@ filesRouter.post('/uploads', canEdit, async (req, res) => {
   const folder = requireFolder(req.body?.folder);
   if (typeof name !== 'string' || !name.trim()) throw new HttpError(400, 'Не указано имя файла');
   if (!Number.isSafeInteger(size) || size < 0) throw new HttpError(400, 'Некорректный размер файла');
-  if (size > maxFileSize) {
-    throw new HttpError(413, `Файл больше допустимого размера (${Math.round(maxFileSize / MB)} МБ)`);
+  if (size > config.limits.maxFileSize) {
+    throw new HttpError(413, `Файл больше допустимого размера (${Math.round(config.limits.maxFileSize / MB)} МБ)`);
   }
 
   const key = generateKey(name, folder);
   const contentType = safeContentType(type);
 
-  if (size <= multipartThreshold) {
+  if (size <= config.limits.multipartThreshold) {
     const url = await storage.presignPut(key, contentType);
     return res.json({ mode: 'single', key, url, headers: { 'Content-Type': contentType } });
   }
 
   // Размер части — не меньше настроенного и такой, чтобы уложиться в 10 000 частей.
-  const partSize = Math.max(minPartSize, Math.ceil(size / MAX_PARTS / MB) * MB);
+  const partSize = Math.max(config.limits.partSize, Math.ceil(size / MAX_PARTS / MB) * MB);
   const partCount = Math.ceil(size / partSize);
   const uploadId = await storage.createMultipart(key, contentType);
   res.json({ mode: 'multipart', key, uploadId, partSize, partCount });
@@ -170,7 +185,7 @@ filesRouter.post('/uploads/complete', canEdit, async (req, res) => {
   if (req.body?.uploadId === undefined) {
     const head = await storage.headObject(key);
     if (!head) throw new HttpError(404, 'Загруженный файл не найден в хранилище');
-    if ((head.ContentLength ?? 0) > maxFileSize) {
+    if ((head.ContentLength ?? 0) > config.limits.maxFileSize) {
       await storage.deleteObject(key);
       throw new HttpError(413, 'Файл превышает допустимый размер и был удалён');
     }
@@ -182,7 +197,7 @@ filesRouter.post('/uploads/complete', canEdit, async (req, res) => {
   const parts = await storage.listAllParts(key, uploadId);
   if (parts.length === 0) throw new HttpError(400, 'Ни одна часть файла не загружена');
   const total = parts.reduce((sum, p) => sum + p.Size, 0);
-  if (total > maxFileSize) {
+  if (total > config.limits.maxFileSize) {
     await storage.abortMultipart(key, uploadId);
     throw new HttpError(413, 'Файл превышает допустимый размер, загрузка отменена');
   }

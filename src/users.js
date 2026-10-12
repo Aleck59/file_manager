@@ -52,7 +52,8 @@ export function getUser(username) {
 }
 
 export function listUsers() {
-  return [...users.values()].map(publicUser).sort((a, b) => a.username.localeCompare(b.username));
+  // Простое сравнение: логины — латиница, а localeCompare на сервере подгружает данные ICU (~5 МБ).
+  return [...users.values()].map(publicUser).sort((a, b) => (a.username < b.username ? -1 : 1));
 }
 
 export function normalizeUsername(input) {
