@@ -1,6 +1,6 @@
 // Управление пользователями (только для администратора).
 import { Router } from '../http.js';
-import { HttpError } from '../middleware/security.js';
+import { audit, HttpError } from '../middleware/security.js';
 import { hashPassword } from '../password.js';
 import { createUser, deleteUser, listUsers, normalizeUsername, ROLES, updateUser } from '../users.js';
 import { MIN_PASSWORD_LENGTH } from './auth.js';
@@ -40,7 +40,9 @@ usersRouter.post('/', async (req, res) => {
   const username = checkUsername(req.body?.username);
   const role = checkRole(req.body?.role);
   const passwordHash = await hashPassword(checkPassword(req.body?.password));
-  res.status(201).json(unwrap(createUser({ username, role, passwordHash })));
+  const result = unwrap(createUser({ username, role, passwordHash }));
+  audit(req, 'user.create', { username, role });
+  res.status(201).json(result);
 });
 
 usersRouter.patch('/:username', async (req, res) => {
@@ -54,11 +56,15 @@ usersRouter.patch('/:username', async (req, res) => {
     ...(role !== undefined && { role: checkRole(role) }),
     ...(password !== undefined && { passwordHash: await hashPassword(checkPassword(password)) }),
   };
-  res.json(unwrap(updateUser(username, changes)));
+  const result = unwrap(updateUser(username, changes));
+  audit(req, 'user.update', { username, role: changes.role, password: changes.passwordHash ? 'изменён' : undefined });
+  res.json(result);
 });
 
 usersRouter.delete('/:username', (req, res) => {
   const username = checkUsername(req.params.username);
   if (username === req.user.username) throw new HttpError(400, 'Нельзя удалить самого себя');
-  res.json(unwrap(deleteUser(username)));
+  const result = unwrap(deleteUser(username));
+  audit(req, 'user.delete', { username });
+  res.json(result);
 });

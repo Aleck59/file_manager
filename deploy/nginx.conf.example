@@ -1,4 +1,9 @@
 # Фрагмент для FastPanel: «Сайты» → ваш сайт → «Конфигурация» → Nginx.
+#
+# (Рекомендуется) Ограничение частоты входа на уровне Nginx — добавьте в блок http {}
+# (FastPanel: /etc/nginx/nginx.conf или файл в /etc/nginx/conf.d/):
+#   limit_req_zone $binary_remote_addr zone=fm_login:1m rate=10r/m;
+# и раскомментируйте location = /api/auth/login ниже.
 # Замените содержимое блока `location /` (и уберите проксирование на Apache/PHP, если оно есть)
 # на этот блок. Остальное (listen, ssl_certificate, server_name) оставьте как сгенерировал FastPanel.
 
@@ -22,17 +27,28 @@ location / {
     client_max_body_size 64k;
 }
 
+# location = /api/auth/login {
+#     limit_req zone=fm_login burst=5 nodelay;
+#     proxy_pass         http://127.0.0.1:3000;
+#     proxy_set_header   Host              $host;
+#     proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+#     proxy_set_header   X-Forwarded-Proto $scheme;
+#     client_max_body_size 4k;
+# }
+
 # Статику отдаёт сам Nginx — меньше работы для Node.js.
 # Путь замените на свой (FastPanel: /var/www/<пользователь>/data/www/<домен>/public).
 location ~ ^/(css|js)/ {
     root /var/www/USER/data/www/files.example.com/public;
     expires 1h;
     add_header Cache-Control "public";
+    add_header X-Content-Type-Options "nosniff";
     access_log off;
 }
 
 location = /favicon.svg {
     root /var/www/USER/data/www/files.example.com/public;
     expires 7d;
+    add_header X-Content-Type-Options "nosniff";
     access_log off;
 }

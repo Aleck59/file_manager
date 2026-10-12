@@ -5,7 +5,7 @@
 import crypto from 'node:crypto';
 import { setSessionCookie } from '../auth.js';
 import {
-  addStorage, config, describeSettings, FIELDS, findStorageDef, parseField, parseStorageDef, PLACEMENTS,
+  addStorage, config, describeSettings, findStorageDef, isField, parseField, parseStorageDef, PLACEMENTS,
   publicStorage, removeStorage, reorderStorages, resetSettings, setPlacement, settingsFilePath, updateSettings, updateStorage,
 } from '../config.js';
 import { Router } from '../http.js';
@@ -49,6 +49,8 @@ settingsRouter.get('/', (req, res) => res.json(payload()));
 settingsRouter.put('/', (req, res) => {
   const values = req.body?.values;
   if (!values || typeof values !== 'object' || Array.isArray(values)) throw new HttpError(400, 'Нет значений для сохранения');
+  const unknown = Object.keys(values).filter((k) => !isField(k));
+  if (unknown.length) throw new HttpError(400, `Неизвестные настройки: ${unknown.slice(0, 5).join(', ')}`);
 
   // Смена APP_ORIGIN: изменяющие запросы со старого адреса после этого будут отклоняться.
   if (values.APP_ORIGIN !== undefined) {
@@ -65,7 +67,7 @@ settingsRouter.put('/', (req, res) => {
 // POST /api/settings/reset {keys} — вернуть значения из .env
 settingsRouter.post('/reset', (req, res) => {
   const keys = req.body?.keys;
-  if (!Array.isArray(keys) || !keys.every((k) => typeof k === 'string' && FIELDS[k])) throw new HttpError(400, 'Некорректный список настроек');
+  if (!Array.isArray(keys) || !keys.length || !keys.every(isField)) throw new HttpError(400, 'Некорректный список настроек');
   if (keys.includes('APP_ORIGIN') && !req.body.confirmOriginChange) throw new HttpError(409, 'Смена адреса сайта требует подтверждения');
   const changed = wrap(() => resetSettings(keys));
   res.json({ ...payload(), changed });

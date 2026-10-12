@@ -1,0 +1,14 @@
+# fail2ban: блокировать IP на 1 час после 8 неудачных входов за 10 минут.
+# Для systemd-запуска: backend = systemd и journalmatch; для PM2 — logpath к logs/error.log.
+[file-manager]
+enabled  = true
+filter   = file-manager
+port     = http,https
+maxretry = 8
+findtime = 10m
+bantime  = 1h
+# --- вариант systemd (deploy/file-manager.service) ---
+backend      = systemd
+journalmatch = _SYSTEMD_UNIT=file-manager.service
+# --- вариант PM2: закомментируйте две строки выше и раскомментируйте ---
+# logpath = /var/www/USER/data/www/files.example.com/logs/error.log

@@ -298,3 +298,39 @@ test('HTTP-слой: маршруты, параметры, вложенные р
     server.close();
   }
 });
+
+// ---------- безопасность (регрессионные тесты по итогам аудита) ----------
+test('аудит: X-Forwarded-For принимается только от локального/частного прокси', async () => {
+  const { isTrustedPeer } = await import('../src/http.js');
+  for (const a of ['127.0.0.1', '::1', '::ffff:127.0.0.1', '10.1.2.3', '192.168.0.5', '172.16.0.1', '172.31.255.1', 'fd12::1']) {
+    assert.equal(isTrustedPeer(a), true, a);
+  }
+  for (const a of ['192.0.2.2', '8.8.8.8', '172.32.0.1', '::ffff:1.2.3.4', '2001:db8::1', '']) {
+    assert.equal(isTrustedPeer(a), false, a);
+  }
+});
+
+test('аудит: невидимые и bidi-символы вырезаются из имён, ZWJ в эмодзи сохраняется', () => {
+  assert.equal(keys.sanitizeFileName('invoice‮fdp.exe'), 'invoicefdp.exe');
+  assert.equal(keys.sanitizeFolderName('Док​ументы⁦'), 'Документы');
+  assert.equal(keys.sanitizeFileName('﻿a.txt'), 'a.txt');
+  assert.equal(keys.sanitizeFileName('👨‍👩‍👧.jpg'), '👨‍👩‍👧.jpg');
+  assert.equal(keys.isValidFolder('a‮/'), false);
+});
+
+test('аудит: служебные ключи объекта не считаются настройками', () => {
+  for (const k of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) assert.equal(cfg.isField(k), false, k);
+  assert.equal(cfg.isField('PORT'), true);
+  assert.throws(() => cfg.parseStorageDef({ name: 'x', endpoint: 'javascript:alert(1)', bucket: 'b', accessKeyId: 'a', secretAccessKey: 's' }), /http/);
+});
+
+test('аудит: выход отзывает токен', () => {
+  const user = users.getUser('admin');
+  const token = auth.issueToken(user);
+  assert.equal(auth.userFromToken(token)?.username, 'admin');
+  auth.revokeToken(token);
+  assert.equal(auth.userFromToken(token), null);
+  assert.ok(auth.userFromToken(auth.issueToken(user)), 'новый вход работает');
+  const mode = fs.statSync(path.join(dataDir, 'revoked.json')).mode & 0o777;
+  assert.equal(mode, 0o600);
+});

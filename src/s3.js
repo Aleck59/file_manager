@@ -36,6 +36,9 @@ export function createClient(def) {
     requestChecksumCalculation: 'WHEN_REQUIRED',
     responseChecksumValidation: 'WHEN_REQUIRED',
     maxAttempts: 2,
+    // Без таймаутов «молчащее» хранилище (пакеты теряются) подвешивало запросы на минуты,
+    // а вместе с ними — список файлов единого диска для всех пользователей.
+    requestHandler: { connectionTimeout: 5_000, requestTimeout: 60_000 },
   });
 }
 
@@ -187,10 +190,13 @@ export class Storage {
     return (await this.send(new GetBucketCorsCommand({ Bucket: this.bucket }))).CORSRules ?? [];
   }
 
-  presignPut(rel, contentType) {
+  // Размер входит в подпись (заголовок Content-Length): S3 отклонит загрузку
+  // любого другого объёма, поэтому лимит размера нельзя обойти, загрузив по ссылке
+  // больше заявленного и не вызвав /uploads/complete.
+  presignPut(rel, contentType, size) {
     return getSignedUrl(this.client,
-      new PutObjectCommand({ Bucket: this.bucket, Key: this.abs(rel), ContentType: contentType }),
-      { expiresIn: config.limits.uploadUrlTtlSec });
+      new PutObjectCommand({ Bucket: this.bucket, Key: this.abs(rel), ContentType: contentType, ContentLength: size }),
+      { expiresIn: config.limits.uploadUrlTtlSec, signableHeaders: new Set(['content-length']) });
   }
 
   // По умолчанию — как вложение: HTML/SVG из бакета не исполнится в браузере.

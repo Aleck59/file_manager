@@ -39,6 +39,8 @@ function buildHeaders() {
     'Cross-Origin-Resource-Policy': 'same-origin',
     'Origin-Agent-Cluster': '?1',
     'Referrer-Policy': 'no-referrer',
+    // Приложению не нужны камера, микрофон, геолокация и т.п. — запрещаем явно.
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
     'X-Content-Type-Options': 'nosniff',
     'X-DNS-Prefetch-Control': 'off',
     'X-Frame-Options': 'DENY',
@@ -91,6 +93,11 @@ export function rateLimit({ windowMs, max, message = 'Слишком много 
     }
     next();
   };
+}
+
+/** Журнал действий: кто, что, с чем. Значения — через JSON, чтобы их нельзя было подделать переводом строки. */
+export function audit(req, action, details = {}) {
+  console.log(`[audit] ${req.user?.username ?? '-'} ${action} ${JSON.stringify(details)} ip=${req.ip}`);
 }
 
 export class HttpError extends Error {

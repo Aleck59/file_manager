@@ -31,14 +31,31 @@ const DOWN_FOR = 60_000;
 const failures = new Map(); // id -> { at, error }
 export function markFailed(id, err) {
   failures.set(id, { at: Date.now(), error: describeS3Error(err) });
+  lastProbe.set(id, Date.now());
 }
 export function markOk(id) {
   failures.delete(id);
+  lastProbe.delete(id);
 }
 const recentlyFailed = (id) => {
   const f = failures.get(id);
   return f && Date.now() - f.at < DOWN_FOR ? f : null;
 };
+
+// Пока хранилище недоступно, чтение (списки, статистика) его пропускает сразу, а не ждёт
+// таймаут соединения в каждом запросе; повторная проверка — не чаще раза в RETRY_EVERY.
+const RETRY_EVERY = 30_000;
+const lastProbe = new Map(); // id -> время последней попытки, пока хранилище «лежит»
+function skipWhileDown(st) {
+  const f = recentlyFailed(st.id);
+  if (!f) return null;
+  const probed = lastProbe.get(st.id) ?? 0;
+  if (Date.now() - probed >= RETRY_EVERY) {
+    lastProbe.set(st.id, Date.now());
+    return null; // пора проверить снова
+  }
+  return Object.assign(new Error(f.error), { name: 'StorageDown', skipped: true });
+}
 
 function sync() {
   const next = new Map();
@@ -152,7 +169,10 @@ export function mergePages(pages, { cursor, limit }) {
 
 export async function listFolder(folder, { cursor, limit = 200 } = {}) {
   const list = all();
-  const results = await Promise.allSettled(list.map((st) => st.listPage(folder, { startAfter: cursor, limit })));
+  const results = await Promise.allSettled(list.map((st) => {
+    const down = skipWhileDown(st);
+    return down ? Promise.reject(down) : st.listPage(folder, { startAfter: cursor, limit });
+  }));
   const pages = [];
   const warnings = [];
   results.forEach((r, i) => {
@@ -160,9 +180,11 @@ export async function listFolder(folder, { cursor, limit = 200 } = {}) {
       pages.push({ st: list[i], page: r.value });
       markOk(list[i].id);
     } else {
-      markFailed(list[i].id, r.reason);
-      console.error(`[storage ${list[i].name}] список не получен:`, r.reason?.name, r.reason?.message);
-      warnings.push({ storage: list[i].name, error: describeS3Error(r.reason) });
+      if (!r.reason?.skipped) {
+        markFailed(list[i].id, r.reason);
+        console.error(`[storage ${list[i].name}] список не получен:`, r.reason?.name, r.reason?.message);
+      }
+      warnings.push({ storage: list[i].name, error: r.reason?.skipped ? r.reason.message : describeS3Error(r.reason) });
     }
   });
   if (!pages.length) throw results[0].reason;
@@ -222,6 +244,8 @@ async function computeStats() {
     const item = { id: st.id, name: st.name, files: 0, size: 0, quota: (st.def.quotaGb || 0) * GB,
       acceptUploads: st.def.acceptUploads, complete: true, error: null };
     try {
+      const down = skipWhileDown(st);
+      if (down) throw down;
       item.complete = await st.forEachObject('', (o) => {
         if (o.rel.endsWith('/')) {
           if (o.rel) folders.add(o.rel);
@@ -241,8 +265,8 @@ async function computeStats() {
       }, { max: STATS_MAX_OBJECTS });
       markOk(st.id);
     } catch (err) {
-      markFailed(st.id, err);
-      item.error = describeS3Error(err);
+      if (!err.skipped) markFailed(st.id, err);
+      item.error = err.skipped ? err.message : describeS3Error(err);
       item.complete = false;
     }
     complete &&= item.complete;

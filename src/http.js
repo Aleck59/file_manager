@@ -178,6 +178,16 @@ export function serveStatic(root, { maxAge = 0 } = {}) {
 
 // ---------- приложение ----------
 
+// Адрес соединения — локальный прокси (Nginx на этой же машине или в частной сети)?
+// Только таким соединениям верим в X-Forwarded-For: иначе при прямом доступе к Node
+// клиент подставил бы любой IP и обошёл ограничение попыток входа.
+export function isTrustedPeer(addr = '') {
+  const a = addr.startsWith('::ffff:') ? addr.slice(7) : addr;
+  if (a === '::1' || a.startsWith('127.') || a.startsWith('10.') || a.startsWith('192.168.')) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(a)) return true;
+  return /^f[cd][0-9a-f]{2}:/i.test(a); // IPv6 ULA fc00::/7
+}
+
 /**
  * @param {{ trustProxy: () => number }} opts — сколько прокси перед приложением (для req.ip)
  */
@@ -193,9 +203,10 @@ export function createApp({ trustProxy = () => 0 } = {}) {
     req.get = (name) => req.headers[name.toLowerCase()];
 
     // req.ip как в Express с trust proxy = N: адрес на N шагов от нас по X-Forwarded-For.
-    const chain = [req.socket.remoteAddress ?? '',
+    const peer = req.socket.remoteAddress ?? '';
+    const chain = [peer,
       ...(req.headers['x-forwarded-for'] ?? '').split(',').map((s) => s.trim()).filter(Boolean).reverse()];
-    req.ip = chain[Math.min(trustProxy(), chain.length - 1)];
+    req.ip = isTrustedPeer(peer) ? chain[Math.min(trustProxy(), chain.length - 1)] : peer;
 
     root(req, res, (err) => {
       if (err) {

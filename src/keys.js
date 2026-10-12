@@ -25,12 +25,17 @@ const ID_LENGTH = 26; // 9 (время) + 1 + 16 (случайная часть)
 const FILE_SEGMENT_RE = /^[0-9a-z]{9}-[A-Za-z0-9_-]{16}~[^/]+$/;
 // eslint-disable-next-line no-control-regex
 const UNSAFE_CHARS = '\\u0000-\\u001f\\u007f-\\u009f/\\\\:*?"<>|';
+// Невидимые символы и управление направлением текста (bidi): с ними «счёт‮fdp.exe»
+// выглядит как «счётexe.pdf». U+200D (ZWJ) не трогаем — он нужен составным эмодзи.
+const INVISIBLE = '\\u00ad\\u061c\\u115f\\u1160\\u180e\\u200b\\u200c\\u200e\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb';
 const UNSAFE_CHARS_RE = new RegExp(`[${UNSAFE_CHARS}]`, 'g');
-const HAS_UNSAFE_RE = new RegExp(`[${UNSAFE_CHARS}]`);
+const INVISIBLE_RE = new RegExp(`[${INVISIBLE}]`, 'g');
+const HAS_UNSAFE_RE = new RegExp(`[${UNSAFE_CHARS}${INVISIBLE}]`);
 
 function clean(input) {
   return String(input ?? '')
     .normalize('NFC')
+    .replace(INVISIBLE_RE, '')
     .replace(UNSAFE_CHARS_RE, '_')
     .replace(/\s+/g, ' ')
     .trim();

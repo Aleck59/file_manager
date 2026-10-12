@@ -331,6 +331,24 @@ pm2 restart file-manager        # или: sudo systemctl restart file-manager
 
 ## 9. Безопасность — чек-лист
 
+Подробный отчёт об аудите, исправленных проблемах и остаточных рисках — в [SECURITY.md](../SECURITY.md).
+
+**fail2ban** (блокировка IP после 8 неудачных входов за 10 минут):
+
+```bash
+sudo apt-get install -y fail2ban
+sudo cp deploy/fail2ban/file-manager.conf  /etc/fail2ban/filter.d/file-manager.conf
+sudo cp deploy/fail2ban/file-manager.local /etc/fail2ban/jail.d/file-manager.local
+# для PM2: в jail.d/file-manager.local замените backend/journalmatch на logpath (см. комментарии)
+sudo systemctl restart fail2ban
+sudo fail2ban-client status file-manager
+```
+
+Журнал приложения содержит строки `[auth]` (входы и неудачные попытки) и `[audit]` (загрузка,
+удаление, перемещение, папки, пользователи, настройки): `journalctl -u file-manager | grep audit`
+или `pm2 logs file-manager | grep audit`.
+
+
 - [x] Доступ к интерфейсу и API — только после входа (scrypt-хеши паролей, HttpOnly + Secure + SameSite=Strict cookie).
 - [x] Роли: «Просмотр» (смотреть и скачивать), «Редактор» (+ загрузка, папки, удаление),
       «Администратор» (+ пользователи и сведения о хранилище). Права проверяются на сервере.

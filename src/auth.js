@@ -4,6 +4,8 @@
 //   В подпись входит хеш пароля пользователя, поэтому смена пароля или удаление
 //   пользователя сразу инвалидирует его сессии; смена SESSION_SECRET — все сессии.
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { config } from './config.js';
 import { verifyPassword } from './password.js';
 import { getUser, ROLES } from './users.js';
@@ -26,22 +28,54 @@ function sign(payload, user) {
   return crypto.createHmac('sha256', config.auth.sessionSecret).update(`${payload}|${user.passwordHash}`).digest('base64url');
 }
 
+// Формат: v3.<логин base64url>.<exp>.<случайная часть>.<подпись>. Случайная часть делает
+// каждый токен уникальным: иначе выход и повторный вход в ту же секунду дали бы тот же
+// (уже отозванный) токен.
 export function issueToken(user) {
-  const payload = `v2.${Buffer.from(user.username).toString('base64url')}.${Math.floor(Date.now() / 1000) + config.auth.sessionTtlSec}`;
+  const nonce = crypto.randomBytes(9).toString('base64url');
+  const payload = `v3.${Buffer.from(user.username).toString('base64url')}.${Math.floor(Date.now() / 1000) + config.auth.sessionTtlSec}.${nonce}`;
   return `${payload}.${sign(payload, user)}`;
+}
+
+// ---------- отзыв сессий при выходе ----------
+// Токен самодостаточен, поэтому «Выйти» должно явно его отозвать — иначе украденная cookie
+// работала бы до истечения срока. Храним подписи отозванных токенов до их истечения
+// (обычно единицы записей) в памяти и в data/revoked.json, чтобы пережить перезапуск.
+const revokedFile = path.join(config.dataDir, 'revoked.json');
+let revoked = new Map(); // подпись → exp (сек)
+try {
+  revoked = new Map(Object.entries(JSON.parse(fs.readFileSync(revokedFile, 'utf8'))));
+} catch { /* файла ещё нет */ }
+
+function persistRevoked() {
+  const now = Date.now() / 1000;
+  for (const [sig, exp] of revoked) if (exp < now) revoked.delete(sig);
+  fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+  const tmp = `${revokedFile}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(revoked)), { mode: 0o600 });
+  fs.renameSync(tmp, revokedFile);
+}
+
+/** Отзывает токен (если он действителен). */
+export function revokeToken(token) {
+  if (!userFromToken(token)) return;
+  const parts = token.split('.');
+  revoked.set(parts[4], Number(parts[2]));
+  persistRevoked();
 }
 
 // Возвращает пользователя по токену или null.
 export function userFromToken(token) {
   if (typeof token !== 'string' || token.length > 512) return null;
   const parts = token.split('.');
-  if (parts.length !== 4 || parts[0] !== 'v2') return null;
-  const [, nameB64, exp, sigB64] = parts;
+  if (parts.length !== 5 || parts[0] !== 'v3') return null;
+  const [, nameB64, exp, , sigB64] = parts;
   if (!(Number(exp) > Date.now() / 1000)) return null;
+  if (revoked.has(sigB64)) return null;
   const user = getUser(Buffer.from(nameB64, 'base64url').toString());
   if (!user) return null;
   const sig = Buffer.from(sigB64);
-  const expected = Buffer.from(sign(parts.slice(0, 3).join('.'), user));
+  const expected = Buffer.from(sign(parts.slice(0, 4).join('.'), user));
   return sig.length === expected.length && crypto.timingSafeEqual(sig, expected) ? user : null;
 }
 
@@ -63,6 +97,10 @@ function readCookie(req, name) {
 
 export function currentUser(req) {
   return userFromToken(readCookie(req, cookieName()));
+}
+
+export function currentToken(req) {
+  return readCookie(req, cookieName());
 }
 
 export function setSessionCookie(res, user) {

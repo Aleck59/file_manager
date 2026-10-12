@@ -1,12 +1,12 @@
 // API файлов и папок единого диска (одно или несколько S3-хранилищ, см. storages.js).
-import { requireRole } from '../auth.js';
+import { hasRole, requireRole } from '../auth.js';
 import { config } from '../config.js';
 import { Router } from '../http.js';
 import {
   folderFromKey, generateKey, isValidFolder, isValidKey, nameFromKey, previewKind, rebuildKey,
   safeContentType, sanitizeFileName, sanitizeFolderName,
 } from '../keys.js';
-import { HttpError } from '../middleware/security.js';
+import { audit, HttpError } from '../middleware/security.js';
 import * as storages from '../storages.js';
 
 export const filesRouter = Router();
@@ -33,9 +33,16 @@ function requireUploadId(uploadId) {
 
 const { resolveRef, fileInfo } = storages;
 
+// Подробности ошибок хранилищ (адреса, порты, коды) видит только администратор:
+// обычным пользователям незачем знать внутреннюю инфраструктуру.
+const publicWarnings = (req, warnings = []) => (hasRole(req.user, 'admin') ? warnings
+  : warnings.map((w) => ({ storage: w.storage, error: 'нет связи с хранилищем' })));
+
 // ---------- статистика ----------
 filesRouter.get('/stats', async (req, res) => {
-  res.json(await storages.getStats());
+  const stats = await storages.getStats();
+  if (hasRole(req.user, 'admin')) return res.json(stats);
+  res.json({ ...stats, storages: stats.storages.map((s) => ({ ...s, error: s.error ? 'нет связи с хранилищем' : null })) });
 });
 
 // ---------- папки ----------
@@ -49,7 +56,8 @@ filesRouter.get('/files', async (req, res) => {
     throw new HttpError(400, 'Некорректный курсор');
   }
   if (cursor === '') cursor = undefined;
-  res.json({ folder, ...(await storages.listFolder(folder, { cursor })) });
+  const result = await storages.listFolder(folder, { cursor });
+  res.json({ folder, ...result, warnings: publicWarnings(req, result.warnings) });
 });
 
 // POST /api/folders {parent, name} — создать папку (во всех хранилищах).
@@ -61,7 +69,8 @@ filesRouter.post('/folders', canEdit, async (req, res) => {
   if (!isValidFolder(path)) throw new HttpError(400, 'Слишком глубокая вложенность или длинный путь');
   const { warnings } = await storages.createFolder(path);
   storages.invalidateStats();
-  res.status(201).json({ folder: { path, name }, warnings });
+  audit(req, 'folder.create', { path });
+  res.status(201).json({ folder: { path, name }, warnings: publicWarnings(req, warnings) });
 });
 
 // POST /api/folders/delete {path} — удалить папку со всем содержимым во всех хранилищах.
@@ -70,7 +79,8 @@ filesRouter.post('/folders/delete', canEdit, async (req, res) => {
   if (!path) throw new HttpError(400, 'Корневую папку удалить нельзя');
   const { deleted, warnings } = await storages.deleteFolder(path);
   storages.invalidateStats();
-  res.json({ ok: true, deleted, warnings });
+  audit(req, 'folder.delete', { path, deleted });
+  res.json({ ok: true, deleted, warnings: publicWarnings(req, warnings) });
 });
 
 // ---------- загрузка ----------
@@ -91,7 +101,7 @@ filesRouter.post('/uploads', canEdit, async (req, res) => {
   const contentType = safeContentType(type);
 
   if (size <= config.limits.multipartThreshold) {
-    const url = await st.presignPut(rel, contentType);
+    const url = await st.presignPut(rel, contentType, size);
     return res.json({ mode: 'single', key, url, headers: { 'Content-Type': contentType }, storage: st.id });
   }
 
@@ -133,6 +143,7 @@ filesRouter.post('/uploads/complete', canEdit, async (req, res) => {
     }
     storages.noteUploaded(st.id, head.ContentLength ?? 0);
     storages.invalidateStats();
+    audit(req, 'file.upload', { storage: st.id, key: rel, size: head.ContentLength ?? 0 });
     return res.json({ file: fileInfo(st, rel, head.ContentLength ?? 0, head.LastModified) });
   }
 
@@ -147,6 +158,7 @@ filesRouter.post('/uploads/complete', canEdit, async (req, res) => {
   await st.completeMultipart(rel, uploadId, parts);
   storages.noteUploaded(st.id, total);
   storages.invalidateStats();
+  audit(req, 'file.upload', { storage: st.id, key: rel, size: total });
   res.json({ file: fileInfo(st, rel, total) });
 });
 
@@ -190,7 +202,10 @@ filesRouter.post('/files/preview', async (req, res) => {
   };
   const preview = previewKind(nameFromKey(rel));
   if (!preview) return res.json({ kind: null, ...meta });
-  const url = await st.presignGet(rel, PREVIEW_TTL, { inline: true, contentType: preview.contentType });
+  // inline — только для PDF (его показывает iframe). Картинки, видео и аудио браузер отображает
+  // в <img>/<video> и с «attachment», а при прямом открытии ссылки файл просто скачается:
+  // загруженный SVG/HTML не сможет выполнить скрипт даже на домене хранилища.
+  const url = await st.presignGet(rel, PREVIEW_TTL, { inline: preview.kind === 'pdf', contentType: preview.contentType });
   res.json({ kind: preview.kind, url, ...meta });
 });
 
@@ -217,6 +232,7 @@ filesRouter.post('/files/move', canEdit, async (req, res) => {
   await st.copyObject(rel, target, size, head.ContentType);
   await st.deleteObject(rel);
   storages.invalidateStats();
+  audit(req, 'file.move', { storage: st.id, from: rel, to: target });
   res.json({ file: fileInfo(st, target, size), folder });
 });
 
@@ -225,5 +241,6 @@ filesRouter.delete('/files', canEdit, async (req, res) => {
   const { st, rel } = resolveRef(req.query.key);
   await st.deleteObject(rel);
   storages.invalidateStats();
+  audit(req, 'file.delete', { storage: st.id, key: rel });
   res.json({ ok: true });
 });

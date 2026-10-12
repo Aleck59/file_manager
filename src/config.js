@@ -55,6 +55,10 @@ export const STORAGE_FIELDS = {
 };
 export const PLACEMENTS = ['fill', 'balance'];
 
+// Только собственные ключи: FIELDS['constructor'] или FIELDS['toString'] — это свойства
+// Object.prototype, их нельзя принимать за названия настроек.
+export const isField = (key) => typeof key === 'string' && Object.hasOwn(FIELDS, key);
+
 /** Приводит и проверяет значение поля. Бросает Error с понятным текстом. */
 export function parseField(key, raw, f = FIELDS[key]) {
   if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) {
@@ -121,7 +125,7 @@ if (fs.existsSync(settingsFile)) {
     const raw = file.overrides ?? {};
     for (const [key, value] of Object.entries(raw)) {
       if (key.startsWith('S3_')) { legacyS3[key] = value; continue; }
-      if (!FIELDS[key]) continue;
+      if (!isField(key)) continue;
       try {
         overrides[key] = parseField(key, value);
       } catch (err) {
@@ -257,8 +261,8 @@ export function updateSettings(values) {
   const next = { ...overrides };
   const errors = [];
   for (const [key, raw] of Object.entries(values)) {
+    if (!isField(key)) continue;
     const f = FIELDS[key];
-    if (!f) continue;
     if (f.type === 'secret' && (raw === undefined || raw === null || raw === '')) continue;
     try {
       const value = parseField(key, raw);
@@ -283,9 +287,9 @@ export function updateSettings(values) {
 /** Сбрасывает переопределения — значения снова берутся из .env. */
 export function resetSettings(keys) {
   const values = {};
-  for (const key of keys) if (FIELDS[key] && FIELDS[key].type !== 'secret') values[key] = envValues[key] ?? FIELDS[key].default ?? '';
+  for (const key of keys) if (isField(key) && FIELDS[key].type !== 'secret') values[key] = envValues[key] ?? FIELDS[key].default ?? '';
   // Секреты сбрасываются только удалением переопределения.
-  const secretKeys = keys.filter((k) => FIELDS[k]?.type === 'secret' && overrides[k] !== undefined && envValues[k]);
+  const secretKeys = keys.filter((k) => isField(k) && FIELDS[k].type === 'secret' && overrides[k] !== undefined && envValues[k]);
   const changed = updateSettings(values);
   if (secretKeys.length) {
     for (const k of secretKeys) delete overrides[k];

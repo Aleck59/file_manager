@@ -1,5 +1,5 @@
 import { Router } from '../http.js';
-import { authenticate, clearSessionCookie, requireAuth, setSessionCookie } from '../auth.js';
+import { authenticate, clearSessionCookie, currentToken, requireAuth, revokeToken, setSessionCookie } from '../auth.js';
 import { config } from '../config.js';
 import { HttpError, rateLimit } from '../middleware/security.js';
 import { hashPassword, verifyPassword } from '../password.js';
@@ -23,12 +23,20 @@ authRouter.post('/login', loginLimiter, async (req, res) => {
     throw new HttpError(400, 'Введите логин и пароль');
   }
   const user = await authenticate(username, password);
-  if (!user) throw new HttpError(401, 'Неверный логин или пароль');
+  if (!user) {
+    // Строка для fail2ban и разбора инцидентов. Логин — через JSON.stringify: перевод строки
+    // в логине не сможет подделать запись в журнале.
+    console.warn(`[auth] неудачный вход: логин=${JSON.stringify(username.slice(0, 64))} ip=${req.ip}`);
+    throw new HttpError(401, 'Неверный логин или пароль');
+  }
+  console.log(`[auth] вход: ${user.username} ip=${req.ip}`);
   setSessionCookie(res, user);
   res.json({ user: publicUser(user) });
 });
 
 authRouter.post('/logout', (req, res) => {
+  const token = currentToken(req);
+  if (token) revokeToken(token);
   clearSessionCookie(res);
   res.json({ ok: true });
 });
