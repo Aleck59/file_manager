@@ -224,10 +224,11 @@ curl -H "Authorization: Bearer $T" "$U/api/files?folder="
 F=backup.tar.gz; SIZE=$(stat -c %s "$F")
 PLAN=$(curl -s -H "Authorization: Bearer $T" -H 'content-type: application/json' \
   -d "{\"name\":\"$F\",\"size\":$SIZE,\"folder\":\"Бэкапы/\"}" "$U/api/uploads")
-curl -X PUT -H "Content-Type: $(echo "$PLAN" | jq -r '.headers["Content-Type"]')" \
-  $(echo "$PLAN" | jq -r '.headers | to_entries[] | select(.key!="Content-Type") | "-H \(.key): \(.value)"') \
+CT=$(echo "$PLAN" | jq -r '.headers["Content-Type"]')
+SC=$(echo "$PLAN" | jq -r '.headers["X-Amz-Storage-Class"] // empty')
+curl -sf -X PUT -H "Content-Type: $CT" ${SC:+-H "X-Amz-Storage-Class: $SC"} \
   --data-binary @"$F" "$(echo "$PLAN" | jq -r .url)"
-curl -H "Authorization: Bearer $T" -H 'content-type: application/json' \
+curl -s -H "Authorization: Bearer $T" -H 'content-type: application/json' \
   -d "{\"key\":\"$(echo "$PLAN" | jq -r .key)\"}" "$U/api/uploads/complete"
 ```
 
