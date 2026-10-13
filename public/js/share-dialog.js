@@ -3,7 +3,8 @@ import { api } from './api.js';
 import { copyToClipboard, folderLabel, formatDate, h, icon, toast } from './ui.js';
 import qrcode from './vendor/qrcode.js';
 
-export const shareUrl = (id) => `${location.origin}/s/${id}`;
+// Короткий адрес портала (files.example.com/a), если он задан, иначе /s/<id>.
+export const shareUrl = (id, slug) => (slug ? `${location.origin}/${slug}` : `${location.origin}/s/${id}`);
 
 function qrCanvas(text) {
   const qr = qrcode(0, 'M');
@@ -41,6 +42,14 @@ export function openShareDialog(target) {
   const limitLabel = h('label', { for: 'share-limit', class: 'mb-1.5 block text-sm font-medium' }, 'Лимит скачиваний');
   const maxSize = h('input', { id: 'share-maxsize', type: 'number', class: 'input', min: 1, placeholder: 'как в настройках', inputmode: 'numeric' });
   const maxSizeWrap = h('div', { class: 'hidden' }, h('label', { for: 'share-maxsize', class: 'mb-1.5 block text-sm font-medium' }, 'Макс. размер файла, МБ'), maxSize);
+  // Портал загрузки: свой короткий адрес и подпись на странице.
+  const slug = h('input', { id: 'share-slug', type: 'text', class: 'min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm outline-none', placeholder: 'a', autocomplete: 'off', spellcheck: 'false', maxlength: 40 });
+  const caption = h('input', { id: 'share-caption', type: 'text', class: 'input', placeholder: 'Загрузить файлы', maxlength: 200 });
+  const portalWrap = h('div', { class: 'hidden grid gap-4 sm:col-span-2 sm:grid-cols-2' },
+    h('div', {}, h('label', { for: 'share-slug', class: 'mb-1.5 block text-sm font-medium' }, 'Свой адрес'),
+      h('div', { class: 'flex overflow-hidden rounded-xl border border-slate-300 bg-white focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/30 dark:border-slate-700 dark:bg-slate-900' },
+        h('span', { class: 'flex items-center border-r border-slate-200 bg-slate-50 px-3 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800' }, `${location.host}/`), slug)),
+    h('div', {}, h('label', { for: 'share-caption', class: 'mb-1.5 block text-sm font-medium' }, 'Подпись на странице'), caption));
   const error = h('p', { class: 'hidden rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/60 dark:text-rose-300', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'btn-primary' }, icon('link'), 'Создать ссылку');
   const form = h('form', { class: 'space-y-4 p-6' },
@@ -51,7 +60,8 @@ export function openShareDialog(target) {
       h('div', {}, h('label', { for: 'share-exp', class: 'mb-1.5 block text-sm font-medium' }, 'Срок действия'), expiry),
       h('div', {}, h('label', { for: 'share-pass', class: 'mb-1.5 block text-sm font-medium' }, 'Пароль'), password),
       h('div', {}, limitLabel, limit),
-      maxSizeWrap),
+      maxSizeWrap,
+      portalWrap),
     error,
     h('div', { class: 'flex justify-end gap-2' },
       h('button', { type: 'button', class: 'btn-ghost', onclick: () => dialog.close() }, 'Отмена'), submit));
@@ -61,6 +71,7 @@ export function openShareDialog(target) {
     const upload = type() === 'upload';
     limitLabel.textContent = upload ? 'Лимит файлов' : 'Лимит скачиваний';
     maxSizeWrap.classList.toggle('hidden', !upload);
+    portalWrap.classList.toggle('hidden', !upload);
   });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -75,6 +86,8 @@ export function openShareDialog(target) {
         maxDownloads: t !== 'upload' && limit.value ? Number(limit.value) : null,
         maxUploads: t === 'upload' && limit.value ? Number(limit.value) : null,
         maxFileSizeMb: t === 'upload' && maxSize.value ? Number(maxSize.value) : null,
+        slug: t === 'upload' ? slug.value.trim().toLowerCase() || null : null,
+        caption: t === 'upload' ? caption.value.trim() || null : null,
       });
       showResult(share);
     } catch (err) {
@@ -86,7 +99,7 @@ export function openShareDialog(target) {
   });
 
   function showResult(share) {
-    const url = shareUrl(share.id);
+    const url = shareUrl(share.id, share.slug);
     const details = [share.expiresAt ? `до ${formatDate(share.expiresAt)}` : 'бессрочно',
       share.hasPassword && 'с паролем',
       share.maxDownloads && `${share.maxDownloads} скачиваний`, share.maxUploads && `${share.maxUploads} файлов`].filter(Boolean).join(' · ');

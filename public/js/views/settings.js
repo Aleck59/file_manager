@@ -98,9 +98,6 @@ export function mountSettings(view, ctx) {
   if (ctx.can('admin')) sections.push(adminSettings(ctx));
 
   view.replaceChildren(h('div', { class: 'mx-auto max-w-4xl space-y-6 p-4 sm:p-6' },
-    h('div', {},
-      h('h2', { class: 'text-2xl font-semibold tracking-tight' }, 'Настройки'),
-      h('p', { class: 'mt-1 text-sm text-slate-500 dark:text-slate-400' }, ctx.can('admin') ? 'Профиль, внешний вид, хранилище, загрузка и параметры сервера.' : 'Профиль и внешний вид.')),
     ...sections));
 
   return { unmount() {} };

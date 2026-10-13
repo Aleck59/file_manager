@@ -280,6 +280,7 @@ let statsCache = null; // для страницы статистики: сбра
 let lastStats = null; // последний подсчёт вообще — для выбора хранилища при загрузке
 let statsGeneration = 0;
 let pendingStats = null;
+let pendingGeneration = -1;
 
 // Сбрасывается ПОСЛЕ успешного изменения в S3. Счётчик поколений не даёт сохранить в кэш
 // результат подсчёта, который начался до изменения и закончился после.
@@ -373,9 +374,15 @@ async function computeStats() {
 /** @param {{maxAge?: number}} opts — насколько старый кэш устраивает */
 export async function getStats({ maxAge = STATS_TTL } = {}) {
   if (statsCache && Date.now() - statsCache.at <= maxAge) return statsCache.data;
-  // Параллельные запросы ждут один и тот же подсчёт.
+  // Параллельные запросы ждут один и тот же подсчёт. Если он начался ДО последнего изменения
+  // (загрузка, удаление), его результат уже устарел — ждём его и считаем заново.
+  if (pendingStats && pendingGeneration !== statsGeneration) {
+    await pendingStats.catch(() => {});
+    return getStats({ maxAge });
+  }
   if (!pendingStats) {
     const generation = statsGeneration;
+    pendingGeneration = generation;
     const snapshot = new Map(reserved);
     pendingStats = computeStats()
       .then((data) => {

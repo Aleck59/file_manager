@@ -3,7 +3,7 @@
 // в data/settings.json. Секреты в браузер не передаются — их можно только заменить.
 import { api } from '../api.js';
 import { detectPreset, S3_PRESETS, STORAGE_CLASS_LABELS, storageClassesFor } from '../s3-presets.js';
-import { confirmDialog, FILES, formatDateShort, formatSize, h, icon, openDialog, pluralize, toast } from '../ui.js';
+import { confirmDialog, FILES, formatDateShort, formatSize, h, icon, openDialog, pluralize, toast, toned } from '../ui.js';
 
 const OBJECTS = { one: 'объект', few: 'объекта', many: 'объектов', other: 'объекта' };
 
@@ -16,7 +16,7 @@ const SOURCE = {
 function card(title, description, iconName, ...content) {
   return h('section', { class: 'card overflow-hidden' },
     h('div', { class: 'flex items-start gap-3 border-b border-slate-200 p-5 sm:px-6 dark:border-slate-800' },
-      h('span', { class: 'mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' }, icon(iconName)),
+      h('span', { class: 'mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-800' }, toned(iconName)),
       h('div', {},
         h('h3', { class: 'font-semibold' }, title),
         h('p', { class: 'mt-0.5 text-sm text-slate-500 dark:text-slate-400' }, description))),

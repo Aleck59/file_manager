@@ -33,6 +33,25 @@ export function mountTrash(view, ctx) {
       `удалил ${it.deletedBy} ${formatDateShort(it.deletedAt)}`,
     ].filter(Boolean).join(' · ');
     const busy = (on) => { for (const b of li.querySelectorAll('button')) b.disabled = on; };
+    // «N файлов»: каждый можно вернуть или стереть по отдельности.
+    const files = it.kind === 'files' && h('ul', { class: 'mt-2 hidden divide-y divide-slate-100 rounded-xl border border-slate-200 dark:divide-slate-800 dark:border-slate-800' },
+      it.keys.map((key, i) => {
+        const name = key.slice(key.indexOf('~') + 1);
+        return h('li', { class: 'flex items-center gap-2 px-3 py-1.5' },
+          fileBadge(name, 'h-7 w-7 rounded-md', 'h-3.5 w-3.5'),
+          h('span', { class: 'min-w-0 flex-1 truncate text-sm', title: name }, name),
+          it.sizes && h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500' }, formatSize(it.sizes[i])),
+          h('button', { type: 'button', class: 'icon-btn h-8 w-8', title: 'Восстановить', 'aria-label': `Восстановить «${name}»`,
+            onclick: async () => { busy(true); await restoreOne(it, key, name); busy(false); } }, icon('undo')),
+          h('button', { type: 'button', class: 'icon-btn-danger h-8 w-8', title: 'Удалить навсегда', 'aria-label': `Удалить навсегда «${name}»`,
+            onclick: async () => { busy(true); await purgeOne(it, key, name); busy(false); } }, icon('trash')));
+      }));
+    const toggle = files && h('button', { type: 'button', class: 'mt-1 text-xs font-medium text-brand-700 hover:underline dark:text-brand-400', 'aria-expanded': 'false',
+      onclick: (e) => {
+        const open = files.classList.toggle('hidden') === false;
+        e.currentTarget.setAttribute('aria-expanded', String(open));
+        e.currentTarget.textContent = open ? 'Скрыть файлы' : `Показать файлы (${it.count})`;
+      } }, `Показать файлы (${it.count})`);
     const li = h('li', { class: 'flex items-start gap-3 px-4 py-3' },
       badge(it),
       h('div', { class: 'min-w-0 flex-1' },
@@ -40,10 +59,11 @@ export function mountTrash(view, ctx) {
           h('span', { class: 'truncate text-sm font-medium', title }, title),
           h('span', { class: `badge ${left <= 3 ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}` },
             left ? `ещё ${pluralize(left, DAYS)}` : 'сегодня удалится')),
-        h('p', { class: 'text-xs tabular-nums text-slate-500 dark:text-slate-400' }, details)),
+        h('p', { class: 'text-xs tabular-nums text-slate-500 dark:text-slate-400' }, details),
+        toggle, files),
       h('div', { class: 'flex shrink-0 gap-0.5' },
         h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', title: 'Восстановить', 'aria-label': `Восстановить «${it.name}»`,
-          onclick: async () => { busy(true); await restore(it); busy(false); } }, icon('undo'), h('span', { class: 'hidden sm:inline' }, 'Восстановить')),
+          onclick: async () => { busy(true); await restore(it); busy(false); } }, icon('undo'), h('span', { class: 'hidden sm:inline' }, it.kind === 'files' ? 'Восстановить все' : 'Восстановить')),
         h('button', { type: 'button', class: 'icon-btn-danger', title: 'Удалить навсегда', 'aria-label': `Удалить навсегда «${it.name}»`,
           onclick: async () => { busy(true); await purge(it); busy(false); } }, icon('trash'))));
     return li;
@@ -52,8 +72,8 @@ export function mountTrash(view, ctx) {
   function render(days) {
     const total = items.reduce((a, it) => a + it.size, 0);
     summary.textContent = days
-      ? `Удалённое хранится ${pluralize(days, DAYS)}, затем стирается навсегда.${items.length ? ` Сейчас в корзине ${formatSize(total)}.` : ''}`
-      : 'Корзина выключена: файлы удаляются сразу. Включить — Настройки → Загрузка файлов → «Хранить в корзине».';
+      ? `Хранится ${pluralize(days, DAYS)}${items.length ? ` · ${formatSize(total)}` : ''}`
+      : 'Корзина выключена: файлы удаляются сразу (Настройки → Загрузка файлов).';
     list.replaceChildren(...(items.length ? items.map(row)
       : [h('li', { class: 'flex flex-col items-center gap-2 px-6 py-16 text-center text-sm text-slate-500 dark:text-slate-400' },
         icon('trash', 'h-8 w-8 text-slate-300 dark:text-slate-600'), 'Корзина пуста')]));
@@ -80,6 +100,27 @@ export function mountTrash(view, ctx) {
     } catch (err) {
       toast(err.message, 'error');
       load();
+    }
+  }
+
+  async function restoreOne(it, key, name) {
+    try {
+      await api.restoreTrash(it.id, key);
+      toast(`«${name}» восстановлен`, 'success', { action: { label: 'Открыть', onClick: () => ctx.navigate(diskHash(it.folder)) } });
+      ctx.refreshStats?.();
+      load();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+  async function purgeOne(it, key, name) {
+    if (!(await confirmDialog('Удалить навсегда?', `«${name}» будет стёрт без возможности восстановления.`))) return;
+    try {
+      await api.purgeTrash(it.id, key);
+      load();
+      ctx.refreshStats?.();
+    } catch (err) {
+      toast(err.message, 'error');
     }
   }
 

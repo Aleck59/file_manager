@@ -16,6 +16,7 @@ import { trashRouter } from './routes/trash.js';
 import * as trash from './trash.js';
 import { webdav } from './webdav.js';
 import * as backup from './backup.js';
+import * as folderIds from './folder-ids.js';
 import * as labelsStore from './labels.js';
 import { usersRouter } from './routes/users.js';
 import { initUsers } from './users.js';
@@ -95,6 +96,8 @@ app.post('/share-target', (req, res) => res.redirect(303, '/#/inbox'));
 app.get('/s/:id', (req, res) => sharePage(req, res));
 
 app.use(serveStatic(publicDir, { maxAge: 3600 }));
+// Портал загрузки по короткому адресу: files.example.com/<адрес> (задаётся у ссылки).
+app.get('/:slug', (req, res, next) => (sharesStore.get(req.params.slug)?.slug ? sharePage(req, res) : next()));
 app.use((req, res) => res.status(404).type('text/plain; charset=utf-8').send('Not found'));
 app.use(errorHandler);
 
@@ -110,6 +113,7 @@ export function shutdown(code = 0) {
   sharesStore.flush();
   apiTokens.flush();
   labelsStore.flush();
+  folderIds.flush();
   server.close(() => process.exit(code));
   server.closeAllConnections?.();
   setTimeout(() => process.exit(code), 3000).unref();

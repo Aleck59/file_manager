@@ -9,7 +9,7 @@ import { openShareDialog } from './share-dialog.js';
 import { richView } from './textview.js';
 import qrcode from './vendor/qrcode.js';
 import {
-  $, CATEGORY_STYLE, categoryOf, copyToClipboard, extOf, folderLabel, formatDate, formatSize, h, icon, prefs, toast,
+  $, CATEGORY_STYLE, categoryOf, copyToClipboard, extOf, folderLabel, formatDate, formatSize, h, icon, prefs, toast, toned,
 } from './ui.js';
 
 const TEXT_LIMIT = 256 * 1024;
@@ -57,8 +57,7 @@ function renderEmpty() {
     header('Предпросмотр'),
     h('div', { class: 'flex flex-1 flex-col items-center justify-center px-8 text-center' },
       h('span', { class: 'mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-400 dark:bg-slate-800' }, icon('eye', 'h-6 w-6')),
-      h('p', { class: 'font-medium' }, 'Файл не выбран'),
-      h('p', { class: 'mt-1 text-sm text-slate-500 dark:text-slate-400' }, 'Выберите файл в списке, чтобы увидеть его содержимое и свойства.')),
+      h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Выберите файл')),
   );
 }
 
@@ -164,11 +163,11 @@ export async function showPreview(file, { folder, onDelete, onRename, onMove, ga
 
   const outline = 'btn-ghost border border-slate-200 dark:border-slate-700';
   const secondary = [
-    h('button', { type: 'button', class: outline, onclick: copyLink }, icon('link'), 'Ссылка'),
-    h('button', { type: 'button', class: outline, onclick: () => showQr(file) }, icon('qr'), 'QR-код'),
-    onRename && h('button', { type: 'button', class: outline, onclick: () => openShareDialog({ file }) }, icon('globe'), 'Поделиться'),
-    onRename && h('button', { type: 'button', class: outline, onclick: () => onRename(file) }, icon('pencil'), 'Переименовать'),
-    onMove && h('button', { type: 'button', class: outline, onclick: () => onMove(file) }, icon('move'), 'Переместить'),
+    h('button', { type: 'button', class: outline, onclick: copyLink }, toned('link'), 'Ссылка'),
+    h('button', { type: 'button', class: outline, onclick: () => showQr(file) }, toned('qr'), 'QR-код'),
+    onRename && h('button', { type: 'button', class: outline, onclick: () => openShareDialog({ file }) }, toned('globe'), 'Поделиться'),
+    onRename && h('button', { type: 'button', class: outline, onclick: () => onRename(file) }, toned('pencil'), 'Переименовать'),
+    onMove && h('button', { type: 'button', class: outline, onclick: () => onMove(file) }, toned('move'), 'Переместить'),
     onDelete && h('button', { type: 'button', class: `${outline} text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950`, onclick: () => onDelete(file) }, icon('trash'), 'Удалить'),
   ].filter(Boolean);
   // Нечётное число кнопок — последняя растягивается на всю ширину.

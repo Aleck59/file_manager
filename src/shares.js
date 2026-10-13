@@ -41,6 +41,21 @@ function newId() {
 }
 const ID_RE = /^[a-zA-Z0-9]{12}$/;
 
+// Короткий адрес портала: files.example.com/<адрес> (латиница, цифры, дефис). Адреса страниц
+// и служебных файлов сайта заняты.
+const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
+const RESERVED = new Set(['api', 's', 'login', 'logout', 'dav', 'css', 'js', 'icons', 'index', 'index.html', 'login.html', 'share.html',
+  'offline.html', 'sw.js', 'favicon.svg', 'manifest.webmanifest', 'share-target', 'branding', 'admin', 'settings', 'healthz', 'robots.txt']);
+
+function checkSlug(slug, selfId) {
+  if (slug === null || slug === undefined || slug === '') return null;
+  const v = String(slug).trim().toLowerCase();
+  if (!SLUG_RE.test(v) || RESERVED.has(v)) throw fail(400, 'Адрес: латиница, цифры и дефис, до 40 символов (служебные слова заняты)');
+  if (shares.some((x) => x.slug === v && x.id !== selfId && !x.revoked)) throw fail(409, `Адрес «${v}» уже занят другой ссылкой`);
+  return v;
+}
+const checkCaption = (c) => (c === null || c === undefined ? null : String(c).trim().slice(0, 200) || null);
+
 const fail = (status, message) => Object.assign(new Error(message), { status });
 
 /** Состояние ссылки: active | expired | exhausted | revoked | missing */
@@ -82,6 +97,8 @@ export async function create(input) {
     key: input.type === 'file' ? input.key : undefined,
     folder: input.type !== 'file' ? input.folder : undefined,
     name: String(input.name ?? '').slice(0, 200),
+    slug: checkSlug(input.slug),
+    caption: checkCaption(input.caption),
     createdBy: input.user,
     createdAt: new Date().toISOString(),
     expiresAt: days ? new Date(Date.now() + days * 86_400_000).toISOString() : null,
@@ -99,7 +116,26 @@ export async function create(input) {
   return share;
 }
 
-export const get = (id) => (typeof id === 'string' && ID_RE.test(id) ? shares.find((s) => s.id === id) ?? null : null);
+export function get(id) {
+  if (typeof id !== 'string') return null;
+  if (ID_RE.test(id)) {
+    const byId = shares.find((s) => s.id === id);
+    if (byId) return byId;
+  }
+  // Короткий адрес: действующая ссылка важнее отозванной с тем же адресом.
+  const slug = id.toLowerCase();
+  return shares.find((s) => s.slug === slug && !s.revoked) ?? shares.find((s) => s.slug === slug) ?? null;
+}
+
+/** Изменить короткий адрес и подпись. */
+export function update(id, user, isAdmin, { slug, caption }) {
+  const s = get(id);
+  if (!s || s.id !== id || (!isAdmin && s.createdBy !== user)) return null;
+  if (slug !== undefined) s.slug = checkSlug(slug, s.id);
+  if (caption !== undefined) s.caption = checkCaption(caption);
+  persist();
+  return s;
+}
 export const listFor = (user, all = false) => shares.filter((s) => all || s.createdBy === user).map(ownerView)
   .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 

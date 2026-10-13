@@ -125,9 +125,12 @@ export function forgetUser(username) {
 // ---------- личные папки ----------
 export const personalPath = (username) => `${config.personal.root}/${username}/`;
 
+/** Есть ли у пользователя личная папка: для всех (настройка) или только для него (в профиле). */
+export const hasPersonal = (user) => Boolean(user && (config.personal.enabled || user.personal));
+
 /** Создаёт правило личной папки (если включены). @returns {string|null} путь, если правило новое */
 export function ensurePersonal(user) {
-  if (!config.personal.enabled) return null;
+  if (!hasPersonal(user)) return null;
   const p = personalPath(user.username);
   if (rules[p]) return null;
   rules[p] = { users: { [user.username]: 'write' }, others: 'none', personal: user.username };
@@ -136,4 +139,4 @@ export function ensurePersonal(user) {
 }
 
 /** Личная ли это папка пользователя (или внутри неё). */
-export const inPersonal = (user, folder) => config.personal.enabled && folder.startsWith(personalPath(user.username));
+export const inPersonal = (user, folder) => hasPersonal(user) && folder.startsWith(personalPath(user.username));

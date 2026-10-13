@@ -23,7 +23,6 @@ export function mountInbox(view, ctx) {
   let target = ctx.personal?.path ?? '';
   const body = h('div', { class: 'space-y-4' }, h('div', { class: 'card h-32 animate-pulse' }));
   view.replaceChildren(h('div', { class: 'mx-auto max-w-3xl space-y-4 p-4 sm:p-6' },
-    h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Файлы, отправленные сюда через «Поделиться» на телефоне. Выберите папку — и они загрузятся.'),
     body));
 
   async function render() {

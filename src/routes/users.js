@@ -1,9 +1,11 @@
 // Управление пользователями (только для администратора).
 import * as acl from '../acl.js';
+import { config } from '../config.js';
+import * as storages from '../storages.js';
 import { Router } from '../http.js';
 import { audit, HttpError } from '../middleware/security.js';
 import { hashPassword } from '../password.js';
-import { createUser, deleteUser, listUsers, normalizeUsername, ROLES, updateUser } from '../users.js';
+import { createUser, deleteUser, getUser, listUsers, normalizeUsername, ROLES, updateUser } from '../users.js';
 import { MIN_PASSWORD_LENGTH } from './auth.js';
 
 export const usersRouter = Router();
@@ -48,8 +50,16 @@ function unwrap(result) {
   return result;
 }
 
+// Личная папка у пользователя: правило доступа и папка в хранилищах (сразу, не дожидаясь входа).
+// Выключение не удаляет папку и её файлы — правило «только владелец» остаётся.
+async function makePersonal(username) {
+  const created = acl.ensurePersonal(getUser(username));
+  if (created) await storages.createFolder(created).catch(() => {});
+}
+
 usersRouter.get('/', (req, res) => {
-  res.json({ users: listUsers(), roles: ROLES });
+  const users = listUsers().map((u) => ({ ...u, personalPath: acl.hasPersonal(getUser(u.username)) ? acl.personalPath(u.username) : null }));
+  res.json({ users, roles: ROLES, personalForAll: config.personal.enabled });
 });
 
 usersRouter.post('/', async (req, res) => {
@@ -58,15 +68,17 @@ usersRouter.post('/', async (req, res) => {
   const passwordHash = await hashPassword(checkPassword(req.body?.password));
   const email = req.body?.email ? checkEmail(req.body.email) : undefined;
   const quotaMb = req.body?.quotaMb ? checkQuota(req.body.quotaMb) : undefined;
-  const result = unwrap(createUser({ username, role, passwordHash, email, quotaMb }));
-  audit(req, 'user.create', { username, role, email });
+  const personal = req.body?.personal === true;
+  const result = unwrap(createUser({ username, role, passwordHash, email, quotaMb, personal }));
+  await makePersonal(username);
+  audit(req, 'user.create', { username, role, email, personal });
   res.status(201).json(result);
 });
 
 usersRouter.patch('/:username', async (req, res) => {
   const username = checkUsername(req.params.username);
-  const { role, password, email, quotaMb } = req.body ?? {};
-  if (role === undefined && password === undefined && email === undefined && quotaMb === undefined) throw new HttpError(400, 'Нечего изменять');
+  const { role, password, email, quotaMb, personal } = req.body ?? {};
+  if (role === undefined && password === undefined && email === undefined && quotaMb === undefined && personal === undefined) throw new HttpError(400, 'Нечего изменять');
   if (role !== undefined && username === req.user.username && role !== req.user.role) {
     throw new HttpError(400, 'Нельзя изменить собственную роль');
   }
@@ -75,8 +87,10 @@ usersRouter.patch('/:username', async (req, res) => {
     ...(password !== undefined && { passwordHash: await hashPassword(checkPassword(password)) }),
     ...(email !== undefined && { email: checkEmail(email) }),
     ...(quotaMb !== undefined && { quotaMb: checkQuota(quotaMb) || null }),
+    ...(personal !== undefined && { personal: personal === true || null }),
   };
   const result = unwrap(updateUser(username, changes));
+  if (personal === true) await makePersonal(username);
   audit(req, 'user.update', { username, role: changes.role, password: changes.passwordHash ? 'изменён' : undefined, email: changes.email, quotaMb: changes.quotaMb });
   res.json(result);
 });

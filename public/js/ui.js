@@ -125,6 +125,24 @@ export function icon(name, cls = 'h-4 w-4') {
 
 // ---------- форматирование ----------
 const sizeFmt = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 });
+// Цветные иконки: у каждого действия свой цвет — легче находить глазами.
+// Полные имена классов (Tailwind собирает стили по исходникам).
+const ICON_TONE = {
+  home: 'text-sky-600 dark:text-sky-400', search: 'text-violet-600 dark:text-violet-400', link: 'text-violet-600 dark:text-violet-400',
+  trash: 'text-rose-600 dark:text-rose-400', users: 'text-indigo-600 dark:text-indigo-400', clock: 'text-orange-500 dark:text-orange-400',
+  settings: 'text-slate-500 dark:text-slate-400', download: 'text-sky-600 dark:text-sky-400', globe: 'text-teal-600 dark:text-teal-400',
+  qr: 'text-indigo-600 dark:text-indigo-400', pencil: 'text-amber-600 dark:text-amber-400', move: 'text-indigo-600 dark:text-indigo-400',
+  copy: 'text-cyan-600 dark:text-cyan-400', server: 'text-slate-500 dark:text-slate-400', star: 'text-amber-500 dark:text-amber-400',
+  check: 'text-emerald-600 dark:text-emerald-400', folder: 'text-amber-500 dark:text-amber-400', folderPlus: 'text-amber-500 dark:text-amber-400',
+  folderUp: 'text-amber-500 dark:text-amber-400', tag: 'text-pink-600 dark:text-pink-400', lock: 'text-amber-600 dark:text-amber-400',
+  user: 'text-sky-600 dark:text-sky-400', eye: 'text-teal-600 dark:text-teal-400', refresh: 'text-emerald-600 dark:text-emerald-400',
+  key: 'text-amber-600 dark:text-amber-400', shield: 'text-emerald-600 dark:text-emerald-400', undo: 'text-emerald-600 dark:text-emerald-400',
+  upload: 'text-brand-600 dark:text-brand-400', drive: 'text-brand-600 dark:text-brand-400', chart: 'text-sky-600 dark:text-sky-400',
+  keyboard: 'text-slate-500 dark:text-slate-400', file: 'text-slate-500 dark:text-slate-400',
+};
+/** Иконка в своём цвете (для меню, панелей действий, навигации). */
+export const toned = (name, cls = 'h-4 w-4') => icon(name, `${cls} ${ICON_TONE[name] ?? ''}`);
+
 export function formatSize(bytes) {
   const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
   let i = 0;
@@ -247,6 +265,11 @@ export function openDialog({ title, text, fields = [], confirmLabel = 'OK', dang
     const error = h('p', { class: 'hidden rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/60 dark:text-rose-300', role: 'alert' });
     const inputs = fields.map((f) => {
       const id = `dlg-${f.name}`;
+      if (f.type === 'checkbox') {
+        return h('label', { for: id, class: 'flex items-start gap-3 text-sm' },
+          h('input', { id, name: f.name, type: 'checkbox', class: 'check mt-0.5', checked: Boolean(f.value) }),
+          h('span', {}, h('span', { class: 'block font-medium' }, f.label), f.hint && h('span', { class: 'block text-xs text-slate-500 dark:text-slate-400' }, f.hint)));
+      }
       const control = f.type === 'select'
         ? h('select', { id, name: f.name, class: 'input' }, f.options.map(([v, l]) => h('option', { value: v, selected: v === f.value }, l)))
         : h('input', { id, name: f.name, type: f.type ?? 'text', class: 'input', value: f.value ?? '',
@@ -271,6 +294,7 @@ export function openDialog({ title, text, fields = [], confirmLabel = 'OK', dang
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const values = Object.fromEntries(new FormData(form));
+      for (const f of fields) if (f.type === 'checkbox') values[f.name] = form.elements[f.name].checked;
       error.classList.add('hidden');
       submit.disabled = true;
       try {
@@ -311,7 +335,7 @@ export function openMenu(anchor, items) {
       ? 'text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950'
       : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`,
     onclick: (e) => { e.stopPropagation(); close(); item.onSelect(); },
-  }, item.lead ?? icon(item.icon), item.label)));
+  }, item.lead ?? (item.danger ? icon(item.icon) : toned(item.icon)), item.label)));
   document.body.append(menu);
 
   const r = anchor.getBoundingClientRect();

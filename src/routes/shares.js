@@ -20,6 +20,14 @@ const wrap = async (fn) => {
   }
 };
 
+const wrapSync = (fn) => {
+  try {
+    return fn();
+  } catch (err) {
+    throw err instanceof HttpError || !err.status ? err : new HttpError(err.status, err.message);
+  }
+};
+
 // ---------- управление ----------
 export const sharesRouter = Router();
 sharesRouter.use(requireRole('editor'));
@@ -55,6 +63,14 @@ sharesRouter.post('/:id/revoke', (req, res) => {
   if (!shares.revoke(req.params.id, req.user.username, hasRole(req.user, 'admin'))) throw new HttpError(404, 'Ссылка не найдена');
   audit(req, 'share.revoke', { id: req.params.id });
   res.json({ ok: true });
+});
+
+// PATCH /api/shares/:id {slug?, caption?} — короткий адрес и подпись
+sharesRouter.patch('/:id', (req, res) => {
+  const s = wrapSync(() => shares.update(req.params.id, req.user.username, hasRole(req.user, 'admin'), { slug: req.body?.slug, caption: req.body?.caption }));
+  if (!s) throw new HttpError(404, 'Ссылка не найдена');
+  audit(req, 'share.update', { id: s.id, slug: s.slug });
+  res.json({ share: shares.ownerView(s) });
 });
 
 sharesRouter.delete('/:id', (req, res) => {
@@ -110,7 +126,7 @@ publicSharesRouter.get('/:id', async (req, res) => {
   const base = { id: s.id, type: s.type, state, message: STATE_TEXT[state] ?? null, owner: s.createdBy, expiresAt: s.expiresAt };
   if (state !== 'active') return res.status(410).json(base);
   const unlocked = shares.isUnlocked(s, readCookie(req, shares.unlockCookieName(s.id)));
-  const info = { ...base, needsPassword: Boolean(s.passwordHash), unlocked, name: unlocked ? s.name : null };
+  const info = { ...base, needsPassword: Boolean(s.passwordHash), unlocked, name: unlocked ? s.name : null, caption: s.caption ?? null };
   if (unlocked && s.type === 'file') {
     const { st, rel } = storages.resolveRef(s.key);
     const head = await st.headObject(rel);

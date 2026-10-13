@@ -11,6 +11,7 @@
 | `make-interfaces-feel-better` | Детали: анимации только transform/opacity, нажатие, зоны клика, переносы, tabular-nums |
 | `accessibility` | WCAG 2.2: фокус, контраст, размеры целей, aria-live |
 | `design-system` | Аудит визуальной согласованности, токены |
+| `humanize-ui` | Тексты интерфейса: без лишних подзаголовков, пояснений очевидного и «машинных» оборотов (по мотивам humanizer, MIT) |
 
 Не подключены (написаны под React/Next.js и `motion/react`, а интерфейс здесь — Vanilla JS):
 `motion-foundations`, `motion-patterns`, `motion-advanced`, `frontend-patterns`, `frontend-a11y`.

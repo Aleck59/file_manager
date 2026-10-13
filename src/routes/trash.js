@@ -39,6 +39,14 @@ function allowed(req) {
 // POST /api/trash/restore {id}
 trashRouter.post('/restore', async (req, res) => {
   allowed(req);
+  // {id, key} — вернуть один файл из записи «N файлов»
+  if (req.body?.key !== undefined) {
+    const { key } = await wrap(() => trash.takeOut(req.body.id, req.body.key, { restore: true }));
+    storages.invalidateStats();
+    sharesStore.fileBack(key);
+    audit(req, 'trash.restore', { id: req.body.id, key });
+    return res.json({ ok: true, key });
+  }
   const { entry, warnings } = await wrap(() => trash.restore(req.body?.id));
   storages.invalidateStats();
   if (entry.kind === 'folder') sharesStore.folderBack(entry.folder);
@@ -50,6 +58,12 @@ trashRouter.post('/restore', async (req, res) => {
 // POST /api/trash/delete {id} — навсегда
 trashRouter.post('/delete', async (req, res) => {
   allowed(req);
+  if (req.body?.key !== undefined) {
+    const { key } = await wrap(() => trash.takeOut(req.body.id, req.body.key, { restore: false }));
+    storages.invalidateStats();
+    audit(req, 'trash.delete', { id: req.body.id, key });
+    return res.json({ ok: true });
+  }
   const { entry, warnings } = await wrap(() => trash.purge(req.body?.id));
   storages.invalidateStats();
   audit(req, 'trash.delete', { id: entry.id, kind: entry.kind, name: entry.name, folder: entry.folder });

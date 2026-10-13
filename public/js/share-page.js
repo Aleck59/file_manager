@@ -4,7 +4,9 @@ import { ProgressView } from './progress.js';
 import { UploadCancelled, uploadFile } from './uploader.js';
 import { $, fileBadge, formatDate, formatSize, h, icon, toast } from './ui.js';
 
-const id = location.pathname.split('/').filter(Boolean)[1] ?? '';
+// /s/<id> или короткий адрес портала /<адрес>
+const segs = location.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+const id = (segs[0] === 's' ? segs[1] : segs[0]) ?? '';
 const box = $('#share');
 const foot = $('#share-foot');
 
@@ -36,6 +38,12 @@ function message(iconName, title, text, tone = 'bg-slate-100 text-slate-500 dark
 
 function footer(info) {
   const parts = [];
+  if (info.type === 'upload') {
+    if (info.owner) parts.push(`Файлы получит ${info.owner}`);
+    if (info.expiresAt) parts.push(`до ${formatDate(info.expiresAt)}`);
+    foot.textContent = parts.join(' · ');
+    return;
+  }
   if (info.owner) parts.push(`Поделился: ${info.owner}`);
   parts.push(info.expiresAt ? `Ссылка действует до ${formatDate(info.expiresAt)}` : 'Ссылка бессрочная');
   foot.textContent = parts.join(' · ');
@@ -181,15 +189,13 @@ function uploadView(info) {
   const input = h('input', { type: 'file', multiple: true, class: 'sr-only', id: 'share-files' });
   const list = h('ul', { class: 'space-y-2' });
   const limits = [`до ${formatSize(info.maxFileSize)} на файл`, info.uploadsLeft != null && `ещё ${info.uploadsLeft} файлов`].filter(Boolean).join(' · ');
-  const zone = h('label', { for: 'share-files', class: 'flex cursor-pointer flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-slate-300 px-6 py-10 text-center transition-colors hover:border-brand-400 hover:bg-brand-50/50 dark:border-slate-700 dark:hover:border-brand-600 dark:hover:bg-brand-950/30' },
-    h('span', { class: 'flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-50 text-brand-600 dark:bg-brand-950 dark:text-brand-400' }, icon('upload', 'h-6 w-6')),
-    h('span', { class: 'font-medium' }, 'Перетащите файлы сюда или ', h('span', { class: 'text-brand-600 dark:text-brand-400' }, 'выберите')),
-    h('span', { class: 'text-xs text-slate-500 dark:text-slate-400' }, limits));
-  box.replaceChildren(h('div', { class: 'space-y-5' },
-    h('div', { class: 'text-center' },
-      h('h1', { class: 'text-xl font-semibold' }, 'Загрузить файлы'),
-      h('p', { class: 'mt-1 text-sm text-slate-500 dark:text-slate-400' }, `Файлы получит ${info.owner}. Вы их видеть не будете — только загрузить.`)),
-    zone, input, list));
+  // Портал: большая кнопка-зона и подпись владельца ссылки.
+  const zone = h('label', { for: 'share-files', class: 'group flex cursor-pointer flex-col items-center gap-4 rounded-2xl border-2 border-dashed border-slate-300 px-6 py-12 text-center transition-colors hover:border-brand-400 hover:bg-brand-50/50 dark:border-slate-700 dark:hover:border-brand-600 dark:hover:bg-brand-950/30' },
+    h('span', { class: 'flex h-20 w-20 items-center justify-center rounded-3xl bg-brand-600 text-white shadow-lg shadow-brand-600/20 transition-transform group-hover:-translate-y-0.5 group-active:scale-95' }, icon('upload', 'h-9 w-9')),
+    h('span', { class: 'text-lg font-semibold' }, info.caption || 'Загрузить файлы'),
+    h('span', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Нажмите или перетащите файлы'),
+    h('span', { class: 'text-xs text-slate-400' }, limits));
+  box.replaceChildren(h('div', { class: 'space-y-5' }, zone, input, list));
 
   const queue = [];
   let running = false;

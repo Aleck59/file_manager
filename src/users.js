@@ -46,8 +46,8 @@ export function initUsers() {
 }
 
 // Наружу — без хешей и секретов 2FA.
-export const publicUser = ({ username, role, createdAt, email, quotaMb, totp }) => ({
-  username, role, createdAt, email: email ?? null, quotaMb: quotaMb ?? 0, twoFactor: Boolean(totp),
+export const publicUser = ({ username, role, createdAt, email, quotaMb, totp, personal }) => ({
+  username, role, createdAt, email: email ?? null, quotaMb: quotaMb ?? 0, twoFactor: Boolean(totp), personal: Boolean(personal),
 });
 
 /** Пользователь по почте (вход через Яндекс/Google): почту указывает администратор. */
@@ -73,17 +73,17 @@ export function normalizeUsername(input) {
 
 const adminCount = () => [...users.values()].filter((u) => u.role === 'admin').length;
 
-export function createUser({ username, role, passwordHash, email, quotaMb }) {
+export function createUser({ username, role, passwordHash, email, quotaMb, personal }) {
   if (users.has(username)) return { error: 'Пользователь с таким логином уже существует' };
   if (email && findByEmail(email)) return { error: 'Эта почта уже указана у другого пользователя' };
-  const user = { username, role, passwordHash, createdAt: new Date().toISOString(), ...(email && { email }), ...(quotaMb && { quotaMb }) };
+  const user = { username, role, passwordHash, createdAt: new Date().toISOString(), ...(email && { email }), ...(quotaMb && { quotaMb }), ...(personal && { personal: true }) };
   users.set(username, user);
   persist();
   return { user: publicUser(user) };
 }
 
 // Изменяемые поля. undefined — не менять; null — убрать (почта, 2FA).
-const MUTABLE = ['role', 'passwordHash', 'email', 'quotaMb', 'totp', 'totpPending'];
+const MUTABLE = ['role', 'passwordHash', 'email', 'quotaMb', 'totp', 'totpPending', 'personal'];
 
 export function updateUser(username, changes) {
   const user = users.get(username);

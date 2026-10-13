@@ -53,7 +53,7 @@ function attachTooltip(el, lines) {
 function breakdown(stats) {
   const used = CATEGORIES.map((c) => ({ ...c, ...stats.categories[c.id] })).filter((c) => c.count > 0);
   if (!used.length) {
-    return h('p', { class: 'py-6 text-center text-sm text-slate-500 dark:text-slate-400' }, 'Пока нет данных — загрузите первые файлы.');
+    return h('p', { class: 'py-6 text-center text-sm text-slate-500 dark:text-slate-400' }, 'Файлов пока нет');
   }
   const total = stats.size || 1;
   const pct = (size) => (size / total) * 100;
@@ -118,7 +118,7 @@ function storagesUsage(list, ctx) {
 
 // Личная папка: ссылка и, если задана квота, сколько занято.
 function personalCard(ctx) {
-  const info = h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Видна только вам и администраторам');
+  const info = h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Видна только вам');
   const bar = h('div', { class: 'progress mt-2 hidden' }, h('div'));
   const card = h('a', { href: diskHash(ctx.personal.path), class: 'card flex items-center gap-4 p-4 transition hover:border-brand-300 dark:hover:border-brand-800' },
     h('span', { class: 'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600 dark:bg-brand-950/60 dark:text-brand-400' }, icon('user', 'h-5 w-5')),
@@ -149,8 +149,7 @@ export function mountHome(view, ctx) {
     if (!items.length) return null;
     return h('section', { class: 'card overflow-hidden' },
       h('div', { class: 'border-b border-slate-200 px-5 py-4 dark:border-slate-800' },
-        h('h3', { class: 'font-semibold' }, 'Недавно открытые'),
-        h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Файлы, которые вы смотрели')),
+        h('h3', { class: 'font-semibold' }, 'Недавно открытые')),
       h('ul', { class: 'divide-y divide-slate-100 dark:divide-slate-800' }, items.map((f) => h('li', {},
         h('a', { href: diskHash(f.folder), class: 'flex items-center gap-3 px-5 py-2.5 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/40',
           onclick: () => { ctx.selectAfterNavigate = f.key; } },
@@ -170,33 +169,27 @@ export function mountHome(view, ctx) {
 
   view.replaceChildren(h('div', { class: 'mx-auto max-w-6xl space-y-6 p-4 sm:p-6' },
     h('div', {},
-      h('h2', { class: 'text-2xl font-semibold tracking-tight' }, `${greeting()}, ${ctx.user.username}`),
-      h('p', { class: 'mt-1 text-sm text-slate-500 dark:text-slate-400' }, 'Сводка по вашему диску')),
+      h('h2', { class: 'text-2xl font-semibold tracking-tight' }, `${greeting()}, ${ctx.user.username}`)),
     ctx.personal && personalCard(ctx),
     tiles,
     h('div', { class: 'grid gap-6 lg:grid-cols-5' },
       h('div', { class: 'space-y-6 lg:col-span-2' },
         h('section', { class: 'card p-5' },
-          h('h3', { class: 'font-semibold' }, 'Структура хранилища'),
-          h('p', { class: 'mb-4 text-sm text-slate-500 dark:text-slate-400' }, 'Занятое место по типам файлов'),
+          h('h3', { class: 'mb-4 font-semibold' }, 'По типам файлов'),
           structure),
         openedCard()),
       h('section', { class: 'card overflow-hidden lg:col-span-3' },
         h('div', { class: 'flex items-center justify-between border-b border-slate-200 p-5 dark:border-slate-800' },
-          h('div', {},
-            h('h3', { class: 'font-semibold' }, 'Недавние файлы'),
-            h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Последние загрузки на диск')),
+          h('h3', { class: 'font-semibold' }, 'Недавние файлы'),
           h('a', { href: diskHash(''), class: 'text-sm font-medium text-brand-600 hover:underline dark:text-brand-400' }, 'Открыть диск')),
         recent)),
     h('div', { class: 'grid gap-6 lg:grid-cols-5' },
       h('section', { class: 'card p-5 lg:col-span-3 lg:self-start' },
-        h('h3', { class: 'font-semibold' }, 'Рост занятого места'),
-        h('p', { class: 'mb-4 text-sm text-slate-500 dark:text-slate-400' }, 'Файлы файлообменника, по дням'),
+        h('h3', { class: 'mb-4 font-semibold' }, 'Рост занятого места'),
         growth),
       h('section', { class: 'card overflow-hidden lg:col-span-2' },
         h('div', { class: 'border-b border-slate-200 px-5 py-4 dark:border-slate-800' },
-          h('h3', { class: 'font-semibold' }, 'Крупные файлы'),
-          h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Что занимает больше всего места')),
+          h('h3', { class: 'font-semibold' }, 'Крупные файлы')),
         largest)),
     h('section', { class: 'card p-5' },
       h('div', { class: 'mb-4 flex items-end justify-between gap-4' },

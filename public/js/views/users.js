@@ -1,21 +1,18 @@
 // Раздел «Пользователи» (только для администратора).
 import { api } from '../api.js';
 import { confirmDialog, formatDate, formatSize, h, icon, openDialog, toast } from '../ui.js';
+import { diskHash } from './disk.js';
 
 const ROLE_HINT = {
   viewer: 'просмотр и скачивание',
   editor: 'загрузка, папки, удаление',
   admin: 'полный доступ, управление пользователями',
 };
-const ROLE_TONE = {
-  viewer: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
-  editor: 'bg-sky-50 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300',
-  admin: 'bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300',
-};
 
 export function mountUsers(view, ctx) {
   let users = [];
   let roles = ['viewer', 'editor', 'admin'];
+  let personalForAll = false;
   const roleOptions = () => roles.map((r) => [r, `${ctx.roleLabel(r)} — ${ROLE_HINT[r]}`]);
 
   ctx.setHeader(h('h1', { class: 'truncate text-base font-semibold' }, 'Пользователи'), [
@@ -26,13 +23,6 @@ export function mountUsers(view, ctx) {
     [1, 2, 3].map(() => h('li', { class: 'p-4' }, h('div', { class: 'h-10 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800' }))));
 
   view.replaceChildren(h('div', { class: 'mx-auto max-w-4xl space-y-6 p-4 sm:p-6' },
-    h('div', {},
-      h('h2', { class: 'text-2xl font-semibold tracking-tight' }, 'Пользователи'),
-      h('p', { class: 'mt-1 text-sm text-slate-500 dark:text-slate-400' }, 'Учётные записи с доступом к диску и их роли.')),
-    h('div', { class: 'grid gap-3 sm:grid-cols-3' }, ['viewer', 'editor', 'admin'].map((r) =>
-      h('div', { class: 'rounded-xl border border-slate-200 p-3 text-sm dark:border-slate-800' },
-        h('span', { class: `badge ${ROLE_TONE[r]}` }, ctx.roleLabel(r)),
-        h('p', { class: 'mt-1.5 text-slate-500 dark:text-slate-400' }, ROLE_HINT[r])))),
     h('section', { class: 'card overflow-hidden' }, list)));
 
   function row(u) {
@@ -62,6 +52,7 @@ export function mountUsers(view, ctx) {
           h('span', {}, `Создан ${formatDate(u.createdAt)}`),
           u.email && h('span', { title: 'Вход через Яндекс/Google с этой почтой' }, `· ${u.email}`),
           u.quotaMb > 0 && h('span', {}, `· квота ${formatSize(u.quotaMb * 1024 * 1024)}`),
+          u.personalPath && h('a', { href: diskHash(u.personalPath), class: 'badge bg-sky-50 text-sky-700 hover:underline dark:bg-sky-950/60 dark:text-sky-300', title: u.personalPath }, 'личная папка'),
           u.twoFactor && h('span', { class: 'badge bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300', title: 'Двухфакторная аутентификация включена' }, '2FA'))),
       roleSelect,
       h('div', { class: 'flex gap-0.5' },
@@ -75,7 +66,7 @@ export function mountUsers(view, ctx) {
 
   async function load() {
     try {
-      ({ users, roles } = await api.listUsers());
+      ({ users, roles, personalForAll } = await api.listUsers());
       render();
     } catch (err) {
       toast(err.message, 'error');
@@ -90,8 +81,10 @@ export function mountUsers(view, ctx) {
         { name: 'username', label: 'Логин', hint: '3–32 символа: латиница, цифры, точка, дефис, подчёркивание', maxlength: 32, autocomplete: 'off' },
         { name: 'password', label: 'Пароль', type: 'password', hint: 'Не короче 10 символов', autocomplete: 'new-password' },
         { name: 'role', label: 'Роль', type: 'select', value: 'editor', options: roleOptions() },
-      ],
-      onSubmit: (values) => api.createUser(values),
+        !personalForAll && { name: 'personal', label: 'Личная папка', type: 'checkbox', value: false, hint: 'Своя папка, которую видит только этот пользователь' },
+        { name: 'quotaMb', label: 'Квота личной папки, МБ', type: 'number', value: '0', inputmode: 'numeric', optional: true, hint: '0 — без ограничения' },
+      ].filter(Boolean),
+      onSubmit: (values) => api.createUser({ ...values, quotaMb: Number(values.quotaMb) || 0, personal: personalForAll || values.personal }),
     });
     if (created) {
       toast(`Пользователь ${created.user.username} создан`, 'success');
@@ -121,14 +114,16 @@ export function mountUsers(view, ctx) {
       confirmLabel: 'Сохранить',
       fields: [
         { name: 'email', label: 'Почта', type: 'email', value: u.email ?? '', optional: true, autocomplete: 'off', placeholder: 'не указана' },
+        !personalForAll && { name: 'personal', label: 'Личная папка', type: 'checkbox', value: u.personal, hint: 'Выключение не удаляет папку и файлы' },
         { name: 'quotaMb', label: 'Квота личной папки, МБ', type: 'number', value: String(u.quotaMb ?? 0), inputmode: 'numeric' },
-      ],
-      onSubmit: ({ email, quotaMb }) => api.updateUser(u.username, { email: email.trim() || null, quotaMb: Number(quotaMb) || 0 }),
+      ].filter(Boolean),
+      onSubmit: ({ email, quotaMb, personal }) => api.updateUser(u.username, {
+        email: email.trim() || null, quotaMb: Number(quotaMb) || 0, ...(personal !== undefined && { personal }),
+      }),
     });
     if (done?.user) {
-      Object.assign(u, done.user);
-      render();
       toast('Сохранено', 'success');
+      load();
     }
   }
 

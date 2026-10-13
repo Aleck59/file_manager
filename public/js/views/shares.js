@@ -1,7 +1,7 @@
 // Раздел «Ссылки»: публичные ссылки пользователя (администратор — все), статистика, отзыв.
 import { api } from '../api.js';
 import { shareUrl } from '../share-dialog.js';
-import { confirmDialog, copyToClipboard, formatDate, formatDateShort, h, icon, toast } from '../ui.js';
+import { confirmDialog, copyToClipboard, formatDate, formatDateShort, h, icon, openDialog, toast } from '../ui.js';
 
 const STATE = {
   active: ['действует', 'bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300'],
@@ -20,15 +20,13 @@ export function mountShares(view, ctx) {
     h('input', { type: 'checkbox', class: 'check', onchange: (e) => { showAll = e.target.checked; load(); } }), 'Ссылки всех пользователей');
 
   view.replaceChildren(h('div', { class: 'mx-auto max-w-5xl space-y-4 p-4 sm:p-6' },
-    h('div', { class: 'flex flex-wrap items-center justify-between gap-3' },
-      h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Публичные ссылки на файлы и папки: открываются без входа. Создать — «Поделиться» в меню файла или папки.'),
-      allToggle),
+    allToggle && h('div', { class: 'flex justify-end' }, allToggle),
     h('section', { class: 'card overflow-hidden' }, list)));
 
   function row(s) {
     const [stateText, tone] = STATE[s.state] ?? STATE.active;
     const [ic, typeText] = TYPE[s.type];
-    const url = shareUrl(s.id);
+    const url = shareUrl(s.id, s.slug);
     const stats = s.type === 'upload'
       ? `загружено ${s.uploads}${s.maxUploads ? ` из ${s.maxUploads}` : ''}`
       : `скачиваний ${s.downloads}${s.maxDownloads ? ` из ${s.maxDownloads}` : ''}`;
@@ -44,6 +42,7 @@ export function mountShares(view, ctx) {
             s.lastAccess && `открывали ${formatDateShort(s.lastAccess)}`, showAll && s.createdBy].filter(Boolean).join(' · ')),
         h('p', { class: 'truncate font-mono text-xs text-slate-400', title: `Создана ${formatDate(s.createdAt)}` }, url)),
       h('div', { class: 'flex shrink-0 gap-0.5' },
+        s.type === 'upload' && h('button', { type: 'button', class: 'icon-btn', title: 'Адрес и подпись', 'aria-label': `Адрес и подпись ссылки «${s.name}»`, onclick: () => editPortal(s) }, icon('pencil')),
         s.state === 'active' && h('button', { type: 'button', class: 'icon-btn', title: 'Скопировать', 'aria-label': `Скопировать ссылку на «${s.name}»`,
           onclick: async () => { await copyToClipboard(url); toast('Ссылка скопирована', 'success'); } }, icon('copy')),
         s.state === 'active'
@@ -55,7 +54,7 @@ export function mountShares(view, ctx) {
     try {
       const { shares } = await api.shares(showAll);
       list.replaceChildren(...(shares.length ? shares.map(row)
-        : [h('li', { class: 'px-6 py-16 text-center text-sm text-slate-500 dark:text-slate-400' }, 'Ссылок пока нет')]));
+        : [h('li', { class: 'px-6 py-16 text-center text-sm text-slate-500 dark:text-slate-400' }, 'Ссылок пока нет. Создать — «Поделиться» в меню файла или папки')]));
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -63,6 +62,22 @@ export function mountShares(view, ctx) {
   async function revoke(s) {
     if (!(await confirmDialog('Отозвать ссылку?', `«${s.name}» перестанет открываться по этой ссылке.`, 'Отозвать'))) return;
     try { await api.revokeShare(s.id); toast('Ссылка отозвана', 'success'); load(); } catch (err) { toast(err.message, 'error'); }
+  }
+  async function editPortal(s) {
+    const done = await openDialog({
+      title: 'Портал загрузки',
+      text: `Адрес вида ${location.host}/<адрес> — латиница, цифры, дефис. Пусто — обычная ссылка /s/…`,
+      confirmLabel: 'Сохранить',
+      fields: [
+        { name: 'slug', label: 'Свой адрес', value: s.slug ?? '', optional: true, maxlength: 40, placeholder: 'a' },
+        { name: 'caption', label: 'Подпись на странице', value: s.caption ?? '', optional: true, maxlength: 200, placeholder: 'Загрузить файлы' },
+      ],
+      onSubmit: ({ slug, caption }) => api.updateShare(s.id, { slug: slug.trim().toLowerCase() || null, caption: caption.trim() || null }),
+    });
+    if (done?.share) {
+      toast('Сохранено', 'success');
+      load();
+    }
   }
   async function remove(s) {
     try { await api.deleteShare(s.id); load(); } catch (err) { toast(err.message, 'error'); }

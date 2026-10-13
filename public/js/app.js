@@ -7,9 +7,9 @@ import { forgetUpload, initPending, pendingUploads, rememberUpload } from './pen
 import { initPreview } from './preview.js';
 import { ProgressView } from './progress.js';
 import * as tree from './tree.js';
-import { $, applyTheme, confirmDialog, FILES, folderLabel, formatSize, h, icon, openDialog, pluralize, prefs, toast } from './ui.js';
+import { $, applyTheme, confirmDialog, FILES, folderLabel, formatSize, h, icon, openDialog, pluralize, prefs, toast, toned } from './ui.js';
 import { speedLimit, UploadCancelled, UploadControl, uploadFile } from './uploader.js';
-import { diskHash, mountDisk } from './views/disk.js';
+import { diskHash, mountDisk, pathForId, rememberFolderId } from './views/disk.js';
 import { mountAudit } from './views/audit.js';
 import { mountShares } from './views/shares.js';
 import { mountTrash } from './views/trash.js';
@@ -108,7 +108,7 @@ function initSidebar() {
   const navIcons = { home: ['home', 'Главная'], users: ['users', 'Пользователи'], audit: ['clock', 'Журнал'], shares: ['link', 'Ссылки'], search: ['search', 'Поиск'], trash: ['trash', 'Корзина'], settings: ['settings', 'Настройки'] };
   for (const a of document.querySelectorAll('[data-nav]')) {
     const [ic, label] = navIcons[a.dataset.nav];
-    a.replaceChildren(icon(ic), label);
+    a.replaceChildren(toned(ic), label);
   }
   for (const el of document.querySelectorAll('[data-role]')) {
     if (!ctx.can(el.dataset.role)) el.remove();
@@ -173,20 +173,45 @@ function renderFavorites() {
 }
 
 let statsTimer;
+// Шкала места внизу левой панели: занято из доступного (квоты хранилищ или личной папки).
+function storageMeter(used, total, label) {
+  const share = total ? Math.min(1, used / total) : 0;
+  const tone = share > 0.95 ? 'bg-rose-500' : share > 0.8 ? 'bg-amber-400' : 'bg-brand-500';
+  const fill = h('div', { class: `h-full rounded-full ${tone} transition-[width] duration-500` });
+  fill.style.width = `${Math.max(share * 100, used ? 2 : 0)}%`; // CSSOM: inline-стили запрещены CSP
+  return h('div', { class: 'space-y-1.5' },
+    total ? h('div', { class: 'h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800', role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': total, 'aria-valuenow': used, 'aria-label': label }, fill) : null,
+    h('p', { class: 'tabular-nums' }, total ? `${label} ${formatSize(used)} из ${formatSize(total)}` : `${label} ${formatSize(used)}`));
+}
+
 function refreshStats() {
   clearTimeout(statsTimer);
   if (!ctx.storageConfigured) return;
   statsTimer = setTimeout(async () => {
     try {
+      if (ctx.personal?.quotaMb && !ctx.can('admin')) {
+        const { personal } = await api.personal();
+        if (personal?.used !== null && personal) {
+          $('#storage-summary').replaceChildren(storageMeter(personal.used, personal.quotaMb * 1024 * 1024, 'Моя папка:'));
+          return;
+        }
+      }
       const s = await api.stats();
-      $('#storage-summary').replaceChildren(
-        h('div', { class: 'flex items-center justify-between' },
-          h('span', {}, 'Занято'),
-          h('span', { class: 'font-medium tabular-nums text-slate-700 dark:text-slate-200' }, formatSize(s.size))),
-        h('div', { class: 'mt-0.5' }, `${pluralize(s.files, FILES)}${s.complete ? '' : '+'}`));
+      // Занятое у провайдера (весь бакет, с корзиной) — из суммы квот, если они заданы у всех хранилищ.
+      const used = s.storages.reduce((a, x) => a + (x.bucketSize ?? x.size ?? 0), 0);
+      const total = s.storages.every((x) => x.quota > 0) ? s.storages.reduce((a, x) => a + x.quota, 0) : 0;
+      $('#storage-summary').replaceChildren(storageMeter(used || s.size, total, 'Занято'));
+      $('#storage-summary').title = `${pluralize(s.files, FILES)}${s.complete ? '' : '+'}`;
     } catch { /* не критично */ }
   }, 300);
 }
+// Данные меняют и другие пользователи: обновляем сводку раз в минуту и при возврате на вкладку.
+setInterval(() => { if (document.visibilityState === 'visible') refreshStats(); }, 60_000);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  refreshStats();
+  current?.refresh?.();
+});
 
 // ---------- роутер ----------
 let current = null;
@@ -195,11 +220,18 @@ let currentRoute = '';
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
   if (raw === 'disk' || raw.startsWith('disk/')) {
+    const rest = raw.slice(5);
+    // Новый формат: disk/<ID папки>[/<ID файла>]
+    const m = /^([0-9a-z]{11}|root)(?:\/([A-Za-z0-9_-]{16}))?$/.exec(rest);
+    if (m) return { name: 'disk', id: m[1], folder: pathForId(m[1]), fileId: m[2] };
+    // Старый формат (полный путь) — открываем и меняем адрес на короткий.
     let folder = '';
     try {
-      folder = raw.slice(5).split('/').filter(Boolean).map(decodeURIComponent).join('/');
+      folder = rest.split('/').filter(Boolean).map(decodeURIComponent).join('/');
     } catch { /* битый URL — в корень */ }
-    return { name: 'disk', folder: folder ? `${folder}/` : '' };
+    folder = folder ? `${folder}/` : '';
+    history.replaceState(null, '', diskHash(folder));
+    return { name: 'disk', folder };
   }
   if (raw === 'search' || raw.startsWith('search?')) return { name: 'search', params: parseSearchHash(raw), raw };
   return { name: ['users', 'settings', 'audit', 'shares', 'trash', 'inbox'].includes(raw) ? raw : 'home' };
@@ -207,8 +239,22 @@ function parseHash() {
 
 function route() {
   let r = parseHash();
+  // Папка по ID, которого эта вкладка ещё не знает (ссылка из другого места, новая вкладка) —
+  // путь спрашиваем у сервера.
+  if (r.name === 'disk' && r.folder === undefined) {
+    const hash = location.hash;
+    api.folderById(r.id).then(({ path }) => {
+      rememberFolderId(r.id, path);
+      if (location.hash === hash) route();
+    }).catch((err) => {
+      toast(err.message, 'error');
+      ctx.navigate('#/disk/');
+    });
+    return;
+  }
   if ((r.name === 'users' || r.name === 'audit') && !ctx.can('admin')) r = { name: 'home' };
   if ((r.name === 'shares' || r.name === 'trash') && !ctx.can('editor')) r = { name: 'home' };
+  // Смена только ID файла (открыли предпросмотр) — та же страница, не пересоздаём её.
   const id = `${r.name}:${r.folder ?? r.raw ?? ''}`;
   if (id === currentRoute && !ctx.selectAfterNavigate) return;
   currentRoute = id;
@@ -223,7 +269,7 @@ function route() {
   if (r.name === 'disk') {
     const selectKey = ctx.selectAfterNavigate;
     ctx.selectAfterNavigate = null;
-    current = mountDisk(view, ctx, r.folder, { selectKey });
+    current = mountDisk(view, ctx, r.folder, { selectKey, selectId: r.fileId });
   } else if (r.name === 'users') current = mountUsers(view, ctx);
   else if (r.name === 'audit') current = mountAudit(view, ctx);
   else if (r.name === 'shares') current = mountShares(view, ctx);

@@ -11,6 +11,7 @@ import { pipeline } from 'node:stream/promises';
 import { OFFICE_EXT, renderOffice } from '../office.js';
 import { entryStream, listZip } from '../zip.js';
 import * as acl from '../acl.js';
+import * as folderIds from '../folder-ids.js';
 import * as labels from '../labels.js';
 import * as sharesStore from '../shares.js';
 import * as storages from '../storages.js';
@@ -137,7 +138,7 @@ async function quotaLimit(user, folder, size) {
 
 // GET /api/personal → {path, quotaMb, used} — личная папка и сколько в ней занято
 filesRouter.get('/personal', async (req, res) => {
-  if (!config.personal.enabled) return res.json({ personal: null });
+  if (!acl.hasPersonal(req.user)) return res.json({ personal: null });
   const used = await personalUsage(req.user).catch(() => null);
   res.json({ personal: { path: acl.personalPath(req.user.username), quotaMb: req.user.quotaMb ?? 0, used } });
 });
@@ -172,6 +173,8 @@ filesRouter.get('/files', async (req, res) => {
     if (!acl.canRead(req.user, folder)) result.files = [];
   }
   const access = acl.access(req.user, folder);
+  if (folder) folderIds.remember(folder);
+  for (const f of result.folders) folderIds.remember(f.path);
   // Замок у папок со своими правилами (видят администраторы) и у личных папок.
   for (const f of result.folders) {
     const rule = acl.getRule(f.path).own;
@@ -194,6 +197,8 @@ filesRouter.get('/search', async (req, res) => {
   const byAcl = filterAcl(req) && ((key, isFolder) => acl.canRead(req.user, isFolder ? key : folderFromKey(key.slice(key.indexOf(':') + 1))));
   const match = (byLabel || byAcl) ? (key, isFolder) => (!byAcl || byAcl(key, isFolder)) && (!byLabel || byLabel(key, isFolder)) : undefined;
   const result = await storages.search({ q, category, match });
+  for (const f of result.folders) folderIds.remember(f.path);
+  for (const f of result.files) if (f.folder) folderIds.remember(f.folder);
   for (const f of result.files) f.label = labels.get(f.key) ?? undefined;
   for (const f of result.folders) f.label = labels.get(labels.folderId(f.path)) ?? undefined;
   res.json({ ...result, warnings: publicWarnings(req, result.warnings) });
@@ -216,6 +221,13 @@ filesRouter.put('/labels', canEdit, async (req, res) => {
   res.json({ ok: true, color });
 });
 
+// GET /api/folders/id/:id → {path} — путь папки по короткому ID из адреса страницы.
+filesRouter.get('/folders/id/:id', async (req, res) => {
+  const path = await folderIds.resolve(req.params.id);
+  if (path === null || !acl.canSee(req.user, path)) throw new HttpError(404, 'Папка не найдена — возможно, её переименовали или удалили');
+  res.json({ path });
+});
+
 // POST /api/folders {parent, name} — создать папку (во всех хранилищах).
 filesRouter.post('/folders', canEdit, async (req, res) => {
   const parent = writeFolder(req, req.body?.parent);
@@ -225,6 +237,7 @@ filesRouter.post('/folders', canEdit, async (req, res) => {
   if (!isValidFolder(path)) throw new HttpError(400, 'Слишком глубокая вложенность или длинный путь');
   const { warnings } = await storages.createFolder(path);
   storages.invalidateStats();
+  folderIds.remember(path);
   audit(req, 'folder.create', { path });
   res.status(201).json({ folder: { path, name }, warnings: publicWarnings(req, warnings) });
 });
@@ -249,6 +262,7 @@ filesRouter.post('/folders/move', canEdit, async (req, res) => {
   sharesStore.refolder(path, target);
   labels.refolder(path, target);
   acl.refolder(path, target);
+  folderIds.remember(target);
   audit(req, 'folder.move', { from: path, to: target, moved });
   res.json({ ok: true, folder: { path: target, name }, moved, warnings: publicWarnings(req, warnings) });
 });

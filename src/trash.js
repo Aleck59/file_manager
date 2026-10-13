@@ -93,6 +93,7 @@ export async function trashFiles(refs, user) {
     name: moved.length === 1 ? nameFromKey(first.rel) : moved.slice(0, 3).map((m) => nameFromKey(m.rel)).join(', '),
     key: moved.length === 1 ? formatRef(first.st.id, first.rel) : undefined,
     keys: moved.length > 1 ? moved.map((m) => formatRef(m.st.id, m.rel)) : undefined,
+    sizes: moved.length > 1 ? moved.map((m) => m.size) : undefined,
     folder: first.rel.slice(0, first.rel.lastIndexOf('/') + 1),
     storages: [...new Set(moved.map((m) => m.st.id))],
     count: moved.length,
@@ -155,6 +156,47 @@ export async function restore(id) {
   }
   if (!warnings.length) forget(id);
   return { entry: b, warnings };
+}
+
+/**
+ * Один файл из записи «N файлов»: вернуть на место (restore) или стереть навсегда.
+ * Остальные файлы записи остаются в корзине.
+ */
+export async function takeOut(id, key, { restore: back }) {
+  const b = get(id);
+  if (!b) throw fail(404, 'В корзине такого нет');
+  const i = (b.keys ?? []).indexOf(key);
+  if (b.kind !== 'files' || i < 0) throw fail(404, 'Такого файла в этой записи нет');
+  const i2 = key.indexOf(':');
+  const st = storages.get(key.slice(0, i2));
+  if (!st) throw fail(503, 'Хранилище этого файла отключено');
+  const rel = key.slice(i2 + 1);
+  const inTrash = prefixOf(id) + rel;
+  if (back) {
+    const head = await st.headObject(inTrash);
+    if (!head) throw fail(410, 'Файл уже удалён из хранилища');
+    await st.copyObject(inTrash, rel, head.ContentLength ?? 0, head.ContentType, head.StorageClass ?? st.storageClass);
+  }
+  await st.deleteObject(inTrash);
+  if (!back) labels.forget(key);
+  const size = b.sizes?.[i] ?? 0;
+  b.keys = b.keys.filter((_, j) => j !== i);
+  b.sizes = b.sizes?.filter((_, j) => j !== i);
+  b.count = b.keys.length;
+  b.size = Math.max(0, b.size - size);
+  if (!b.keys.length) forget(id);
+  else {
+    if (b.keys.length === 1) { // остался один — это обычная запись «файл»
+      b.kind = 'file';
+      b.key = b.keys[0];
+      b.keys = undefined;
+      b.sizes = undefined;
+    }
+    const names = (b.keys ?? [b.key]).map((k) => nameFromKey(k.slice(k.indexOf(':') + 1)));
+    b.name = names.length === 1 ? names[0] : names.slice(0, 3).join(', ');
+    persist();
+  }
+  return { entry: b, key };
 }
 
 /** Удалить партию навсегда. */
