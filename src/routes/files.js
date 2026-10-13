@@ -8,6 +8,7 @@ import {
 } from '../keys.js';
 import { audit, HttpError } from '../middleware/security.js';
 import * as storages from '../storages.js';
+import { usageHistory } from '../usage-history.js';
 import * as urlImport from '../url-import.js';
 
 export const filesRouter = Router();
@@ -56,7 +57,7 @@ const publicWarnings = (req, warnings = []) => (hasRole(req.user, 'admin') ? war
 
 // ---------- статистика ----------
 filesRouter.get('/stats', async (req, res) => {
-  const stats = await storages.getStats();
+  const stats = { ...(await storages.getStats()), history: usageHistory() };
   if (hasRole(req.user, 'admin')) return res.json(stats);
   res.json({ ...stats, storages: stats.storages.map((s) => ({ ...s, error: s.error ? 'нет связи с хранилищем' : null })) });
 });

@@ -232,3 +232,19 @@
   .md-code { @apply rounded bg-slate-200/70 px-1 py-0.5 font-mono text-[0.85em] dark:bg-slate-800; }
   .md-link { @apply font-medium text-brand-700 underline underline-offset-2 dark:text-brand-400; }
 }
+
+/* ---------- графики (skill dataviz: одна серия, линия 2px, заливка ~10%, тонкая сетка) ---------- */
+:root { --chart-line: #11866c; --chart-grid: #e2e8f0; --chart-axis: #64748b; --chart-surface: #fff; }
+[data-theme="dark"] { --chart-line: #1ea685; --chart-grid: #1e293b; --chart-axis: #94a3b8; --chart-surface: #0f172a; }
+@layer components {
+  .usage-chart { outline: none; touch-action: pan-y; }
+  .usage-chart:focus-visible { @apply rounded-lg ring-2 ring-brand-500; }
+  .chart-grid { stroke: var(--chart-grid); stroke-width: 1; }
+  .chart-axis { fill: var(--chart-axis); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .chart-line { fill: none; stroke: var(--chart-line); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .chart-area { fill: var(--chart-line); fill-opacity: .1; }
+  .chart-cross { stroke: var(--chart-axis); stroke-width: 1; }
+  .chart-dot { fill: var(--chart-line); stroke: var(--chart-surface); stroke-width: 2; }
+  .meter { @apply block h-1 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800; }
+  .meter > span { @apply block h-full rounded-full; background: var(--chart-line); }
+}

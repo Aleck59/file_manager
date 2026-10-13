@@ -9,7 +9,7 @@ import {
   publicStorage, removeStorage, reorderStorages, resetSettings, setPlacement, settingsFilePath, updateSettings, updateStorage,
 } from '../config.js';
 import { Router } from '../http.js';
-import { HttpError } from '../middleware/security.js';
+import { audit, HttpError } from '../middleware/security.js';
 import { Storage, testConnection, preflightCheck } from '../s3.js';
 import * as storagesRegistry from '../storages.js';
 import { getUser } from '../users.js';
@@ -62,6 +62,7 @@ settingsRouter.put('/', (req, res) => {
   }
   const changed = wrap(() => updateSettings(values));
   console.log(`[settings] ${req.user.username} изменил: ${changed.join(', ') || 'ничего'}`);
+  if (changed.length) audit(req, 'settings.update', { keys: changed });
   res.json({ ...payload(), changed });
 });
 
@@ -71,6 +72,7 @@ settingsRouter.post('/reset', (req, res) => {
   if (!Array.isArray(keys) || !keys.length || !keys.every(isField)) throw new HttpError(400, 'Некорректный список настроек');
   if (keys.includes('APP_ORIGIN') && !req.body.confirmOriginChange) throw new HttpError(409, 'Смена адреса сайта требует подтверждения');
   const changed = wrap(() => resetSettings(keys));
+  if (changed.length) audit(req, 'settings.reset', { keys: changed });
   res.json({ ...payload(), changed });
 });
 
@@ -127,6 +129,7 @@ settingsRouter.post('/storages', async (req, res) => {
   const saved = wrap(() => addStorage(req.body.storage));
   const cors = await applyCors(saved);
   console.log(`[settings] ${req.user.username} добавил хранилище «${saved.name}» (${saved.bucket})`);
+  audit(req, 'storage.add', { name: saved.name, bucket: saved.bucket });
   res.status(201).json({ ...payload(), storage: publicStorage(saved), cors });
 });
 
@@ -139,6 +142,7 @@ settingsRouter.put('/storages/:id', async (req, res) => {
   if (connectionChanged) await ensureReachable(def, req);
   const saved = wrap(() => updateStorage(req.params.id, req.body?.storage ?? {}));
   const cors = connectionChanged ? await applyCors(saved) : null;
+  audit(req, 'storage.update', { name: saved.name, bucket: saved.bucket });
   res.json({ ...payload(), storage: publicStorage(saved), cors });
 });
 
@@ -147,6 +151,7 @@ settingsRouter.delete('/storages/:id', (req, res) => {
   const def = findStorageDef(req.params.id);
   wrap(() => removeStorage(req.params.id));
   console.log(`[settings] ${req.user.username} отключил хранилище «${def?.name}»`);
+  audit(req, 'storage.remove', { name: def?.name, bucket: def?.bucket });
   res.json(payload());
 });
 
@@ -159,6 +164,7 @@ settingsRouter.put('/storages-order', (req, res) => {
 // PUT /api/settings/placement {placement} — куда класть новые файлы
 settingsRouter.put('/placement', (req, res) => {
   wrap(() => setPlacement(req.body?.placement));
+  audit(req, 'storage.placement', { placement: req.body?.placement });
   res.json(payload());
 });
 
@@ -177,6 +183,7 @@ settingsRouter.post('/storages/:id/cors', async (req, res) => {
 settingsRouter.post('/sessions/reset', (req, res) => {
   updateSettings({ SESSION_SECRET: crypto.randomBytes(32).toString('hex') });
   setSessionCookie(res, getUser(req.user.username)); // текущий администратор остаётся в системе
+  audit(req, 'sessions.reset_all');
   res.json({ ok: true });
 });
 
@@ -184,6 +191,7 @@ settingsRouter.post('/sessions/reset', (req, res) => {
 // Работает, если приложение запущено через PM2, systemd или FastPanel: они поднимут его снова.
 settingsRouter.post('/restart', (req, res) => {
   console.log(`[settings] перезапуск по запросу ${req.user.username}`);
+  audit(req, 'server.restart');
   res.json({ ok: true, supervised });
   // SIGTERM → штатное завершение (server.js), менеджер процессов запустит приложение заново.
   setTimeout(() => process.kill(process.pid, 'SIGTERM'), 300);

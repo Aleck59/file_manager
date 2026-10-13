@@ -1,3 +1,4 @@
+import * as auditLog from '../audit-log.js';
 import { config, onConfigChange } from '../config.js';
 
 // Origin-ы всех хранилищ S3, к которым браузеру разрешено обращаться (CSP connect-src и т.д.).
@@ -98,6 +99,7 @@ export function rateLimit({ windowMs, max, message = 'Слишком много 
 /** Журнал действий: кто, что, с чем. Значения — через JSON, чтобы их нельзя было подделать переводом строки. */
 export function audit(req, action, details = {}) {
   console.log(`[audit] ${req.user?.username ?? '-'} ${action} ${JSON.stringify(details)} ip=${req.ip}`);
+  auditLog.record({ user: req.user?.username, action, details, ip: req.ip });
 }
 
 export class HttpError extends Error {

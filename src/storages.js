@@ -9,6 +9,7 @@
 // - Недоступное хранилище не ломает диск: его файлы временно не видны, а клиент
 //   получает предупреждение.
 import { config, onConfigChange } from './config.js';
+import { recordUsage } from './usage-history.js';
 import { categoryOf, compareKeys, folderFromKey, formatRef, isValidKey, nameFromKey, parseRef } from './keys.js';
 import { describeS3Error, Storage } from './s3.js';
 
@@ -237,6 +238,7 @@ async function computeStats() {
   );
   const folders = new Set();
   let recent = [];
+  let largest = []; // 10 самых больших файлов
   let complete = true;
   const perStorage = [];
 
@@ -269,6 +271,10 @@ async function computeStats() {
         for (const f of parentFolders(file.folder)) folders.add(f);
         recent.push(file);
         if (recent.length > 64) recent = recent.sort(byDateDesc).slice(0, 8);
+        if (largest.length < 10 || size > largest[largest.length - 1].size) {
+          largest.push(file);
+          largest = largest.sort((a, b) => b.size - a.size).slice(0, 10);
+        }
       }, { max: STATS_MAX_OBJECTS });
       markOk(st.id);
     } catch (err) {
@@ -285,6 +291,7 @@ async function computeStats() {
     folders: folders.size,
     categories,
     recent: recent.sort(byDateDesc).slice(0, 8),
+    largest,
     complete,
     storages: perStorage,
   };
@@ -300,6 +307,7 @@ export async function getStats({ maxAge = STATS_TTL } = {}) {
     pendingStats = computeStats()
       .then((data) => {
         if (generation === statsGeneration) statsCache = { at: Date.now(), data };
+        recordUsage(data);
         lastStats = { at: Date.now(), data };
         // Загрузки, учтённые до начала подсчёта, теперь входят в него — снимаем их резерв.
         for (const [id, v] of snapshot) reserved.set(id, Math.max(0, (reserved.get(id) ?? 0) - v));

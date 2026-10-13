@@ -68,6 +68,7 @@ export const api = {
   updateUser: (username, changes) => request('PATCH', `/api/users/${encodeURIComponent(username)}`, changes),
   deleteUser: (username) => request('DELETE', `/api/users/${encodeURIComponent(username)}`),
 
+  audit: (filter) => request('GET', `/api/admin/audit${q(filter)}`),
   getSettings: () => request('GET', '/api/settings'),
   saveSettings: (values, opts = {}) => request('PUT', '/api/settings', { values, ...opts }),
   resetSettings: (keys, opts = {}) => request('POST', '/api/settings/reset', { keys, ...opts }),

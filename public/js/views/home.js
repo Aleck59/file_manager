@@ -2,6 +2,7 @@
 import { api } from '../api.js';
 import { recentFiles } from '../library.js';
 import { thumbnail } from '../thumbs.js';
+import { usageChart } from '../usage-chart.js';
 import { $, FILES, folderLabel, formatDate, formatDateShort, formatSize, h, icon, pluralize, toast } from '../ui.js';
 import { diskHash, storageNotice } from './disk.js';
 
@@ -142,6 +143,8 @@ export function mountHome(view, ctx) {
   const structure = h('div', { class: 'h-24 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800' });
   const recent = h('ul', { class: 'divide-y divide-slate-100 dark:divide-slate-800' });
   const storagesList = h('div', { class: 'h-16 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800' });
+  const growth = h('div', { class: 'h-40 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800' });
+  const largest = h('ul', { class: 'divide-y divide-slate-100 dark:divide-slate-800' }, h('li', { class: 'm-5 h-24 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800' }));
 
   view.replaceChildren(h('div', { class: 'mx-auto max-w-6xl space-y-6 p-4 sm:p-6' },
     h('div', {},
@@ -162,6 +165,16 @@ export function mountHome(view, ctx) {
             h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Последние загрузки на диск')),
           h('a', { href: diskHash(''), class: 'text-sm font-medium text-brand-600 hover:underline dark:text-brand-400' }, 'Открыть диск')),
         recent)),
+    h('div', { class: 'grid gap-6 lg:grid-cols-5' },
+      h('section', { class: 'card p-5 lg:col-span-3 lg:self-start' },
+        h('h3', { class: 'font-semibold' }, 'Рост занятого места'),
+        h('p', { class: 'mb-4 text-sm text-slate-500 dark:text-slate-400' }, 'Файлы файлообменника, по дням'),
+        growth),
+      h('section', { class: 'card overflow-hidden lg:col-span-2' },
+        h('div', { class: 'border-b border-slate-200 px-5 py-4 dark:border-slate-800' },
+          h('h3', { class: 'font-semibold' }, 'Крупные файлы'),
+          h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Что занимает больше всего места')),
+        largest)),
     h('section', { class: 'card p-5' },
       h('div', { class: 'mb-4 flex items-end justify-between gap-4' },
         h('div', {},
@@ -192,6 +205,20 @@ export function mountHome(view, ctx) {
           : statTile('Ваша роль', ctx.roleLabel(ctx.user.role), null, 'key'));
       structure.replaceWith(breakdown(stats));
       storagesList.replaceWith(storagesUsage(stats.storages, ctx));
+      growth.replaceWith(usageChart(stats.history ?? []));
+      // Полоса — доля от самого большого файла (один оттенок, длина — величина).
+      const top = stats.largest?.[0]?.size || 1;
+      largest.replaceChildren(...(stats.largest?.length ? stats.largest.map((f) => h('li', {},
+        h('a', { href: diskHash(f.folder), class: 'flex items-center gap-3 px-5 py-2.5 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/40',
+          onclick: () => { ctx.selectAfterNavigate = f.key; } },
+        thumbnail(f, { cls: 'h-8 w-8 rounded-lg' }),
+        h('span', { class: 'min-w-0 flex-1' },
+          h('span', { class: 'flex items-baseline justify-between gap-3' },
+            h('span', { class: 'truncate text-sm font-medium' }, f.name),
+            h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400' }, formatSize(f.size))),
+          h('span', { class: 'meter mt-1.5' }, h('span', { dataset: { pct: String(Math.max(2, Math.round((f.size / top) * 100))) } })))))) : [
+        h('li', { class: 'px-5 py-10 text-center text-sm text-slate-500 dark:text-slate-400' }, 'Файлов пока нет')]));
+      for (const bar of largest.querySelectorAll('[data-pct]')) bar.style.width = `${bar.dataset.pct}%`;
 
       if (!stats.recent.length) {
         recent.replaceChildren(h('li', { class: 'px-5 py-10 text-center text-sm text-slate-500 dark:text-slate-400' }, 'Файлов пока нет'));

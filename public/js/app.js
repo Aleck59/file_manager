@@ -9,6 +9,7 @@ import * as tree from './tree.js';
 import { $, applyTheme, FILES, formatSize, h, icon, openDialog, pluralize, prefs, toast } from './ui.js';
 import { speedLimit, UploadCancelled, UploadControl, uploadFile } from './uploader.js';
 import { diskHash, mountDisk } from './views/disk.js';
+import { mountAudit } from './views/audit.js';
 import { mountHome } from './views/home.js';
 import { mountSettings } from './views/settings.js';
 import { mountUsers } from './views/users.js';
@@ -69,9 +70,22 @@ function setStorageConfigured(value) {
   }
 }
 
+// Часы сервера расходятся с хранилищем: ссылки подписываются по времени хранилища
+// (работает), но время на VDS стоит исправить — от него зависят и сессии.
+function showClockSkew(list) {
+  if (!list?.length) return;
+  const worst = list.reduce((a, b) => (Math.abs(b.offsetSec) > Math.abs(a.offsetSec) ? b : a));
+  const min = Math.round(Math.abs(worst.offsetSec) / 60);
+  const banner = h('div', { class: 'flex items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 sm:px-6 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-200', role: 'status' },
+    icon('clock'),
+    h('span', { class: 'flex-1' }, `Часы сервера ${worst.offsetSec > 0 ? 'отстают от' : 'спешат относительно'} хранилища «${worst.storage}» на ${min >= 1 ? `${min} мин` : `${Math.abs(worst.offsetSec)} с`}. Загрузка работает, но время на VDS лучше исправить: sudo timedatectl set-ntp true.`),
+    h('button', { type: 'button', class: 'icon-btn h-7 w-7', 'aria-label': 'Скрыть', onclick: () => banner.remove() }, icon('close')));
+  $('#storage-banner').after(banner);
+}
+
 // ---------- левая панель ----------
 function initSidebar() {
-  const navIcons = { home: ['home', 'Главная'], users: ['users', 'Пользователи'], settings: ['settings', 'Настройки'] };
+  const navIcons = { home: ['home', 'Главная'], users: ['users', 'Пользователи'], audit: ['clock', 'Журнал'], settings: ['settings', 'Настройки'] };
   for (const a of document.querySelectorAll('[data-nav]')) {
     const [ic, label] = navIcons[a.dataset.nav];
     a.replaceChildren(icon(ic), label);
@@ -167,12 +181,12 @@ function parseHash() {
     } catch { /* битый URL — в корень */ }
     return { name: 'disk', folder: folder ? `${folder}/` : '' };
   }
-  return { name: ['users', 'settings'].includes(raw) ? raw : 'home' };
+  return { name: ['users', 'settings', 'audit'].includes(raw) ? raw : 'home' };
 }
 
 function route() {
   let r = parseHash();
-  if (r.name === 'users' && !ctx.can('admin')) r = { name: 'home' };
+  if ((r.name === 'users' || r.name === 'audit') && !ctx.can('admin')) r = { name: 'home' };
   const id = `${r.name}:${r.folder ?? ''}`;
   if (id === currentRoute && !ctx.selectAfterNavigate) return;
   currentRoute = id;
@@ -189,9 +203,10 @@ function route() {
     ctx.selectAfterNavigate = null;
     current = mountDisk(view, ctx, r.folder, { selectKey });
   } else if (r.name === 'users') current = mountUsers(view, ctx);
+  else if (r.name === 'audit') current = mountAudit(view, ctx);
   else if (r.name === 'settings') current = mountSettings(view, ctx);
   else current = mountHome(view, ctx);
-  const titles = { home: 'Главная', disk: 'Диск', users: 'Пользователи', settings: 'Настройки' };
+  const titles = { home: 'Главная', disk: 'Диск', users: 'Пользователи', audit: 'Журнал', settings: 'Настройки' };
   document.title = `${titles[r.name]} — Файлообменник`;
 }
 
@@ -492,10 +507,12 @@ async function start() {
     ctx.user = me.user;
     ctx.storageConfigured = me.storageConfigured;
     ctx.storages = me.storages ?? [];
+    ctx.clockSkew = me.clockSkew;
   } catch {
     return; // при 401 api сам перенаправит на /login
   }
   initLibrary(ctx.user.username);
+  showClockSkew(ctx.clockSkew);
   initSidebar();
   initPalette(ctx);
   initPreview(ctx);

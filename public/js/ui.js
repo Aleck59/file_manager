@@ -197,6 +197,16 @@ export function folderLabel(folder) {
   return ['Мой диск', ...folder.split('/').filter(Boolean)].join(' / ');
 }
 
+// «Chrome · Windows» из User-Agent — для журнала и списка сессий.
+export function describeUA(ua = '') {
+  const browser = /YaBrowser/.test(ua) ? 'Яндекс Браузер' : /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera'
+    : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari'
+      : /curl\//i.test(ua) ? 'curl' : ua ? 'Другой браузер' : 'Неизвестно';
+  const os = /Windows/.test(ua) ? 'Windows' : /Android/.test(ua) ? 'Android' : /iPhone|iPad|iOS/.test(ua) ? 'iOS'
+    : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : '';
+  return os ? `${browser} · ${os}` : browser;
+}
+
 // ---------- уведомления ----------
 export function toast(message, type = 'info') {
   const palette = {
