@@ -394,6 +394,16 @@ export class Storage {
     return parts.sort((a, b) => a.PartNumber - b.PartNumber);
   }
 
+  // Для загрузки по ссылке: данные идут через сервер частями (см. url-import.js).
+  putBuffer(rel, body, contentType) {
+    return this.send(new PutObjectCommand({ Bucket: this.bucket, Key: this.abs(rel), Body: body, ContentLength: body.length, ContentType: contentType, StorageClass: this.storageClass }));
+  }
+
+  async uploadPartBuffer(rel, uploadId, partNumber, body) {
+    const out = await this.send(new UploadPartCommand({ Bucket: this.bucket, Key: this.abs(rel), UploadId: uploadId, PartNumber: partNumber, Body: body, ContentLength: body.length }));
+    return out.ETag;
+  }
+
   completeMultipart(rel, uploadId, parts) {
     return this.send(new CompleteMultipartUploadCommand({
       Bucket: this.bucket, Key: this.abs(rel), UploadId: uploadId,

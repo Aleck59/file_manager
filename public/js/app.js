@@ -6,8 +6,8 @@ import { initPalette } from './palette.js';
 import { initPreview } from './preview.js';
 import { ProgressView } from './progress.js';
 import * as tree from './tree.js';
-import { $, applyTheme, FILES, formatSize, h, icon, pluralize, prefs, toast } from './ui.js';
-import { uploadFile, UploadCancelled } from './uploader.js';
+import { $, applyTheme, FILES, formatSize, h, icon, openDialog, pluralize, prefs, toast } from './ui.js';
+import { speedLimit, UploadCancelled, UploadControl, uploadFile } from './uploader.js';
 import { diskHash, mountDisk } from './views/disk.js';
 import { mountHome } from './views/home.js';
 import { mountSettings } from './views/settings.js';
@@ -36,6 +36,7 @@ const ctx = {
     $('#folder-input').click();
   },
   enqueue,
+  importFromUrl,
   refreshStats,
   selectAfterNavigate: null,
   newFolderHere: null,
@@ -201,9 +202,11 @@ let uploadTarget = '';
 let finished = 0;
 let failed = 0;
 let hideTimer;
+let importsActive = 0;
 
 function updateUploadsTitle() {
-  const pending = active + queue.length;
+  updatePauseAll();
+  const pending = active + queue.length + importsActive;
   $('#uploads-title').textContent = pending ? `Загрузка · осталось ${pending}` : `Готово · ${pluralize(finished, FILES)}`;
 }
 
@@ -292,18 +295,132 @@ async function enqueue(files, folder) {
     const bar = h('div');
     const cancel = h('button', { type: 'button', class: 'icon-btn h-7 w-7', title: 'Отменить', 'aria-label': `Отменить загрузку ${file.name}` }, icon('close'));
     cancel.onclick = () => controller.abort();
+    // Пауза: загруженные части остаются в хранилище, после продолжения догружается остальное.
+    const control = new UploadControl();
+    const pause = h('button', { type: 'button', class: 'icon-btn h-7 w-7', title: 'Пауза', 'aria-label': `Приостановить ${file.name}`, 'aria-pressed': 'false' }, icon('pause'));
+    const entry = { control, pause, status, progress: null };
+    pause.onclick = () => togglePause(entry);
     const row = h('li', { class: 'upload-row flex items-center gap-3 px-4 py-3' },
       h('div', { class: 'min-w-0 flex-1' },
         h('div', { class: 'flex items-baseline justify-between gap-3' },
           h('p', { class: 'truncate text-sm font-medium', title: label }, label),
           status),
         h('div', { class: 'progress mt-2' }, bar)),
-      cancel);
+      pause, cancel);
     $('#upload-list').append(row);
-    queue.push({ file, folder, subfolders: subfolders.length ? subfolders : undefined, replaceKeys, controller, ui: { row, status, bar, cancel } });
+    uploadItems.add(entry);
+    queue.push({ file, folder, subfolders: subfolders.length ? subfolders : undefined, replaceKeys, controller, item: entry, ui: { row, status, bar, cancel, pause } });
   }
   updateUploadsTitle();
   pump();
+}
+
+// ---------- загрузка по ссылке ----------
+// Файл скачивает сервер и потоком кладёт в S3; здесь — диалог и строка в панели загрузок.
+async function importFromUrl(folder) {
+  const values = await openDialog({
+    title: 'Загрузить по ссылке',
+    text: 'Сервер сам скачает файл и положит его в хранилище — компьютер для этого не нужен. Ссылки на внутреннюю сеть запрещены.',
+    confirmLabel: 'Загрузить',
+    fields: [{ name: 'url', label: 'Ссылка на файл', type: 'url', autocomplete: 'off', maxlength: 4096, value: '' }],
+    async onSubmit({ url }) {
+      if (!/^https?:\/\//i.test(url.trim())) throw new Error('Ссылка должна начинаться с http:// или https://');
+      return api.importUrl(url.trim(), folder);
+    },
+  });
+  if (!values?.job) return;
+  trackImport(values.job, folder);
+}
+
+function trackImport(job, folder) {
+  clearTimeout(hideTimer);
+  if (!active && !queue.length && !importsActive) { finished = 0; failed = 0; $('#upload-list').replaceChildren(); }
+  $('#uploads').classList.remove('hidden');
+  importsActive++;
+  const status = h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400' }, 'подключение…');
+  const bar = h('div');
+  const title = h('p', { class: 'truncate text-sm font-medium' }, job.name);
+  const cancel = h('button', { type: 'button', class: 'icon-btn h-7 w-7', title: 'Отменить', 'aria-label': 'Отменить загрузку по ссылке', onclick: () => api.importCancel(job.id).catch(() => {}) }, icon('close'));
+  const row = h('li', { class: 'upload-row flex items-center gap-3 px-4 py-3' },
+    h('span', { class: 'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-600 dark:bg-sky-950/60 dark:text-sky-400', title: 'Загрузка по ссылке' }, icon('globe')),
+    h('div', { class: 'min-w-0 flex-1' },
+      h('div', { class: 'flex items-baseline justify-between gap-3' }, title, status),
+      h('div', { class: 'progress mt-2' }, bar)),
+    cancel);
+  $('#upload-list').append(row);
+  updateUploadsTitle();
+  let progress = null;
+  const finish = (ok) => {
+    importsActive--;
+    progress?.finish(ok);
+    if (!progress) bar.parentElement.classList.add(ok ? 'is-done' : 'is-error');
+    cancel.replaceChildren(icon(ok ? 'check' : 'close'));
+    cancel.onclick = () => row.remove();
+    cancel.title = 'Скрыть';
+    updateUploadsTitle();
+    if (ok && !active && !queue.length && !importsActive && !failed) hideTimer = setTimeout(() => $('#uploads').classList.add('hidden'), 4000);
+  };
+  const poll = async () => {
+    let j;
+    try {
+      ({ job: j } = await api.importStatus(job.id));
+    } catch (err) {
+      status.textContent = 'Ошибка';
+      return finish(false);
+    }
+    title.textContent = j.name;
+    title.title = j.name;
+    if (j.size && !progress) progress = new ProgressView(bar, status, j.size);
+    if (progress) progress.update(j.loaded);
+    else if (j.loaded) status.textContent = `${formatSize(j.loaded)} скачано`;
+    if (j.status === 'running') return setTimeout(poll, 1000);
+    if (j.status === 'done') {
+      finished++;
+      finish(true);
+      status.textContent = 'Готово';
+      current?.onUploaded?.(j.file, j.folder ?? folder);
+      refreshStats();
+    } else {
+      if (j.status === 'cancelled') { finish(false); row.remove(); return; }
+      failed++;
+      finish(false);
+      status.textContent = 'Ошибка';
+      status.classList.add('text-rose-600');
+      toast(`${j.name}: ${j.error}`, 'error');
+    }
+  };
+  poll();
+}
+
+// ---------- пауза ----------
+const uploadItems = new Set(); // ещё не завершённые загрузки (в очереди и активные)
+
+function setPausedUi(item, paused) {
+  item.pause.replaceChildren(icon(paused ? 'play' : 'pause'));
+  item.pause.title = paused ? 'Продолжить' : 'Пауза';
+  item.pause.setAttribute('aria-pressed', String(paused));
+  item.pause.setAttribute('aria-label', item.pause.getAttribute('aria-label').replace(/^(Приостановить|Продолжить)/, paused ? 'Продолжить' : 'Приостановить'));
+  if (item.progress) item.progress.setPaused(paused);
+  else item.status.textContent = paused ? 'в очереди · пауза' : item.status.textContent.replace(' · пауза', '');
+}
+
+function togglePause(item, force) {
+  const paused = force ?? !item.control.paused;
+  if (paused) item.control.pause(); else item.control.resume();
+  setPausedUi(item, paused);
+  updatePauseAll();
+}
+
+function updatePauseAll() {
+  const btn = $('#uploads-pause');
+  const list = [...uploadItems];
+  btn.classList.toggle('hidden', !list.length);
+  const allPaused = list.length > 0 && list.every((i) => i.control.paused);
+  btn.replaceChildren(icon(allPaused ? 'play' : 'pause'));
+  btn.title = allPaused ? 'Продолжить все' : 'Приостановить все';
+  btn.setAttribute('aria-label', btn.title);
+  const limit = speedLimit();
+  $('#uploads-limit').textContent = limit ? `≤ ${formatSize(limit)}/с` : '';
 }
 
 function pump() {
@@ -312,7 +429,7 @@ function pump() {
     runUpload(queue.shift()).finally(() => {
       active--;
       updateUploadsTitle();
-      if (!active && !queue.length) {
+      if (!active && !queue.length && !importsActive) {
         refreshStats();
         // Всё загрузилось без ошибок — панель прячется сама; при ошибках остаётся.
         if (!failed) hideTimer = setTimeout(() => $('#uploads').classList.add('hidden'), 4000);
@@ -322,19 +439,24 @@ function pump() {
   }
 }
 
-async function runUpload({ file, folder, subfolders, replaceKeys, controller, ui }) {
-  const { status, bar, row, cancel } = ui;
-  if (controller.signal.aborted) { row.remove(); return; }
+async function runUpload({ file, folder, subfolders, replaceKeys, controller, item, ui }) {
+  const { status, bar, row, cancel, pause } = ui;
+  if (controller.signal.aborted) { row.remove(); uploadItems.delete(item); return; }
   const progress = new ProgressView(bar, status, file.size);
-  status.textContent = '0%';
+  item.progress = progress;
+  if (item.control.paused) progress.setPaused(true);
+  else status.textContent = '0%';
+  const done = () => { pause.remove(); uploadItems.delete(item); updatePauseAll(); };
   try {
     const result = await uploadFile(file, {
       folder,
       subfolders,
+      control: item.control,
       signal: controller.signal,
       onProgress: (loaded) => progress.update(loaded),
     });
     finished++;
+    done();
     progress.finish(true);
     status.textContent = 'Готово';
     cancel.replaceChildren(icon('check'));
@@ -347,6 +469,7 @@ async function runUpload({ file, folder, subfolders, replaceKeys, controller, ui
       current?.onReplaced?.(removed);
     }
   } catch (err) {
+    done();
     if (err instanceof UploadCancelled) { row.remove(); return; }
     failed++;
     progress.finish(false);
@@ -390,6 +513,11 @@ async function start() {
     e.target.value = '';
   });
   $('#uploads-hide').addEventListener('click', () => $('#uploads').classList.add('hidden'));
+  $('#uploads-pause').addEventListener('click', () => {
+    const list = [...uploadItems];
+    const pauseAll = !list.every((i) => i.control.paused);
+    for (const i of list) togglePause(i, pauseAll);
+  });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (prefs.get('theme', 'system') === 'system') applyTheme('system');
   });

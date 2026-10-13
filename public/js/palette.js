@@ -122,6 +122,7 @@ function buildCommands(ctx) {
     const here = ctx.currentFolder?.() ?? '';
     add('Действия', 'Загрузить файлы', 'upload', () => ctx.pickFiles(here), `в «${folderLabel(here)}»`);
     add('Действия', 'Загрузить папку', 'folderUp', () => ctx.pickFolder(here), `в «${folderLabel(here)}»`);
+    add('Действия', 'Загрузить по ссылке', 'globe', () => ctx.importFromUrl(here), `в «${folderLabel(here)}»`);
     add('Действия', 'Новая папка', 'folderPlus', () => {
       if (ctx.newFolderHere) ctx.newFolderHere();
       else { ctx.navigate(diskHash('')); setTimeout(() => ctx.newFolderHere?.(), 0); }

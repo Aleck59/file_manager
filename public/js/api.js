@@ -51,6 +51,9 @@ export const api = {
   startUpload: (file, folder, subfolders) => request('POST', '/api/uploads', { name: file.name, size: file.size, type: file.type, folder, subfolders }),
   partUrls: (key, uploadId, partNumbers) => request('POST', '/api/uploads/parts', { key, uploadId, partNumbers }),
   completeUpload: (key, uploadId) => request('POST', '/api/uploads/complete', { key, uploadId }),
+  importUrl: (url, folder) => request('POST', '/api/uploads/url', { url, folder }),
+  importStatus: (id) => request('GET', `/api/uploads/url/${encodeURIComponent(id)}`),
+  importCancel: (id) => request('POST', `/api/uploads/url/${encodeURIComponent(id)}/cancel`),
   abortUpload: (key, uploadId) => request('POST', '/api/uploads/abort', { key, uploadId }),
 
   downloadLink: (key, ttl) => request('POST', '/api/files/link', { key, ttl }),

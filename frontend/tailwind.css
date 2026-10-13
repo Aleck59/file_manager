@@ -25,6 +25,7 @@
   /* Полоса двигается только transform-ом из progress.js (requestAnimationFrame), без transition. */
   .progress > div { @apply h-full w-full rounded-full bg-brand-500; transform: translateX(-100%); will-change: transform; transition-property: background-color; transition-duration: 200ms; }
   .progress.is-error > div { @apply bg-rose-500; }
+  .progress.is-paused > div { @apply bg-amber-400; }
   /* Байты отправлены, хранилище завершает приём — мягкая пульсация вместо «застывших» 100%. */
   .progress.is-finishing > div { animation: progress-pulse 1.2s ease-in-out infinite; }
   @keyframes progress-pulse { 50% { opacity: .55; } }

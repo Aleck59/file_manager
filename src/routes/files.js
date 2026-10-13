@@ -8,6 +8,7 @@ import {
 } from '../keys.js';
 import { audit, HttpError } from '../middleware/security.js';
 import * as storages from '../storages.js';
+import * as urlImport from '../url-import.js';
 
 export const filesRouter = Router();
 
@@ -125,6 +126,30 @@ filesRouter.post('/uploads', canEdit, async (req, res) => {
   const partCount = Math.ceil(size / partSize);
   const uploadId = await st.createMultipart(rel, contentType);
   res.json({ mode: 'multipart', key, uploadId, partSize, partCount, storage: st.id, folder });
+});
+
+// ---------- загрузка по ссылке (сервер скачивает файл сам) ----------
+// POST /api/uploads/url {url, folder} → 202 {job}; статус — GET /api/uploads/url/:id
+filesRouter.post('/uploads/url', canEdit, async (req, res) => {
+  const folder = requireFolder(req.body?.folder);
+  const job = await urlImport.startImport({
+    url: req.body?.url, folder, user: req.user.username,
+    onDone: (j) => {
+      if (j.status === 'done') audit(req, 'file.upload_url', { host: j.host, key: j.file.key, size: j.size });
+    },
+  });
+  res.status(202).json({ job });
+});
+
+filesRouter.get('/uploads/url/:id', canEdit, (req, res) => {
+  const job = urlImport.getJob(req.params.id, req.user.username);
+  if (!job) throw new HttpError(404, 'Задание не найдено');
+  res.json({ job });
+});
+
+filesRouter.post('/uploads/url/:id/cancel', canEdit, (req, res) => {
+  if (!urlImport.cancelJob(req.params.id, req.user.username)) throw new HttpError(404, 'Задание не найдено');
+  res.json({ ok: true });
 });
 
 // POST /api/uploads/parts — presigned URL для пачки частей multipart-загрузки.

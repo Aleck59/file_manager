@@ -418,3 +418,23 @@ test('ссылки подписываются по часам хранилища
     srv.close();
   }
 });
+
+test('загрузка по ссылке: внутренние адреса запрещены (SSRF)', async () => {
+  const { isForbiddenAddress, parseImportUrl } = await import('../src/url-import.js');
+  for (const ip of ['127.0.0.1', '10.1.2.3', '172.16.0.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0',
+    '::1', '::', 'fe80::1', 'fd00::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '::ffff:a9fe:a9fe', '224.0.0.1', 'not-an-ip']) {
+    assert.equal(isForbiddenAddress(ip), true, ip);
+  }
+  for (const ip of ['8.8.8.8', '1.1.1.1', '2a00:1450:4010:c05::64', '185.12.34.56']) assert.equal(isForbiddenAddress(ip), false, ip);
+  assert.throws(() => parseImportUrl('ftp://example.com/a'), /http/);
+  assert.throws(() => parseImportUrl('file:///etc/passwd'), /http/);
+  assert.throws(() => parseImportUrl('https://user:pass@example.com/'), /логином/);
+  assert.equal(parseImportUrl(' https://example.com/a.zip ').hostname, 'example.com');
+});
+
+test('загрузка по ссылке: localhost и частные имена отклоняются до запроса', async () => {
+  const { startImport } = await import('../src/url-import.js');
+  await assert.rejects(startImport({ url: 'http://127.0.0.1:3000/api', folder: '', user: 'u1' }), /внутреннюю сеть/);
+  await assert.rejects(startImport({ url: 'http://localhost/', folder: '', user: 'u2' }), /внутреннюю сеть/);
+  await assert.rejects(startImport({ url: 'http://[::1]/', folder: '', user: 'u3' }), /внутреннюю сеть/);
+});

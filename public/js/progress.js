@@ -91,7 +91,7 @@ export class ProgressView {
   }
 
   writeText() {
-    if (this.done) return;
+    if (this.done || this.paused) return;
     if (this.target >= this.total) {
       // Байты отправлены, ждём ответа хранилища и завершения на сервере.
       this.label.textContent = 'Завершение…';
@@ -103,6 +103,18 @@ export class ProgressView {
     const parts = [`${pct}%`];
     if (speed > 0) parts.push(`${formatSize(speed)}/с`, formatEta((this.total - this.target) / speed));
     this.label.textContent = parts.filter(Boolean).join(' · ');
+  }
+
+  /** Пауза: текст «Пауза», полоса приглушена; после продолжения — снова проценты. */
+  setPaused(paused) {
+    this.paused = paused;
+    this.bar.parentElement.classList.toggle('is-paused', paused);
+    if (paused) {
+      this.label.textContent = `Пауза · ${Math.floor((this.shown / this.total) * 100)}%`;
+      this.samples = []; // скорость после паузы считается заново
+    } else {
+      this.writeText();
+    }
   }
 
   /** Завершение: ok — успешно, иначе ошибка. */

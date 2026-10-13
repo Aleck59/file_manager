@@ -14,9 +14,63 @@ export class UploadCancelled extends Error {
   }
 }
 
-function putBlob(url, blob, headers, onProgress, signal) {
+// Пауза: запросы в полёте прерываются, загруженные части multipart остаются в S3.
+class UploadPaused extends Error {}
+
+/**
+ * Управление загрузкой: пауза/продолжение. Один объект на файл.
+ */
+export class UploadControl {
+  constructor() {
+    this.paused = false;
+    this.pauseCtl = new AbortController();
+    this.waiters = [];
+  }
+  pause() {
+    if (this.paused) return;
+    this.paused = true;
+    this.pauseCtl.abort();
+  }
+  resume() {
+    if (!this.paused) return;
+    this.paused = false;
+    this.pauseCtl = new AbortController();
+    this.waiters.splice(0).forEach((fn) => fn());
+  }
+  /** Дождаться снятия паузы (или сразу, если её нет). */
+  untilResumed(signal) {
+    if (!this.paused) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      this.waiters.push(resolve);
+      signal.addEventListener('abort', () => reject(new UploadCancelled()), { once: true });
+    });
+  }
+}
+
+// ---------- ограничение скорости ----------
+// Браузер не умеет замедлять один запрос, поэтому ограничение — среднее: перед каждой
+// частью (или файлом) ждём, сколько требует заданная скорость. Общее для всех загрузок.
+let nextSlot = 0;
+export const speedLimit = () => Number(localStorage.getItem('fm-upload-limit') || 0) * 1024 * 1024; // байт/с, 0 — без ограничения
+async function throttle(bytes, signal) {
+  const limit = speedLimit();
+  if (!limit) return;
+  const now = performance.now();
+  const start = Math.max(now, nextSlot);
+  nextSlot = start + (bytes / limit) * 1000;
+  if (start > now) await abortableSleep(start - now, signal);
+}
+function abortableSleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => { clearTimeout(t); reject(new UploadCancelled()); }, { once: true });
+  });
+}
+
+function putBlob(url, blob, headers, onProgress, signal, pauseSignal) {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return reject(new UploadCancelled());
+    if (pauseSignal?.aborted) return reject(new UploadPaused());
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', url);
     for (const [name, value] of Object.entries(headers ?? {})) xhr.setRequestHeader(name, value);
@@ -39,9 +93,13 @@ function putBlob(url, blob, headers, onProgress, signal) {
       : 'Нет ответа от хранилища: скорее всего, у бакета не настроен CORS. Настройки → Хранилища → «Проверить загрузку из браузера»'));
     xhr.ontimeout = () => reject(new Error('Превышено время ожидания S3'));
     const onAbort = () => xhr.abort();
-    xhr.onabort = () => reject(new UploadCancelled());
+    xhr.onabort = () => reject(signal.aborted ? new UploadCancelled() : new UploadPaused());
     signal.addEventListener('abort', onAbort, { once: true });
-    xhr.onloadend = () => signal.removeEventListener('abort', onAbort);
+    pauseSignal?.addEventListener('abort', onAbort, { once: true });
+    xhr.onloadend = () => {
+      signal.removeEventListener('abort', onAbort);
+      pauseSignal?.removeEventListener('abort', onAbort);
+    };
     xhr.send(blob);
   });
 }
@@ -53,13 +111,26 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @param {{ folder?: string, subfolders?: string[], onProgress: (loaded: number, total: number) => void, signal: AbortSignal }} opts
  * @returns {Promise<{file: {key: string, name: string, size: number, lastModified: string}, folder: string}>}
  */
-export async function uploadFile(file, { folder = '', subfolders, onProgress, signal }) {
-  const plan = await api.startUpload(file, folder, subfolders);
+export async function uploadFile(file, { folder = '', subfolders, onProgress, signal, control = new UploadControl() }) {
+  let plan = await api.startUpload(file, folder, subfolders);
   // Итоговая папка (с подпапками при загрузке папки целиком) — её определяет сервер.
   const target = plan.folder ?? folder;
 
   if (plan.mode === 'single') {
-    await putBlob(plan.url, file, plan.headers, (loaded) => onProgress(loaded, file.size), signal);
+    for (;;) {
+      await control.untilResumed(signal);
+      await throttle(file.size, signal);
+      try {
+        await putBlob(plan.url, file, plan.headers, (loaded) => onProgress(loaded, file.size), signal, control.pauseCtl.signal);
+        break;
+      } catch (err) {
+        if (!(err instanceof UploadPaused)) throw err;
+        onProgress(0, file.size);
+        // После паузы ссылка могла истечь — берём новую (файл ещё не загружен, ключ не важен).
+        await control.untilResumed(signal);
+        plan = await api.startUpload(file, folder, subfolders);
+      }
+    }
     return { file: (await api.completeUpload(plan.key)).file, folder: target };
   }
 
@@ -89,11 +160,21 @@ export async function uploadFile(file, { folder = '', subfolders, onProgress, si
     const blob = file.slice((n - 1) * partSize, Math.min(n * partSize, file.size));
     for (let attempt = 1; ; attempt++) {
       try {
+        await control.untilResumed(local.signal);
+        await throttle(blob.size, local.signal);
         const url = await urlFor(n);
-        await putBlob(url, blob, null, (loaded) => { loadedByPart[n] = loaded; report(); }, local.signal);
+        await putBlob(url, blob, null, (loaded) => { loadedByPart[n] = loaded; report(); }, local.signal, control.pauseCtl.signal);
         urls.delete(n);
         return;
       } catch (err) {
+        // Пауза: часть начнётся заново после продолжения (ссылки берутся новые), попытка не считается.
+        if (err instanceof UploadPaused) {
+          urls.clear();
+          loadedByPart[n] = 0;
+          report();
+          attempt--;
+          continue;
+        }
         urls.delete(n);
         if (err instanceof UploadCancelled || attempt >= PART_RETRIES) throw err;
         loadedByPart[n] = 0;
@@ -116,7 +197,9 @@ export async function uploadFile(file, { folder = '', subfolders, onProgress, si
   }
 
   try {
-    await Promise.all(Array.from({ length: Math.min(PART_CONCURRENCY, partCount) }, worker));
+    // С ограничением скорости части идут по одной — так среднее точнее.
+    const concurrency = speedLimit() ? 1 : PART_CONCURRENCY;
+    await Promise.all(Array.from({ length: Math.min(concurrency, partCount) }, worker));
     return { file: (await api.completeUpload(key, uploadId)).file, folder: target };
   } catch (err) {
     // Незавершённая multipart-загрузка занимает место в бакете — отменяем её.

@@ -192,10 +192,12 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   const dropzone = canEdit && h('div', { class: 'dropzone group hidden items-center sm:flex gap-3 rounded-2xl border border-dashed border-slate-300 bg-white/60 px-4 py-3 text-sm dark:border-slate-700 dark:bg-slate-900/40' },
     h('span', { class: 'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600 dark:bg-brand-950 dark:text-brand-400' }, icon('upload')),
     h('p', { class: 'min-w-0 text-slate-600 dark:text-slate-300' },
-      'Перетащите файлы или папки, вставьте из буфера (Ctrl+V) или ',
-      h('button', { type: 'button', class: 'link', onclick: () => ctx.pickFiles(folder) }, 'выберите файлы'),
+      'Перетащите файлы и папки или вставьте (Ctrl+V). Загрузить: ',
+      h('button', { type: 'button', class: 'link', onclick: () => ctx.pickFiles(folder) }, 'файлы'),
       ' · ',
-      h('button', { type: 'button', class: 'link', onclick: () => ctx.pickFolder(folder) }, 'папку')));
+      h('button', { type: 'button', class: 'link', onclick: () => ctx.pickFolder(folder) }, 'папку'),
+      ' · ',
+      h('button', { type: 'button', class: 'link', onclick: () => ctx.importFromUrl(folder) }, 'по ссылке')));
 
   const overlay = h('div', { class: 'drop-overlay pointer-events-none absolute inset-3 z-10 hidden items-center justify-center rounded-2xl border-2 border-dashed border-brand-500 bg-brand-50/90 backdrop-blur-sm dark:bg-brand-950/80' },
     h('div', { class: 'text-center' },
@@ -557,6 +559,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     openMenu(atPointer(e), [
       { label: 'Загрузить файлы', icon: 'upload', onSelect: () => ctx.pickFiles(folder) },
       { label: 'Загрузить папку', icon: 'folderUp', onSelect: () => ctx.pickFolder(folder) },
+      { label: 'Загрузить по ссылке…', icon: 'globe', onSelect: () => ctx.importFromUrl(folder) },
       { label: 'Новая папка', icon: 'folderPlus', onSelect: newFolder },
       state.files.length && { label: 'Выбрать все файлы', icon: 'check', onSelect: checkAllFiles },
     ]);

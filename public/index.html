@@ -89,7 +89,9 @@
   <!-- Очередь загрузок -->
   <section id="uploads" class="fixed bottom-4 right-4 z-50 hidden w-[min(24rem,calc(100%-2rem))] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-900">
     <div class="flex items-center justify-between border-b border-slate-200 px-4 py-2.5 dark:border-slate-800">
-      <h2 id="uploads-title" class="text-sm font-semibold" role="status" aria-live="polite">Загрузка</h2>
+      <h2 id="uploads-title" class="min-w-0 flex-1 truncate text-sm font-semibold" role="status" aria-live="polite">Загрузка</h2>
+      <span id="uploads-limit" class="mr-1 text-xs tabular-nums text-slate-500 dark:text-slate-400" title="Ограничение скорости — в настройках"></span>
+      <button id="uploads-pause" class="icon-btn hidden h-7 w-7" type="button" aria-label="Приостановить все"></button>
       <button id="uploads-hide" class="icon-btn h-7 w-7" type="button" aria-label="Скрыть"></button>
     </div>
     <ul id="upload-list" class="max-h-72 divide-y divide-slate-100 overflow-y-auto dark:divide-slate-800"></ul>
