@@ -74,6 +74,20 @@ export async function completeUpload(key, uploadId, { maxSize = config.limits.ma
   return { file: storages.fileInfo(st, rel, size, lastModified), st, rel, size };
 }
 
+/** Уже загруженные части незавершённой multipart-загрузки (продолжение после перезагрузки страницы). */
+export async function uploadedParts(key, uploadId) {
+  const { st, rel } = storages.resolveRef(key);
+  try {
+    const parts = await st.listAllParts(rel, uploadId);
+    return parts.map((p) => ({ n: p.PartNumber, size: p.Size }));
+  } catch (err) {
+    if (err.name === 'NoSuchUpload' || err.$metadata?.httpStatusCode === 404) {
+      throw fail(410, 'Загрузку уже не продолжить: она отменена или удалена хранилищем');
+    }
+    throw err;
+  }
+}
+
 export async function abortUpload(key, uploadId) {
   const { st, rel } = storages.resolveRef(key);
   try {

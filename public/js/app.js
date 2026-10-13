@@ -3,10 +3,11 @@
 import { api } from './api.js';
 import { favorites, initLibrary, onLibraryChange, toggleFavorite } from './library.js';
 import { initPalette } from './palette.js';
+import { forgetUpload, initPending, pendingUploads, rememberUpload } from './pending-uploads.js';
 import { initPreview } from './preview.js';
 import { ProgressView } from './progress.js';
 import * as tree from './tree.js';
-import { $, applyTheme, FILES, formatSize, h, icon, openDialog, pluralize, prefs, toast } from './ui.js';
+import { $, applyTheme, confirmDialog, FILES, folderLabel, formatSize, h, icon, openDialog, pluralize, prefs, toast } from './ui.js';
 import { speedLimit, UploadCancelled, UploadControl, uploadFile } from './uploader.js';
 import { diskHash, mountDisk } from './views/disk.js';
 import { mountAudit } from './views/audit.js';
@@ -318,13 +319,15 @@ async function resolveDuplicates(items, folder) {
 // files: File или { file, subfolders } (загрузка папки целиком — путь внутри неё).
 async function enqueue(files, folder) {
   if (!ctx.can('editor')) return toast('Недостаточно прав для загрузки', 'error');
-  files = await resolveDuplicates(files.map((it) => (it instanceof File ? { file: it } : it)), folder);
+  files = files.map((it) => (it instanceof File ? { file: it } : it));
+  // Продолжение прерванной загрузки — тот же ключ, вопрос про одинаковые имена не нужен.
+  files = [...files.filter((it) => it.resume), ...await resolveDuplicates(files.filter((it) => !it.resume), folder)];
   if (!files.length) return;
   clearTimeout(hideTimer);
-  if (!active && !queue.length) { finished = 0; failed = 0; $('#upload-list').replaceChildren(); }
+  if (!active && !queue.length) { finished = 0; failed = 0; clearUploadList(); }
   $('#uploads').classList.remove('hidden');
   for (const item of files) {
-    const { file, subfolders = [], replaceKeys } = item;
+    const { file, subfolders = [], replaceKeys, resume } = item;
     const label = [...subfolders, file.name].join(' / ');
     const controller = new AbortController();
     const status = h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400' }, `${formatSize(file.size)} · в очереди`);
@@ -345,7 +348,7 @@ async function enqueue(files, folder) {
       pause, cancel);
     $('#upload-list').append(row);
     uploadItems.add(entry);
-    queue.push({ file, folder, subfolders: subfolders.length ? subfolders : undefined, replaceKeys, controller, item: entry, ui: { row, status, bar, cancel, pause } });
+    queue.push({ file, folder, subfolders: subfolders.length ? subfolders : undefined, replaceKeys, resume, controller, item: entry, ui: { row, status, bar, cancel, pause } });
   }
   updateUploadsTitle();
   pump();
@@ -379,7 +382,7 @@ function trackJob(job, { folder = '', kind = 'url', oldKey, label } = {}) {
   let settle;
   const done = new Promise((resolve) => { settle = resolve; });
   clearTimeout(hideTimer);
-  if (!active && !queue.length && !importsActive) { finished = 0; failed = 0; $('#upload-list').replaceChildren(); }
+  if (!active && !queue.length && !importsActive) { finished = 0; failed = 0; clearUploadList(); }
   $('#uploads').classList.remove('hidden');
   importsActive++;
   const status = h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400' }, 'подключение…');
@@ -404,7 +407,7 @@ function trackJob(job, { folder = '', kind = 'url', oldKey, label } = {}) {
     cancel.onclick = () => row.remove();
     cancel.title = 'Скрыть';
     updateUploadsTitle();
-    if (ok && !active && !queue.length && !importsActive && !failed) hideTimer = setTimeout(() => $('#uploads').classList.add('hidden'), 4000);
+    if (ok && !active && !queue.length && !importsActive && !failed) hideTimer = setTimeout(() => { if (!$('#upload-list [data-pending]')) $('#uploads').classList.add('hidden'); }, 4000);
   };
   const poll = async () => {
     let j;
@@ -482,25 +485,30 @@ function pump() {
       if (!active && !queue.length && !importsActive) {
         refreshStats();
         // Всё загрузилось без ошибок — панель прячется сама; при ошибках остаётся.
-        if (!failed) hideTimer = setTimeout(() => $('#uploads').classList.add('hidden'), 4000);
+        if (!failed) hideTimer = setTimeout(() => { if (!$('#upload-list [data-pending]')) $('#uploads').classList.add('hidden'); }, 4000);
       }
       pump();
     });
   }
 }
 
-async function runUpload({ file, folder, subfolders, replaceKeys, controller, item, ui }) {
+async function runUpload({ file, folder, subfolders, replaceKeys, resume, controller, item, ui }) {
   const { status, bar, row, cancel, pause } = ui;
   if (controller.signal.aborted) { row.remove(); uploadItems.delete(item); return; }
   const progress = new ProgressView(bar, status, file.size);
   item.progress = progress;
   if (item.control.paused) progress.setPaused(true);
   else status.textContent = '0%';
-  const done = () => { pause.remove(); uploadItems.delete(item); updatePauseAll(); };
+  // Крупный файл (multipart) запоминаем, пока он грузится: после перезагрузки страницы
+  // его можно будет продолжить. По завершении (успех, ошибка, отмена) — забываем.
+  let pendingKey = resume?.key;
+  const done = () => { pause.remove(); uploadItems.delete(item); updatePauseAll(); if (pendingKey) forgetUpload(pendingKey); };
   try {
     const result = await uploadFile(file, {
       folder,
       subfolders,
+      resume,
+      onPlan: (plan) => { pendingKey = plan.key; rememberUpload(file, plan, folder); },
       control: item.control,
       signal: controller.signal,
       onProgress: (loaded) => progress.update(loaded),
@@ -535,6 +543,76 @@ window.addEventListener('beforeunload', (event) => {
   if (active > 0 || queue.length > 0) event.preventDefault();
 });
 
+// Новая волна загрузок: старые строки убираем, прерванные (ждут выбора файла) оставляем.
+function clearUploadList() {
+  for (const row of [...$('#upload-list').children]) if (!row.dataset.pending) row.remove();
+}
+
+// ---------- незавершённые загрузки (после перезагрузки страницы) ----------
+async function showPendingUploads() {
+  const list = pendingUploads();
+  if (!list.length || !ctx.can('editor')) return;
+  const rows = [];
+  for (const rec of list) {
+    let parts;
+    try {
+      ({ parts } = await api.resumeUpload(rec.key, rec.uploadId));
+    } catch (err) {
+      if (err.status === 410 || err.status === 404 || err.status === 400) forgetUpload(rec.key);
+      continue;
+    }
+    rows.push(pendingRow(rec, parts));
+  }
+  if (!rows.length) return;
+  if (!active && !queue.length && !importsActive) { finished = 0; failed = 0; clearUploadList(); }
+  $('#upload-list').append(...rows);
+  $('#uploads').classList.remove('hidden');
+  $('#uploads-title').textContent = `Не завершено: ${pluralize(rows.length, FILES)}`;
+}
+
+function pendingRow(rec, parts) {
+  const loaded = parts.reduce((a, p) => a + p.size, 0);
+  const pct = rec.size ? Math.floor((loaded / rec.size) * 100) : 0;
+  const picker = h('input', { type: 'file', class: 'hidden' });
+  const row = h('li', { class: 'upload-row flex items-center gap-3 px-4 py-3', dataset: { pending: rec.key } },
+    h('span', { class: 'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400', title: 'Прервана' }, icon('pause')),
+    h('div', { class: 'min-w-0 flex-1' },
+      h('div', { class: 'flex items-baseline justify-between gap-3' },
+        h('p', { class: 'truncate text-sm font-medium', title: `${rec.name} → ${folderLabel(rec.folder)}` }, rec.name),
+        h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400' }, `${pct}% из ${formatSize(rec.size)}`)),
+      h('div', { class: 'mt-1 flex items-center gap-3 text-xs' },
+        h('button', { type: 'button', class: 'link font-medium', onclick: () => picker.click() }, 'Продолжить…'),
+        h('button', { type: 'button', class: 'text-slate-500 hover:text-rose-600 dark:text-slate-400', onclick: discard }, 'Отменить'))),
+    picker);
+  picker.addEventListener('change', async () => {
+    const file = picker.files[0];
+    picker.value = '';
+    if (!file) return;
+    if (file.name !== rec.name || file.size !== rec.size) {
+      return toast(`Это другой файл: нужен «${rec.name}» (${formatSize(rec.size)})`, 'error');
+    }
+    if (file.lastModified !== rec.lastModified &&
+        !(await confirmDialog('Файл изменён?', 'Дата изменения файла не совпадает с той, что была при начале загрузки. Если содержимое менялось, итоговый файл будет испорчен.', 'Всё равно продолжить'))) return;
+    try {
+      ({ parts } = await api.resumeUpload(rec.key, rec.uploadId)); // свежий список частей
+    } catch (err) {
+      forgetUpload(rec.key);
+      row.remove();
+      return toast(err.message, 'error');
+    }
+    row.remove();
+    enqueue([{ file, resume: { ...rec, done: Object.fromEntries(parts.map((p) => [p.n, p.size])) } }], rec.folder);
+  });
+  async function discard() {
+    if (!(await confirmDialog('Отменить загрузку?', `Уже загруженная часть «${rec.name}» будет удалена из хранилища.`, 'Отменить загрузку'))) return;
+    await api.abortUpload(rec.key, rec.uploadId).catch(() => {});
+    forgetUpload(rec.key);
+    row.remove();
+    if (!$('#upload-list').children.length) $('#uploads').classList.add('hidden');
+  }
+  return row;
+}
+
 // ---------- старт ----------
 async function start() {
   try {
@@ -549,11 +627,13 @@ async function start() {
   }
   api.branding().then(applyBranding).catch(() => {});
   initLibrary(ctx.user.username);
+  initPending(ctx.user.username);
   showClockSkew(ctx.clockSkew);
   initSidebar();
   initPalette(ctx);
   initPreview(ctx);
   setStorageConfigured(ctx.storageConfigured);
+  if (ctx.storageConfigured) showPendingUploads();
 
   $('#folder-input').addEventListener('change', (e) => {
     const items = [...e.target.files]

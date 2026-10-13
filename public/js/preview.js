@@ -2,6 +2,7 @@
 // Медиа грузятся напрямую из S3 по короткоживущей inline-ссылке (15 мин), тип которой
 // задаёт сервер по белому списку. Текст читается через fetch и выводится как textContent —
 // загруженный HTML/JS никогда не исполняется.
+import { officeBlock, zipBlock } from './docview.js';
 import { api } from './api.js';
 import { openGallery } from './gallery.js';
 import { openShareDialog } from './share-dialog.js';
@@ -127,6 +128,8 @@ async function mediaFor(info, file, gallery) {
     return h('iframe', { src: url, title: `PDF: ${file.name}`, class: 'h-[28rem] w-full rounded-xl border border-slate-200 bg-white dark:border-slate-800', loading: 'lazy' });
   }
   if (kind === 'text') return textBlock(url, info.size, file.key, file.name);
+  if (kind === 'zip') return zipBlock(file);
+  if (kind === 'office') return officeBlock(file);
   return placeholder(file.name, 'Предпросмотр для этого типа файлов недоступен');
 }
 

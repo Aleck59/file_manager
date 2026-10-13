@@ -4,9 +4,12 @@ import { config } from '../config.js';
 import { Router } from '../http.js';
 import {
   folderFromKey, generateKey, isValidFolder, isValidKey, nameFromKey, previewKind, rebuildKey,
-  safeContentType, sanitizeFileName, sanitizeFolderName, formatRef, isReservedFolder,
+  safeContentType, sanitizeFileName, sanitizeFolderName, formatRef, isReservedFolder, extOf, contentDisposition,
 } from '../keys.js';
 import { audit, HttpError } from '../middleware/security.js';
+import { pipeline } from 'node:stream/promises';
+import { OFFICE_EXT, renderOffice } from '../office.js';
+import { entryStream, listZip } from '../zip.js';
 import * as labels from '../labels.js';
 import * as sharesStore from '../shares.js';
 import * as storages from '../storages.js';
@@ -259,6 +262,12 @@ filesRouter.post('/uploads/complete', canEdit, async (req, res) => {
   res.json({ file });
 });
 
+// POST /api/uploads/resume {key, uploadId} → {parts: [{n, size}]} — что уже загружено.
+filesRouter.post('/uploads/resume', canEdit, async (req, res) => {
+  const uploadId = requireUploadId(req.body?.uploadId);
+  res.json({ parts: await flow(() => uploadFlow.uploadedParts(req.body?.key, uploadId)) });
+});
+
 // POST /api/uploads/abort — отмена multipart-загрузки (освобождает место в бакете).
 filesRouter.post('/uploads/abort', canEdit, async (req, res) => {
   await uploadFlow.abortUpload(req.body?.key, requireUploadId(req.body?.uploadId));
@@ -307,6 +316,10 @@ filesRouter.post('/files/preview', async (req, res) => {
     lastModified: head.LastModified?.toISOString() ?? null,
     storage: { id: st.id, name: st.name },
   };
+  const ext = extOf(nameFromKey(rel));
+  // Архив и документы Office показывает сервер (читая нужные части диапазонами), без ссылки.
+  if (ZIP_EXT.has(ext)) return res.json({ kind: 'zip', ...meta });
+  if (OFFICE_EXT.has(ext)) return res.json({ kind: 'office', ...meta });
   const preview = previewKind(nameFromKey(rel));
   if (!preview) return res.json({ kind: null, ...meta });
   // inline — только для PDF (его показывает iframe). Картинки, видео и аудио браузер отображает
@@ -314,6 +327,55 @@ filesRouter.post('/files/preview', async (req, res) => {
   // загруженный SVG/HTML не сможет выполнить скрипт даже на домене хранилища.
   const url = await st.presignGet(rel, PREVIEW_TTL, { inline: preview.kind === 'pdf', contentType: preview.contentType });
   res.json({ kind: preview.kind, url, ...meta });
+});
+
+// ---------- содержимое архивов и документы Office ----------
+const ZIP_EXT = new Set(['zip', 'jar', 'apk', 'epub', 'cbz']);
+
+async function zipSource(key) {
+  const { st, rel } = resolveRef(key);
+  const head = await st.headObject(rel);
+  if (!head) throw new HttpError(404, 'Файл не найден');
+  return { st, rel, size: head.ContentLength ?? 0 };
+}
+
+// POST /api/files/zip {key} → {entries, total, truncated} — оглавление архива.
+filesRouter.post('/files/zip', async (req, res) => {
+  const { st, rel, size } = await zipSource(req.body?.key);
+  const { entries, total, truncated } = await flow(() => listZip(st, rel, size));
+  res.json({ entries: entries.map(({ offset, ...e }) => e), total, truncated });
+});
+
+// GET /api/files/zip/entry?key=&i= — скачать один файл из архива (распаковка потоком на сервере).
+filesRouter.get('/files/zip/entry', async (req, res) => {
+  const { st, rel, size } = await zipSource(req.query.key);
+  const i = Number(req.query.i);
+  const { entries } = await flow(() => listZip(st, rel, size));
+  const entry = Number.isInteger(i) ? entries[i] : undefined;
+  if (!entry) throw new HttpError(404, 'Такого файла в архиве нет');
+  const { stream } = await flow(() => entryStream(st, rel, entry));
+  const name = sanitizeFileName(entry.name.split('/').filter(Boolean).pop() ?? 'file') || 'file';
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', contentDisposition(name));
+  res.setHeader('Content-Length', entry.size);
+  res.setHeader('Cache-Control', 'private, no-store');
+  if (!stream) return res.end();
+  try {
+    await pipeline(stream, res);
+  } catch (err) {
+    // Заголовки уже ушли — остаётся оборвать соединение (браузер покажет «ошибка загрузки»).
+    console.error('[zip] распаковка прервана:', err?.message);
+    res.destroy();
+  }
+});
+
+// POST /api/files/office {key} — docx/xlsx/pptx в простую структуру для просмотра.
+filesRouter.post('/files/office', async (req, res) => {
+  const { st, rel, size } = await zipSource(req.body?.key);
+  const ext = extOf(nameFromKey(rel));
+  if (!OFFICE_EXT.has(ext)) throw new HttpError(400, 'Это не документ Office (docx, xlsx, pptx)');
+  if (size > 100 * 1024 * 1024) throw new HttpError(413, 'Документ слишком большой для просмотра');
+  res.json(await flow(() => renderOffice(st, rel, size, ext)));
 });
 
 // POST /api/files/move {key, folder?, name?} — переименование и/или перемещение файла.

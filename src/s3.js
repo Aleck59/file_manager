@@ -447,6 +447,20 @@ export class Storage {
     return { body: out.Body, contentType: out.ContentType, size: out.ContentLength };
   }
 
+  /** Диапазон байтов [start, end] — поток (для чтения ZIP без скачивания целиком, см. zip.js). */
+  async getRangeStream(rel, start, end) {
+    const out = await this.send(new GetObjectCommand({ Bucket: this.bucket, Key: this.abs(rel), Range: `bytes=${start}-${end}` }));
+    return out.Body;
+  }
+
+  /** Диапазон байтов [start, end] — в память (небольшие куски: каталог ZIP, XML документа). */
+  async getRange(rel, start, end) {
+    const body = await this.getRangeStream(rel, start, end);
+    const chunks = [];
+    for await (const c of body) chunks.push(c);
+    return Buffer.concat(chunks);
+  }
+
   // Для загрузки по ссылке: данные идут через сервер частями (см. url-import.js).
   putBuffer(rel, body, contentType) {
     return this.send(new PutObjectCommand({ Bucket: this.bucket, Key: this.abs(rel), Body: body, ContentLength: body.length, ContentType: contentType, StorageClass: this.storageClass }));

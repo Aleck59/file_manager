@@ -549,3 +549,64 @@ test('метки и ссылки следуют за папкой при пер�
   labels.forgetFolder('Архив/');
   assert.equal(labels.get(`s1:${moved}`), null);
 });
+
+// Минимальный ZIP (метод Store) для тестов: [имя (Buffer), содержимое, utf8-флаг].
+function makeZip(files) {
+  const locals = [];
+  const central = [];
+  let offset = 0;
+  for (const [name, data, utf8] of files) {
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(utf8 ? 0x800 : 0, 6);
+    lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(name.length, 26);
+    locals.push(lh, name, data);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(utf8 ? 0x800 : 0, 8);
+    ch.writeUInt16LE(0x5221, 12); ch.writeUInt16LE(0x58a1, 14); // 2024-05-01 10:17
+    ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(data.length, 24); ch.writeUInt16LE(name.length, 28);
+    ch.writeUInt32LE(offset, 42);
+    central.push(ch, name);
+    offset += 30 + name.length + data.length;
+  }
+  const cd = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, cd, end]);
+}
+const memStorage = (buf) => ({
+  getRange: async (_r, a, b) => buf.subarray(a, b + 1),
+  getRangeStream: async (_r, a, b) => (await import('node:stream')).Readable.from([buf.subarray(a, b + 1)]),
+});
+
+test('ZIP: оглавление диапазонами, имена UTF-8 и CP866, извлечение', async () => {
+  const zip = await import('../src/zip.js');
+  const cp866 = Buffer.from([0x8e, 0xe2, 0xe7, 0xf1, 0xe2, 0x2e, 0x74, 0x78, 0x74]); // «Отчёт.txt»
+  const buf = makeZip([[Buffer.from('Папка/файл.txt'), Buffer.from('привет'), true], [cp866, Buffer.from('dos'), false]]);
+  const st = memStorage(buf);
+  const { entries, total } = await zip.listZip(st, 'x', buf.length);
+  assert.equal(total, 2);
+  assert.deepEqual(entries.map((e) => e.name), ['Папка/файл.txt', 'Отчёт.txt']);
+  assert.equal(entries[1].modified, '2024-05-01T10:17:02.000Z');
+  assert.equal((await zip.entryBuffer(st, 'x', entries[0], 1024)).toString(), 'привет');
+  await assert.rejects(zip.listZip(memStorage(Buffer.from('not a zip at all, definitely not')), 'x', 32), /не ZIP/);
+});
+
+test('Office: docx — заголовки, оформление, списки, таблицы; xlsx — общие строки и столбцы', async () => {
+  const { _internal: o } = await import('../src/office.js');
+  const doc = o.parseDocx(`<w:document><w:body>
+    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Итоги</w:t></w:r></w:p>
+    <w:p><w:r><w:rPr><w:b/></w:rPr><w:t>жирный</w:t></w:r><w:r><w:rPr><w:b w:val="0"/></w:rPr><w:t xml:space="preserve"> &lt;b&gt; &amp; &#1105;</w:t></w:r></w:p>
+    <w:p><w:pPr><w:numPr/></w:pPr><w:r><w:t>пункт</w:t></w:r></w:p>
+    <w:tbl><w:tr><w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+  </w:body></w:document>`);
+  assert.deepEqual(doc.blocks, [
+    { type: 'h', level: 1, runs: [{ t: 'Итоги' }] },
+    { type: 'p', level: undefined, runs: [{ t: 'жирный', b: true }, { t: ' <b> & ё' }] },
+    { type: 'li', level: undefined, runs: [{ t: 'пункт' }] },
+    { type: 'table', rows: [['A1', 'B1']] },
+  ]);
+  const strings = o.parseSharedStrings('<sst><si><t>Товар</t></si><si><r><t>Ябло</t></r><r><t>ки</t></r></si></sst>');
+  const sheet = o.parseSheet('<sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1"><v>3.5</v></c></row><row r="3"><c r="B3" t="s"><v>1</v></c><c r="D3" t="b"><v>1</v></c></row></sheetData>', strings);
+  assert.deepEqual(sheet.rows, [['Товар', '', '3.5'], [], ['', 'Яблоки', '', 'ИСТИНА']]);
+});

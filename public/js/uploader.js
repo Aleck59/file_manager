@@ -112,8 +112,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @returns {Promise<{file: {key: string, name: string, size: number, lastModified: string}, folder: string}>}
  */
 // client — набор методов API (по умолчанию — обычный; для гостевой загрузки по ссылке — свой).
-export async function uploadFile(file, { folder = '', subfolders, onProgress, signal, control = new UploadControl(), client = api }) {
-  let plan = await client.startUpload(file, folder, subfolders);
+// resume — продолжение multipart-загрузки после перезагрузки страницы: {key, uploadId, partSize,
+//   partCount, folder, done: {номер части: размер}}; onPlan — сообщает план multipart, чтобы его запомнить.
+export async function uploadFile(file, { folder = '', subfolders, onProgress, signal, control = new UploadControl(), client = api, resume, onPlan }) {
+  let plan = resume ? { mode: 'multipart', ...resume } : await client.startUpload(file, folder, subfolders);
+  if (!resume && plan.mode === 'multipart') onPlan?.(plan);
   // Итоговая папка (с подпапками при загрузке папки целиком) — её определяет сервер.
   const target = plan.folder ?? folder;
 
@@ -139,7 +142,14 @@ export async function uploadFile(file, { folder = '', subfolders, onProgress, si
   const loadedByPart = new Array(partCount + 1).fill(0);
   const report = () => onProgress(loadedByPart.reduce((a, b) => a + b, 0), file.size);
   const urls = new Map();
-  let nextPart = 1;
+  // Части, которые надо загрузить: все, кроме уже лежащих в хранилище целиком.
+  const expected = (n) => Math.min(n * partSize, file.size) - (n - 1) * partSize;
+  const todo = [];
+  for (let n = 1; n <= partCount; n++) {
+    if (plan.done?.[n] === expected(n)) loadedByPart[n] = expected(n);
+    else todo.push(n);
+  }
+  report();
   // Внутренний сигнал: ошибка одной части останавливает остальные воркеры.
   const local = new AbortController();
   if (signal.aborted) local.abort();
@@ -150,7 +160,7 @@ export async function uploadFile(file, { folder = '', subfolders, onProgress, si
   function urlFor(n) {
     if (!urls.has(n)) {
       const batch = [];
-      for (let i = n; i < n + URL_BATCH && i <= partCount; i++) if (!urls.has(i)) batch.push(i);
+      for (const i of todo.slice(todo.indexOf(n), todo.indexOf(n) + URL_BATCH)) if (!urls.has(i)) batch.push(i);
       const req = client.partUrls(key, uploadId, batch);
       for (const i of batch) urls.set(i, req.then((res) => res.urls[i]));
     }
@@ -185,11 +195,12 @@ export async function uploadFile(file, { folder = '', subfolders, onProgress, si
     }
   }
 
+  let next = 0;
   async function worker() {
     try {
-      while (nextPart <= partCount) {
+      while (todo.length > next) {
         if (local.signal.aborted) throw new UploadCancelled();
-        await uploadPart(nextPart++);
+        await uploadPart(todo[next++]);
       }
     } catch (err) {
       local.abort();
@@ -200,7 +211,7 @@ export async function uploadFile(file, { folder = '', subfolders, onProgress, si
   try {
     // С ограничением скорости части идут по одной — так среднее точнее.
     const concurrency = speedLimit() ? 1 : PART_CONCURRENCY;
-    await Promise.all(Array.from({ length: Math.min(concurrency, partCount) }, worker));
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, todo.length)) }, worker));
     return { file: (await client.completeUpload(key, uploadId)).file, folder: target };
   } catch (err) {
     // Незавершённая multipart-загрузка занимает место в бакете — отменяем её.
