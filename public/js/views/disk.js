@@ -692,14 +692,37 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     if (gone.has(state.selected)) closePreview();
   }
 
+  // «…будет перемещён в корзину на 30 дней.» или «…будет удалён без возможности восстановления.»
+  function trashNote(moved, deleted) {
+    return ctx.trashDays
+      ? `${moved} в корзину — восстановить можно в течение ${pluralize(ctx.trashDays, { one: 'дня', few: 'дней', many: 'дней', other: 'дня' })}.`
+      : `${deleted} без возможности восстановления.`;
+  }
+
+  let unmounted = false;
+  // Кнопка «Отменить» в уведомлении: вернуть только что удалённое из корзины.
+  function undoAction(...ids) {
+    if (!ids.filter(Boolean).length) return {};
+    return { action: { label: 'Отменить', onClick: async () => {
+      try {
+        for (const id of ids.filter(Boolean)) await api.restoreTrash(id);
+        toast('Восстановлено', 'success');
+        ctx.refreshStats();
+        if (!unmounted) load();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    } } };
+  }
+
   async function deleteFile(file) {
-    if (!(await confirmDialog('Удалить файл?', `«${file.name}» будет удалён без возможности восстановления. Выданные ссылки перестанут работать.`))) return;
+    if (!(await confirmDialog('Удалить файл?', `«${file.name}» ${trashNote('будет перемещён', 'будет удалён')} Выданные ссылки перестанут работать.`))) return;
     try {
-      await api.deleteFile(file.key);
+      const { trashId } = await api.deleteFile(file.key);
       removeFiles([file.key]);
       renderList();
       ctx.refreshStats();
-      toast('Файл удалён', 'success');
+      toast(trashId ? 'Файл перемещён в корзину' : 'Файл удалён', 'success', undoAction(trashId));
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -860,14 +883,26 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   async function bulkDelete() {
     const files = checkedFiles();
     if (!files.length) return;
-    if (!(await confirmDialog(`Удалить ${pluralize(files.length, FILES)}?`, 'Файлы будут удалены без возможности восстановления. Выданные ссылки перестанут работать.'))) return;
+    if (!(await confirmDialog(`Удалить ${pluralize(files.length, FILES)}?`, `Файлы ${trashNote('будут перемещены', 'будут удалены')} Выданные ссылки перестанут работать.`))) return;
     const done = [];
-    const failed = await eachLimited(files, async (file) => { await api.deleteFile(file.key); done.push(file.key); });
+    const trashIds = [];
+    let failed = 0;
+    for (let i = 0; i < files.length; i += 500) {
+      try {
+        const r = await api.deleteFiles(files.slice(i, i + 500).map((f) => f.key));
+        done.push(...r.deleted);
+        if (r.trashId) trashIds.push(r.trashId);
+        failed += r.failed;
+      } catch (err) {
+        failed += Math.min(500, files.length - i);
+        toast(err.message, 'error');
+      }
+    }
     removeFiles(done);
     renderList();
     ctx.refreshStats();
-    if (done.length) toast(`Удалено: ${pluralize(done.length, FILES)}`, 'success');
-    if (failed) load();
+    if (done.length) toast(`${trashIds.length ? 'В корзине' : 'Удалено'}: ${pluralize(done.length, FILES)}`, 'success', undoAction(...trashIds));
+    if (failed) { toast(`Не удалось удалить: ${pluralize(failed, FILES)}`, 'error'); load(); }
   }
 
   async function bulkCopyLinks() {
@@ -889,16 +924,16 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
 
   // ---------- папки ----------
   async function deleteFolder(f) {
-    if (!(await confirmDialog('Удалить папку?', `Папка «${f.name}» и всё её содержимое (включая вложенные папки) будут удалены без возможности восстановления.`))) return;
+    if (!(await confirmDialog('Удалить папку?', `Папка «${f.name}» и всё её содержимое (включая вложенные папки) ${trashNote('будут перемещены', 'будут удалены')}`))) return;
     try {
-      const { deleted } = await api.deleteFolder(f.path);
+      const { deleted, trashId } = await api.deleteFolder(f.path);
       state.folders = state.folders.filter((x) => x.path !== f.path);
       tree.forget(f.path);
       forgetFolder(f.path);
       tree.setChildren(folder, state.folders);
       renderList();
       ctx.refreshStats();
-      toast(`Папка удалена (объектов: ${deleted})`, 'success');
+      toast(trashId ? `Папка в корзине (объектов: ${deleted})` : `Папка удалена (объектов: ${deleted})`, 'success', undoAction(trashId));
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -985,6 +1020,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
       renderList();
     },
     unmount() {
+      unmounted = true;
       cleanup.forEach((fn) => fn());
       ctx.newFolderHere = null;
       ctx.currentFolder = null;

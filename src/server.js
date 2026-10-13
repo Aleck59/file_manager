@@ -12,6 +12,8 @@ import * as sharesStore from './shares.js';
 import { authRouter } from './routes/auth.js';
 import { filesRouter } from './routes/files.js';
 import { settingsRouter } from './routes/settings.js';
+import { trashRouter } from './routes/trash.js';
+import * as trash from './trash.js';
 import { usersRouter } from './routes/users.js';
 import { initUsers } from './users.js';
 
@@ -62,6 +64,7 @@ api.use('/users', requireRole('admin'), usersRouter);
 api.use('/settings', requireRole('admin'), settingsRouter);
 api.use('/admin', requireRole('admin'), adminRouter);
 api.use('/shares', sharesRouter);
+api.use('/trash', trashRouter);
 api.use(filesRouter);
 api.use((req, res) => res.status(404).json({ error: 'Маршрут не найден' }));
 app.use('/api', api);
@@ -86,6 +89,7 @@ app.use(errorHandler);
 
 const server = app.listen(config.port, config.host, () => {
   console.log(`File manager запущен: http://${config.host}:${config.port} (публичный адрес ${config.appOrigin})`);
+  trash.startAutoPurge();
   if (!config.s3Configured) console.log('Хранилище S3 не настроено — укажите его в интерфейсе: Настройки → Хранилище S3.');
 });
 

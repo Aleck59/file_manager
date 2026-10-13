@@ -4,13 +4,14 @@ import { config } from '../config.js';
 import { Router } from '../http.js';
 import {
   folderFromKey, generateKey, isValidFolder, isValidKey, nameFromKey, previewKind, rebuildKey,
-  safeContentType, sanitizeFileName, sanitizeFolderName, formatRef,
+  safeContentType, sanitizeFileName, sanitizeFolderName, formatRef, isReservedFolder,
 } from '../keys.js';
 import { audit, HttpError } from '../middleware/security.js';
 import * as sharesStore from '../shares.js';
 import * as storages from '../storages.js';
 import { usageHistory } from '../usage-history.js';
 import { startTransfer } from '../transfer.js';
+import * as trash from '../trash.js';
 import * as uploadFlow from '../upload-flow.js';
 import * as urlImport from '../url-import.js';
 
@@ -24,7 +25,7 @@ const PREVIEW_TTL = 15 * 60;
 
 function requireFolder(folder) {
   const value = folder ?? '';
-  if (!isValidFolder(value)) throw new HttpError(400, 'Некорректный путь папки');
+  if (!isValidFolder(value) || isReservedFolder(value)) throw new HttpError(400, 'Некорректный путь папки');
   return value;
 }
 
@@ -106,6 +107,13 @@ filesRouter.post('/folders', canEdit, async (req, res) => {
 filesRouter.post('/folders/delete', canEdit, async (req, res) => {
   const path = requireFolder(req.body?.path);
   if (!path) throw new HttpError(400, 'Корневую папку удалить нельзя');
+  if (trash.enabled()) {
+    const { entry, warnings } = await trash.trashFolder(path, req.user.username);
+    storages.invalidateStats();
+    sharesStore.folderGone(path);
+    audit(req, 'folder.trash', { path, count: entry.count });
+    return res.json({ ok: true, deleted: entry.count, trashed: true, trashId: entry.count ? entry.id : undefined, warnings: publicWarnings(req, warnings) });
+  }
   const { deleted, warnings } = await storages.deleteFolder(path);
   storages.invalidateStats();
   sharesStore.folderGone(path);
@@ -314,9 +322,44 @@ filesRouter.post('/files/copy', canEdit, async (req, res) => {
 // DELETE /api/files?key=... — удаление файла.
 filesRouter.delete('/files', canEdit, async (req, res) => {
   const { st, rel } = resolveRef(req.query.key);
-  await st.deleteObject(rel);
+  const trashed = trash.enabled();
+  let trashId;
+  if (trashed) trashId = (await flow(() => trash.trashFiles([{ st, rel }], req.user.username))).entry.id;
+  else await st.deleteObject(rel);
   storages.invalidateStats();
   sharesStore.fileGone(formatRef(st.id, rel));
-  audit(req, 'file.delete', { storage: st.id, key: rel });
-  res.json({ ok: true });
+  audit(req, trashed ? 'file.trash' : 'file.delete', { storage: st.id, key: rel });
+  res.json({ ok: true, trashed, trashId });
+});
+
+// POST /api/files/delete {keys} — удалить несколько файлов (в корзину — одной записью).
+filesRouter.post('/files/delete', canEdit, async (req, res) => {
+  const keys = req.body?.keys;
+  if (!Array.isArray(keys) || !keys.length || keys.length > 500) throw new HttpError(400, 'Передайте от 1 до 500 файлов');
+  const refs = [...new Set(keys)].map((k) => resolveRef(k));
+  let deleted = [];
+  let failed = 0;
+  let trashId;
+  if (trash.enabled()) {
+    const r = await flow(() => trash.trashFiles(refs, req.user.username));
+    trashId = r.entry.id;
+    deleted = r.moved.map((m) => formatRef(m.st.id, m.rel));
+    failed = r.failed;
+  } else {
+    const byStorage = new Map();
+    for (const ref of refs) byStorage.set(ref.st, [...(byStorage.get(ref.st) ?? []), ref.rel]);
+    for (const [st, rels] of byStorage) {
+      try {
+        await st.deleteMany(rels);
+        deleted.push(...rels.map((rel) => formatRef(st.id, rel)));
+      } catch (err) {
+        failed += rels.length;
+        console.error(`[storage ${st.name}] удаление не удалось:`, err?.name, err?.message);
+      }
+    }
+  }
+  storages.invalidateStats();
+  for (const key of deleted) sharesStore.fileGone(key);
+  audit(req, trash.enabled() ? 'file.trash' : 'file.delete', { count: deleted.length, keys: deleted.slice(0, 20) });
+  res.json({ ok: true, deleted, failed, trashed: trash.enabled(), trashId });
 });

@@ -2,7 +2,7 @@
 import { hasRole, requireRole } from '../auth.js';
 import { config } from '../config.js';
 import { Router } from '../http.js';
-import { folderFromKey, isValidFolder, nameFromKey, parseRef } from '../keys.js';
+import { folderFromKey, isReservedFolder, isValidFolder, nameFromKey, parseRef } from '../keys.js';
 import { audit, HttpError, rateLimit } from '../middleware/security.js';
 import * as shares from '../shares.js';
 import * as storages from '../storages.js';
@@ -38,7 +38,7 @@ sharesRouter.post('/', async (req, res) => {
     if (!(await st.headObject(rel))) throw new HttpError(404, 'Файл не найден');
     name = nameFromKey(rel);
   } else if (b.type === 'folder' || b.type === 'upload') {
-    if (!isValidFolder(b.folder ?? '')) throw new HttpError(400, 'Некорректный путь папки');
+    if (!isValidFolder(b.folder ?? '') || isReservedFolder(b.folder ?? '')) throw new HttpError(400, 'Некорректный путь папки');
     name = folderLabel(b.folder ?? '');
   } else {
     throw new HttpError(400, 'Неизвестный вид ссылки');

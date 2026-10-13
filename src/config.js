@@ -39,6 +39,7 @@ export const FIELDS = {
   MULTIPART_THRESHOLD_MB: { section: 'limits', type: 'int', default: 64, min: 5, max: 5120, apply: 'live' },
   MULTIPART_PART_SIZE_MB: { section: 'limits', type: 'int', default: 16, min: 5, max: 5120, apply: 'live' },
   UPLOAD_URL_TTL_MIN: { section: 'limits', type: 'int', default: 60, min: 1, max: 7 * 24 * 60, apply: 'live' },
+  TRASH_DAYS: { section: 'limits', type: 'int', default: 30, min: 0, max: 365, apply: 'live' },
 };
 
 // Поля одного хранилища S3 (и соответствующие переменные .env для первого запуска).
@@ -261,6 +262,7 @@ function apply(v) {
     multipartThreshold: v.MULTIPART_THRESHOLD_MB * MB,
     partSize: v.MULTIPART_PART_SIZE_MB * MB,
     uploadUrlTtlSec: v.UPLOAD_URL_TTL_MIN * 60,
+    trashDays: v.TRASH_DAYS,
     // SigV4 ограничивает срок жизни presigned-ссылки 7 днями.
     maxDownloadTtlSec: 7 * 24 * 3600,
   };

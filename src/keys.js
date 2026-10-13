@@ -65,10 +65,15 @@ function isValidSegment(seg) {
   );
 }
 
+// Служебная папка корзины в каждом хранилище: пользователь не может в неё ничего положить,
+// в списках и поиске она не видна (см. trash.js).
+export const TRASH = '.trash/';
+export const isReservedFolder = (folder) => typeof folder === 'string' && folder.startsWith(TRASH);
+
 // Путь папки: "" (корень) или "a/b/" — всегда со слешем на конце.
 export function isValidFolder(folder) {
   if (folder === '') return true;
-  if (typeof folder !== 'string' || folder.length > 1000 || !folder.endsWith('/')) return false;
+  if (typeof folder !== 'string' || folder.length > 1000 || !folder.endsWith('/') || isReservedFolder(folder)) return false;
   const segments = folder.slice(0, -1).split('/');
   return segments.length <= MAX_FOLDER_DEPTH && segments.every(isValidSegment);
 }
@@ -118,7 +123,7 @@ export function parseRef(ref) {
   if (i <= 0) return null;
   const storageId = ref.slice(0, i);
   const rel = ref.slice(i + 1);
-  return isValidStorageId(storageId) && isValidKey(rel) ? { storageId, rel } : null;
+  return isValidStorageId(storageId) && isValidKey(rel) && !rel.startsWith(TRASH) ? { storageId, rel } : null;
 }
 
 // Порядок ключей как в S3 (по байтам UTF-8), а не как у JS-строк (UTF-16):

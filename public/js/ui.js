@@ -34,6 +34,7 @@ const ICONS = {
   upload: '<path d="M12 13v8"/><path d="m8 17 4-4 4 4"/><path d="M20.4 15.6A5 5 0 0 0 18 6h-1.3A8 8 0 1 0 4 14.3"/>',
   download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
   close: '<path d="M18 6 6 18M6 6l12 12"/>',
   menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
@@ -208,18 +209,28 @@ export function describeUA(ua = '') {
 }
 
 // ---------- уведомления ----------
-export function toast(message, type = 'info') {
+/**
+ * @param {string} message
+ * @param {'info'|'success'|'error'} type
+ * @param {{action?: {label: string, onClick: () => void}}} [opts] — кнопка в уведомлении («Отменить», «Открыть»)
+ */
+export function toast(message, type = 'info', { action } = {}) {
   const palette = {
     info: 'bg-slate-900 text-white dark:bg-white dark:text-slate-900',
     success: 'bg-brand-700 text-white',
     error: 'bg-rose-600 text-white',
   };
   const el = h('div', {
-    class: `pointer-events-auto max-w-md animate-toast-in rounded-xl px-4 py-2.5 text-sm shadow-lg ${palette[type]}`,
+    class: `pointer-events-auto flex max-w-md animate-toast-in items-center gap-3 rounded-xl px-4 py-2.5 text-sm shadow-lg ${palette[type]}`,
     role: type === 'error' ? 'alert' : 'status',
-  }, message);
+  }, h('span', { class: 'min-w-0 flex-1' }, message),
+  action && h('button', {
+    type: 'button',
+    class: 'shrink-0 rounded-md px-2 py-0.5 font-semibold underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-current',
+    onclick: () => { el.remove(); action.onClick(); },
+  }, action.label));
   $('#toasts').append(el);
-  setTimeout(() => el.remove(), type === 'error' ? 6000 : 3000);
+  setTimeout(() => el.remove(), action ? 8000 : type === 'error' ? 6000 : 3000);
 }
 
 // ---------- модальные окна ----------

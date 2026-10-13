@@ -58,6 +58,8 @@ authRouter.get('/me', requireAuth, (req, res) => {
     storageConfigured: config.s3Configured,
     // Названия хранилищ единого диска (без параметров подключения).
     storages: config.storages.map((s) => ({ id: s.id, name: s.name })),
+    // Сколько дней удалённое лежит в корзине (0 — удаляется сразу).
+    trashDays: config.limits.trashDays,
     // Администратору — расхождение часов сервера с хранилищами (для предупреждения).
     clockSkew: hasRole(req.user, 'admin') ? clockSkew() : undefined,
   });

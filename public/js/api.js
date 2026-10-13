@@ -67,6 +67,11 @@ export const api = {
   preview: (key) => request('POST', '/api/files/preview', { key }),
   thumbs: (keys) => request('POST', '/api/files/thumbs', { keys }),
   deleteFile: (key) => request('DELETE', `/api/files${q({ key })}`),
+  deleteFiles: (keys) => request('POST', '/api/files/delete', { keys }),
+  trash: () => request('GET', '/api/trash'),
+  restoreTrash: (id) => request('POST', '/api/trash/restore', { id }),
+  purgeTrash: (id) => request('POST', '/api/trash/delete', { id }),
+  emptyTrash: () => request('POST', '/api/trash/empty'),
   moveFile: (key, { folder, name } = {}) => request('POST', '/api/files/move', { key, folder, name }),
   copyFile: (key, { folder, name } = {}) => request('POST', '/api/files/copy', { key, folder, name }),
 

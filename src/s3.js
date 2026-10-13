@@ -243,7 +243,8 @@ export class Storage {
       MaxKeys: limit,
       StartAfter: startAfter ? this.abs(startAfter) : undefined,
     }));
-    const folders = (out.CommonPrefixes ?? []).map((p) => this.rel(p.Prefix)).filter(isValidFolder);
+    // Корзина (.trash/) в списке папок не показывается.
+    const folders = (out.CommonPrefixes ?? []).map((p) => this.rel(p.Prefix)).filter((f) => isValidFolder(f) && !f.startsWith('.trash/'));
     // Маркер самой папки и посторонние объекты (не нашего формата) не показываем.
     const files = (out.Contents ?? [])
       .map((o) => ({ rel: this.rel(o.Key), size: o.Size ?? 0, lastModified: o.LastModified?.toISOString() ?? null }))
@@ -276,7 +277,7 @@ export class Storage {
       }));
       for (const o of out.Contents ?? []) {
         if (seen++ >= max) return false;
-        await fn({ rel: this.rel(o.Key), size: o.Size ?? 0, lastModified: o.LastModified?.toISOString() ?? null });
+        await fn({ rel: this.rel(o.Key), size: o.Size ?? 0, lastModified: o.LastModified?.toISOString() ?? null, storageClass: o.StorageClass });
       }
       cursor = out.IsTruncated ? out.NextContinuationToken : undefined;
     } while (cursor);

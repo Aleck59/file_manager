@@ -107,7 +107,7 @@ export const fileInfo = (st, rel, size, lastModified) => ({
 });
 
 /** Выполняет операцию во всех хранилищах; ошибки отдельных — в warnings. Все упали — бросает. */
-async function everywhere(fn) {
+export async function everywhere(fn) {
   const list = all();
   const results = await Promise.allSettled(list.map((st) => fn(st)));
   const warnings = [];
@@ -245,7 +245,7 @@ async function computeStats() {
   for (const st of all()) {
     // files/size — файлы файлообменника; bucketObjects/bucketSize — ВЕСЬ бакет, включая
     // объекты, загруженные другими программами: это реально занятое место у провайдера.
-    const item = { id: st.id, name: st.name, files: 0, size: 0, bucketObjects: 0, bucketSize: 0,
+    const item = { id: st.id, name: st.name, files: 0, size: 0, bucketObjects: 0, bucketSize: 0, trashSize: 0,
       quota: (st.def.quotaGb || 0) * GB, acceptUploads: st.def.acceptUploads, storageClass: st.def.storageClass || null,
       complete: true, error: null };
     try {
@@ -256,6 +256,10 @@ async function computeStats() {
         item.bucketSize += size;
         if (!key.startsWith(st.prefix)) return; // вне папки хранилища — только в общем объёме
         const rel = st.rel(key);
+        if (rel.startsWith('.trash/')) { // корзина — отдельной строкой
+          item.trashSize += size;
+          return;
+        }
         if (rel.endsWith('/')) {
           if (rel) folders.add(rel);
           return;
@@ -288,6 +292,7 @@ async function computeStats() {
   return {
     files: perStorage.reduce((a, s) => a + s.files, 0),
     size: perStorage.reduce((a, s) => a + s.size, 0),
+    trashSize: perStorage.reduce((a, s) => a + s.trashSize, 0),
     folders: folders.size,
     categories,
     recent: recent.sort(byDateDesc).slice(0, 8),

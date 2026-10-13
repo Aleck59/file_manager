@@ -493,3 +493,38 @@ test('публичные ссылки: срок, лимит, пароль, от�
   await assert.rejects(shares.create({ type: 'file', key: 'x', name: 'x', user: 'u', expiresInDays: 999 }), /Срок/);
   assert.equal(shares.get('../../etc'), null, 'id проверяется по формату');
 });
+
+test('корзина: служебная папка .trash/ недоступна через API', () => {
+  for (const f of ['.trash/', '.trash/abc/', '.trash/abc/Фото/']) assert.equal(keys.isValidFolder(f), false, f);
+  assert.ok(keys.isValidFolder('a/.trash/'), 'вложенная .trash — обычная папка');
+  const rel = keys.generateKey('a.txt', '');
+  assert.ok(keys.parseRef(`s1:${rel}`));
+  assert.equal(keys.parseRef(`s1:.trash/00000000a-abcdef/${rel}`), null);
+});
+
+test('корзина: файлы переезжают в .trash/<партия>/ одной записью', async () => {
+  const trash = await import('../src/trash.js');
+  const objects = new Map();
+  const st = {
+    id: 's1', storageClass: 'STANDARD',
+    headObject: async (rel) => (objects.has(rel) ? { ContentLength: objects.get(rel), ContentType: 'text/plain' } : null),
+    copyObject: async (from, to) => { objects.set(to, objects.get(from)); },
+    deleteObject: async (rel) => { objects.delete(rel); },
+  };
+  const a = keys.generateKey('a.txt', 'Док/');
+  const b = keys.generateKey('b.txt', 'Док/');
+  objects.set(a, 10);
+  objects.set(b, 20);
+  const missing = keys.generateKey('нет.txt', 'Док/');
+  const { entry, moved, failed } = await trash.trashFiles([{ st, rel: a }, { st, rel: b }, { st, rel: missing }], 'admin');
+  assert.equal(moved.length, 2);
+  assert.equal(failed, 1);
+  assert.equal(entry.kind, 'files');
+  assert.equal(entry.size, 30);
+  assert.deepEqual(entry.keys, [`s1:${a}`, `s1:${b}`]);
+  assert.deepEqual([...objects.keys()].sort(), [`.trash/${entry.id}/${a}`, `.trash/${entry.id}/${b}`].sort());
+  assert.match(entry.id, /^[0-9a-z]{9}-[0-9a-z]{6}$/);
+  const listed = trash.list().find((x) => x.id === entry.id);
+  assert.ok(Date.parse(listed.expiresAt) - Date.parse(listed.deletedAt) === 30 * 86_400_000);
+  await assert.rejects(trash.trashFiles([{ st, rel: missing }], 'admin'), /не найден/);
+});

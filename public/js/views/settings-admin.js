@@ -469,6 +469,7 @@ export function adminSettings(ctx) {
       settingField(f.MULTIPART_THRESHOLD_MB, { label: 'Загружать частями от', suffix: 'МБ', hint: 'Файлы крупнее грузятся частями параллельно (multipart)', onReset: reset }),
       settingField(f.MULTIPART_PART_SIZE_MB, { label: 'Размер части', suffix: 'МБ', hint: 'Не меньше 5 МБ — ограничение S3', onReset: reset }),
       settingField(f.UPLOAD_URL_TTL_MIN, { label: 'Ссылка на загрузку действует', suffix: 'мин', hint: 'Сколько времени есть у браузера, чтобы начать загрузку', onReset: reset }),
+      settingField(f.TRASH_DAYS, { label: 'Хранить в корзине', suffix: 'дн.', hint: 'Удалённое можно восстановить в течение этого срока. 0 — удалять сразу, без корзины', onReset: reset }),
     ];
     return card('Загрузка файлов', 'Ограничения и параметры загрузки. Применяются сразу.', 'upload',
       h('div', { class: 'grid gap-4 sm:grid-cols-2' }, ...fields.map((x) => x.el)),

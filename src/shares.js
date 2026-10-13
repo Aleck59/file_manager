@@ -137,6 +137,17 @@ export function fileGone(key) {
   for (const s of shares) if (s.type === 'file' && s.key === key && !s.missing) { s.missing = true; changed = true; }
   if (changed) persist();
 }
+// Файл или папку вернули из корзины — ссылки снова работают.
+export function fileBack(key) {
+  let changed = false;
+  for (const s of shares) if (s.type === 'file' && s.key === key && s.missing) { s.missing = false; changed = true; }
+  if (changed) persist();
+}
+export function folderBack(pathPrefix) {
+  let changed = false;
+  for (const s of shares) if (s.folder?.startsWith(pathPrefix) && s.missing) { s.missing = false; changed = true; }
+  if (changed) persist();
+}
 export function refolder(oldPath, newPath) {
   let changed = false;
   for (const s of shares) {
