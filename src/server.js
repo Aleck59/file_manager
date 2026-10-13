@@ -81,6 +81,11 @@ app.get('/index.html', (req, res) => (currentUser(req) ? indexPage(req, res) : r
 app.get('/login', (req, res) => (currentUser(req) ? res.redirect(302, '/') : loginPage(req, res)));
 app.get('/login.html', (req, res) => (currentUser(req) ? res.redirect(302, '/') : loginPage(req, res)));
 
+// PWA: service worker — без долгого кеша (иначе обновления приходили бы с опозданием).
+app.get('/sw.js', page('sw.js'));
+// «Поделиться» без service worker (старый браузер, первый запуск) — просто открыть приложение.
+app.post('/share-target', (req, res) => res.redirect(303, '/#/inbox'));
+
 // Страница публичной ссылки: /s/<id> (данные она берёт из /api/public/s/<id>).
 app.get('/s/:id', (req, res) => sharePage(req, res));
 

@@ -14,6 +14,7 @@ import { mountAudit } from './views/audit.js';
 import { mountShares } from './views/shares.js';
 import { mountTrash } from './views/trash.js';
 import { mountSearch, parseSearchHash } from './views/search.js';
+import { inboxItems, mountInbox } from './views/inbox.js';
 import { mountHome } from './views/home.js';
 import { mountSettings } from './views/settings.js';
 import { mountUsers } from './views/users.js';
@@ -42,6 +43,7 @@ const ctx = {
   },
   enqueue,
   importFromUrl,
+  enqueueFiles: (files, folder) => enqueue(files, folder),
   transferFile,
   refreshStats,
   selectAfterNavigate: null,
@@ -199,7 +201,7 @@ function parseHash() {
     return { name: 'disk', folder: folder ? `${folder}/` : '' };
   }
   if (raw === 'search' || raw.startsWith('search?')) return { name: 'search', params: parseSearchHash(raw), raw };
-  return { name: ['users', 'settings', 'audit', 'shares', 'trash'].includes(raw) ? raw : 'home' };
+  return { name: ['users', 'settings', 'audit', 'shares', 'trash', 'inbox'].includes(raw) ? raw : 'home' };
 }
 
 function route() {
@@ -226,9 +228,10 @@ function route() {
   else if (r.name === 'shares') current = mountShares(view, ctx);
   else if (r.name === 'trash') current = mountTrash(view, ctx);
   else if (r.name === 'search') current = mountSearch(view, ctx, r.params);
+  else if (r.name === 'inbox') current = mountInbox(view, ctx);
   else if (r.name === 'settings') current = mountSettings(view, ctx);
   else current = mountHome(view, ctx);
-  const titles = { home: 'Главная', disk: 'Диск', users: 'Пользователи', audit: 'Журнал', shares: 'Ссылки', trash: 'Корзина', search: 'Поиск', settings: 'Настройки' };
+  const titles = { home: 'Главная', disk: 'Диск', users: 'Пользователи', audit: 'Журнал', shares: 'Ссылки', trash: 'Корзина', search: 'Поиск', inbox: 'Входящие', settings: 'Настройки' };
   document.title = `${titles[r.name]} — ${appName}`;
 }
 
@@ -356,12 +359,12 @@ async function enqueue(files, folder) {
 
 // ---------- загрузка по ссылке ----------
 // Файл скачивает сервер и потоком кладёт в S3; здесь — диалог и строка в панели загрузок.
-async function importFromUrl(folder) {
+async function importFromUrl(folder, url = '') {
   const values = await openDialog({
     title: 'Загрузить по ссылке',
     text: 'Сервер сам скачает файл и положит его в хранилище — компьютер для этого не нужен. Ссылки на внутреннюю сеть запрещены.',
     confirmLabel: 'Загрузить',
-    fields: [{ name: 'url', label: 'Ссылка на файл', type: 'url', autocomplete: 'off', maxlength: 4096, value: '' }],
+    fields: [{ name: 'url', label: 'Ссылка на файл', type: 'url', autocomplete: 'off', maxlength: 4096, value: url }],
     async onSubmit({ url }) {
       if (!/^https?:\/\//i.test(url.trim())) throw new Error('Ссылка должна начинаться с http:// или https://');
       return api.importUrl(url.trim(), folder);
@@ -613,6 +616,18 @@ function pendingRow(rec, parts) {
   return row;
 }
 
+// ---------- PWA ----------
+function initPwa() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/sw.js').catch((err) => console.warn('service worker:', err.message));
+  // Пришли файлы через «Поделиться», а открыта другая страница — подсказать.
+  inboxItems().then((items) => {
+    if (items.length && !location.hash.startsWith('#/inbox')) {
+      toast(`Во «Входящих»: ${items.length}`, 'info', { action: { label: 'Открыть', onClick: () => ctx.navigate('#/inbox') } });
+    }
+  }).catch(() => {});
+}
+
 // ---------- старт ----------
 async function start() {
   try {
@@ -635,6 +650,7 @@ async function start() {
   initPreview(ctx);
   setStorageConfigured(ctx.storageConfigured);
   if (ctx.storageConfigured) showPendingUploads();
+  initPwa();
 
   $('#folder-input').addEventListener('change', (e) => {
     const items = [...e.target.files]
