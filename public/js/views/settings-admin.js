@@ -117,7 +117,7 @@ export function adminSettings(ctx) {
 
   function render() {
     const f = Object.fromEntries(data.fields.map((x) => [x.key, x]));
-    root.replaceChildren(storagesCard(), limitsCard(f), appCard(f), brandCard(f), transferCard(), infoCard());
+    root.replaceChildren(storagesCard(), limitsCard(f), usersCard(f), appCard(f), brandCard(f), transferCard(), infoCard());
   }
 
   // ---------- Хранилища (единый диск) ----------
@@ -472,6 +472,23 @@ export function adminSettings(ctx) {
       settingField(f.TRASH_DAYS, { label: 'Хранить в корзине', suffix: 'дн.', hint: 'Удалённое можно восстановить в течение этого срока. 0 — удалять сразу, без корзины', onReset: reset }),
     ];
     return card('Загрузка файлов', 'Ограничения и параметры загрузки. Применяются сразу.', 'upload',
+      h('div', { class: 'grid gap-4 sm:grid-cols-2' }, ...fields.map((x) => x.el)),
+      saveRow(fields));
+  }
+
+  // ---------- Пользователи и вход ----------
+  function usersCard(f) {
+    const origin = f.APP_ORIGIN.value || location.origin;
+    const cb = (id) => `${origin}/api/auth/oauth/${id}/callback`;
+    const fields = [
+      settingField(f.PERSONAL_FOLDERS, { label: 'Личные папки', hint: 'У каждого пользователя своя папка, которую видит только он (и администраторы)', onReset: reset }),
+      settingField(f.PERSONAL_ROOT, { label: 'Где лежат личные папки', hint: 'Папка в корне диска: «Личные/<логин>/»', onReset: reset }),
+      settingField(f.OAUTH_YANDEX_ID, { label: 'Яндекс ID: ClientID', hint: `oauth.yandex.ru → создать приложение, доступ «login:email». Redirect URI: ${cb('yandex')}`, onReset: reset, wide: true }),
+      settingField(f.OAUTH_YANDEX_SECRET, { label: 'Яндекс ID: Client secret', onReset: reset, wide: true }),
+      settingField(f.OAUTH_GOOGLE_ID, { label: 'Google: Client ID', hint: `console.cloud.google.com → Credentials → OAuth client (Web). Authorized redirect URI: ${cb('google')}`, onReset: reset, wide: true }),
+      settingField(f.OAUTH_GOOGLE_SECRET, { label: 'Google: Client secret', onReset: reset, wide: true }),
+    ];
+    return card('Пользователи и вход', 'Личные папки и вход через Яндекс/Google. Через провайдера входят только существующие пользователи — по почте, указанной в разделе «Пользователи».', 'users',
       h('div', { class: 'grid gap-4 sm:grid-cols-2' }, ...fields.map((x) => x.el)),
       saveRow(fields));
   }

@@ -40,6 +40,13 @@ export const FIELDS = {
   MULTIPART_PART_SIZE_MB: { section: 'limits', type: 'int', default: 16, min: 5, max: 5120, apply: 'live' },
   UPLOAD_URL_TTL_MIN: { section: 'limits', type: 'int', default: 60, min: 1, max: 7 * 24 * 60, apply: 'live' },
   TRASH_DAYS: { section: 'limits', type: 'int', default: 30, min: 0, max: 365, apply: 'live' },
+
+  PERSONAL_FOLDERS: { section: 'users', type: 'bool', default: false, apply: 'live' },
+  PERSONAL_ROOT: { section: 'users', type: 'string', default: 'Личные', maxLength: 60, apply: 'live' },
+  OAUTH_YANDEX_ID: { section: 'users', type: 'string', default: '', maxLength: 200, apply: 'live' },
+  OAUTH_YANDEX_SECRET: { section: 'users', type: 'secret', apply: 'live' },
+  OAUTH_GOOGLE_ID: { section: 'users', type: 'string', default: '', maxLength: 200, apply: 'live' },
+  OAUTH_GOOGLE_SECRET: { section: 'users', type: 'secret', apply: 'live' },
 };
 
 // Поля одного хранилища S3 (и соответствующие переменные .env для первого запуска).
@@ -256,6 +263,13 @@ function apply(v) {
   config.storages = storages;
   config.placement = placement;
   config.s3Configured = storages.length > 0;
+  // Личные папки: «<корень>/<логин>/» — видна только владельцу (и администраторам).
+  config.personal = { enabled: v.PERSONAL_FOLDERS, root: String(v.PERSONAL_ROOT || 'Личные').replace(/[/\\]/g, '').trim() || 'Личные' };
+  // Вход через Яндекс/Google: включён, если заданы и id, и секрет приложения.
+  config.oauth = {
+    yandex: v.OAUTH_YANDEX_ID && v.OAUTH_YANDEX_SECRET ? { id: v.OAUTH_YANDEX_ID, secret: v.OAUTH_YANDEX_SECRET } : null,
+    google: v.OAUTH_GOOGLE_ID && v.OAUTH_GOOGLE_SECRET ? { id: v.OAUTH_GOOGLE_ID, secret: v.OAUTH_GOOGLE_SECRET } : null,
+  };
   config.limits = {
     maxFileSize: v.MAX_FILE_SIZE_MB * MB,
     // Файлы больше порога грузятся multipart-ом (частями), меньше — одним PUT.

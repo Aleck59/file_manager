@@ -45,7 +45,17 @@ export function initUsers() {
   console.log(`Создан администратор "${bootstrapUsername}" (${file})`);
 }
 
-export const publicUser = ({ username, role, createdAt }) => ({ username, role, createdAt });
+// Наружу — без хешей и секретов 2FA.
+export const publicUser = ({ username, role, createdAt, email, quotaMb, totp }) => ({
+  username, role, createdAt, email: email ?? null, quotaMb: quotaMb ?? 0, twoFactor: Boolean(totp),
+});
+
+/** Пользователь по почте (вход через Яндекс/Google): почту указывает администратор. */
+export function findByEmail(email) {
+  const e = String(email ?? '').trim().toLowerCase();
+  if (!e) return null;
+  return [...users.values()].find((u) => u.email && u.email.toLowerCase() === e) ?? null;
+}
 
 export function getUser(username) {
   return users.get(String(username ?? '').toLowerCase()) ?? null;
@@ -63,21 +73,34 @@ export function normalizeUsername(input) {
 
 const adminCount = () => [...users.values()].filter((u) => u.role === 'admin').length;
 
-export function createUser({ username, role, passwordHash }) {
+export function createUser({ username, role, passwordHash, email, quotaMb }) {
   if (users.has(username)) return { error: 'Пользователь с таким логином уже существует' };
-  const user = { username, role, passwordHash, createdAt: new Date().toISOString() };
+  if (email && findByEmail(email)) return { error: 'Эта почта уже указана у другого пользователя' };
+  const user = { username, role, passwordHash, createdAt: new Date().toISOString(), ...(email && { email }), ...(quotaMb && { quotaMb }) };
   users.set(username, user);
   persist();
   return { user: publicUser(user) };
 }
 
-export function updateUser(username, { role, passwordHash }) {
+// Изменяемые поля. undefined — не менять; null — убрать (почта, 2FA).
+const MUTABLE = ['role', 'passwordHash', 'email', 'quotaMb', 'totp', 'totpPending'];
+
+export function updateUser(username, changes) {
   const user = users.get(username);
   if (!user) return { error: 'Пользователь не найден', status: 404 };
+  const { role, email } = changes;
   if (role && role !== 'admin' && user.role === 'admin' && adminCount() === 1) {
     return { error: 'Нельзя понизить единственного администратора' };
   }
-  const next = { ...user, ...(role && { role }), ...(passwordHash && { passwordHash }) };
+  if (email && findByEmail(email) && findByEmail(email).username !== username) {
+    return { error: 'Эта почта уже указана у другого пользователя' };
+  }
+  const next = { ...user };
+  for (const key of MUTABLE) {
+    if (changes[key] === undefined) continue;
+    if (changes[key] === null || changes[key] === '') delete next[key];
+    else next[key] = changes[key];
+  }
   users.set(username, next);
   persist();
   return { user: publicUser(next) };

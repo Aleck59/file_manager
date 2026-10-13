@@ -622,6 +622,7 @@ async function start() {
     ctx.storages = me.storages ?? [];
     ctx.clockSkew = me.clockSkew;
     ctx.trashDays = me.trashDays ?? 0;
+    ctx.personal = me.personal;
   } catch {
     return; // при 401 api сам перенаправит на /login
   }

@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
 import { formatRef, nameFromKey, TRASH } from './keys.js';
+import * as acl from './acl.js';
 import * as labels from './labels.js';
 import * as storages from './storages.js';
 
@@ -135,7 +136,10 @@ function forget(id) {
 
 // Стёрто навсегда — метки больше не нужны (пока лежит в корзине, метка хранится).
 function forgetLabels(b) {
-  if (b.kind === 'folder') labels.forgetFolder(b.folder);
+  if (b.kind === 'folder') {
+    labels.forgetFolder(b.folder);
+    acl.forgetFolder(b.folder);
+  }
   else for (const key of b.keys ?? [b.key]) labels.forget(key);
 }
 

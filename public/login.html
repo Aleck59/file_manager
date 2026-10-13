@@ -34,6 +34,24 @@
       </div>
       <p id="login-error" class="hidden rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/60 dark:text-rose-300" role="alert"></p>
       <button type="submit" class="btn-primary w-full py-2.5">Войти</button>
+      <div id="oauth" class="hidden space-y-2">
+        <p class="flex items-center gap-3 text-xs text-slate-400 before:h-px before:flex-1 before:bg-slate-200 after:h-px after:flex-1 after:bg-slate-200 dark:before:bg-slate-800 dark:after:bg-slate-800">или</p>
+        <div id="oauth-buttons" class="grid gap-2"></div>
+      </div>
+    </form>
+
+    <form id="code-form" class="card hidden space-y-4 p-6 shadow-lg shadow-slate-900/5" novalidate>
+      <div>
+        <h2 class="text-base font-semibold">Код подтверждения</h2>
+        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Откройте приложение-аутентификатор и введите 6 цифр. Нет телефона — введите код восстановления.</p>
+      </div>
+      <div>
+        <label for="code" class="mb-1.5 block text-sm font-medium">Код</label>
+        <input id="code" name="code" type="text" class="input text-center font-mono text-lg tracking-[0.3em]" inputmode="numeric" autocomplete="one-time-code" maxlength="9" spellcheck="false" required>
+      </div>
+      <p id="code-error" class="hidden rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/60 dark:text-rose-300" role="alert"></p>
+      <button type="submit" class="btn-primary w-full py-2.5">Подтвердить</button>
+      <a href="/login" class="block text-center text-sm text-slate-500 hover:underline dark:text-slate-400">Войти заново</a>
     </form>
   </main>
 </body>

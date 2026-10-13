@@ -1,4 +1,5 @@
 // Управление пользователями (только для администратора).
+import * as acl from '../acl.js';
 import { Router } from '../http.js';
 import { audit, HttpError } from '../middleware/security.js';
 import { hashPassword } from '../password.js';
@@ -27,6 +28,21 @@ function checkUsername(input) {
   return username;
 }
 
+const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
+// Почта — для входа через Яндекс/Google; '' или null — убрать.
+function checkEmail(email) {
+  if (email === null || email === '') return null;
+  const e = String(email).trim().toLowerCase();
+  if (!EMAIL_RE.test(e)) throw new HttpError(400, 'Некорректная почта');
+  return e;
+}
+// Квота личной папки в МБ; 0 — без ограничения.
+function checkQuota(q) {
+  const n = Number(q ?? 0);
+  if (!Number.isInteger(n) || n < 0 || n > 100 * 1024 * 1024) throw new HttpError(400, 'Квота — целое число мегабайт (0 — без ограничения)');
+  return n;
+}
+
 function unwrap(result) {
   if (result.error) throw new HttpError(result.status ?? 400, result.error);
   return result;
@@ -40,31 +56,44 @@ usersRouter.post('/', async (req, res) => {
   const username = checkUsername(req.body?.username);
   const role = checkRole(req.body?.role);
   const passwordHash = await hashPassword(checkPassword(req.body?.password));
-  const result = unwrap(createUser({ username, role, passwordHash }));
-  audit(req, 'user.create', { username, role });
+  const email = req.body?.email ? checkEmail(req.body.email) : undefined;
+  const quotaMb = req.body?.quotaMb ? checkQuota(req.body.quotaMb) : undefined;
+  const result = unwrap(createUser({ username, role, passwordHash, email, quotaMb }));
+  audit(req, 'user.create', { username, role, email });
   res.status(201).json(result);
 });
 
 usersRouter.patch('/:username', async (req, res) => {
   const username = checkUsername(req.params.username);
-  const { role, password } = req.body ?? {};
-  if (role === undefined && password === undefined) throw new HttpError(400, 'Нечего изменять');
+  const { role, password, email, quotaMb } = req.body ?? {};
+  if (role === undefined && password === undefined && email === undefined && quotaMb === undefined) throw new HttpError(400, 'Нечего изменять');
   if (role !== undefined && username === req.user.username && role !== req.user.role) {
     throw new HttpError(400, 'Нельзя изменить собственную роль');
   }
   const changes = {
     ...(role !== undefined && { role: checkRole(role) }),
     ...(password !== undefined && { passwordHash: await hashPassword(checkPassword(password)) }),
+    ...(email !== undefined && { email: checkEmail(email) }),
+    ...(quotaMb !== undefined && { quotaMb: checkQuota(quotaMb) || null }),
   };
   const result = unwrap(updateUser(username, changes));
-  audit(req, 'user.update', { username, role: changes.role, password: changes.passwordHash ? 'изменён' : undefined });
+  audit(req, 'user.update', { username, role: changes.role, password: changes.passwordHash ? 'изменён' : undefined, email: changes.email, quotaMb: changes.quotaMb });
   res.json(result);
+});
+
+// POST /api/users/:username/2fa/reset — сбросить 2FA (пользователь потерял телефон и коды)
+usersRouter.post('/:username/2fa/reset', (req, res) => {
+  const username = checkUsername(req.params.username);
+  unwrap(updateUser(username, { totp: null, totpPending: null }));
+  audit(req, 'user.2fa', { username, enabled: false, by: 'admin' });
+  res.json({ ok: true });
 });
 
 usersRouter.delete('/:username', (req, res) => {
   const username = checkUsername(req.params.username);
   if (username === req.user.username) throw new HttpError(400, 'Нельзя удалить самого себя');
   const result = unwrap(deleteUser(username));
+  acl.forgetUser(username);
   audit(req, 'user.delete', { username });
   res.json(result);
 });

@@ -1,6 +1,6 @@
 // Раздел «Пользователи» (только для администратора).
 import { api } from '../api.js';
-import { confirmDialog, formatDate, h, icon, openDialog, toast } from '../ui.js';
+import { confirmDialog, formatDate, formatSize, h, icon, openDialog, toast } from '../ui.js';
 
 const ROLE_HINT = {
   viewer: 'просмотр и скачивание',
@@ -58,10 +58,16 @@ export function mountUsers(view, ctx) {
       h('div', { class: 'min-w-0 flex-1' },
         h('p', { class: 'flex items-center gap-2 truncate font-medium' }, u.username,
           self && h('span', { class: 'badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' }, 'это вы')),
-        h('p', { class: 'text-xs text-slate-500 dark:text-slate-400' }, `Создан ${formatDate(u.createdAt)}`)),
+        h('p', { class: 'flex flex-wrap items-center gap-x-2 text-xs text-slate-500 dark:text-slate-400' },
+          h('span', {}, `Создан ${formatDate(u.createdAt)}`),
+          u.email && h('span', { title: 'Вход через Яндекс/Google с этой почтой' }, `· ${u.email}`),
+          u.quotaMb > 0 && h('span', {}, `· квота ${formatSize(u.quotaMb * 1024 * 1024)}`),
+          u.twoFactor && h('span', { class: 'badge bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300', title: 'Двухфакторная аутентификация включена' }, '2FA'))),
       roleSelect,
       h('div', { class: 'flex gap-0.5' },
+        h('button', { type: 'button', class: 'icon-btn', title: 'Почта и квота', 'aria-label': `Почта и квота ${u.username}`, onclick: () => editProfile(u) }, icon('pencil')),
         h('button', { type: 'button', class: 'icon-btn', title: 'Сменить пароль', 'aria-label': `Сменить пароль ${u.username}`, onclick: () => resetPassword(u) }, icon('key')),
+        u.twoFactor && h('button', { type: 'button', class: 'icon-btn', title: 'Сбросить 2FA', 'aria-label': `Сбросить двухфакторную аутентификацию ${u.username}`, onclick: () => resetTwoFactor(u) }, icon('shield')),
         h('button', { type: 'button', class: 'icon-btn-danger', title: self ? 'Нельзя удалить себя' : 'Удалить', 'aria-label': `Удалить ${u.username}`, disabled: self, onclick: () => removeUser(u) }, icon('trash'))));
   }
 
@@ -105,6 +111,36 @@ export function mountUsers(view, ctx) {
     if (done) {
       toast('Пароль изменён', 'success');
       if (self) window.location.replace('/login');
+    }
+  }
+
+  async function editProfile(u) {
+    const done = await openDialog({
+      title: `Профиль ${u.username}`,
+      text: 'Почта нужна для входа через Яндекс или Google: войти сможет владелец аккаунта с этой подтверждённой почтой. Квота ограничивает личную папку (0 — без ограничения).',
+      confirmLabel: 'Сохранить',
+      fields: [
+        { name: 'email', label: 'Почта', type: 'email', value: u.email ?? '', optional: true, autocomplete: 'off', placeholder: 'не указана' },
+        { name: 'quotaMb', label: 'Квота личной папки, МБ', type: 'number', value: String(u.quotaMb ?? 0), inputmode: 'numeric' },
+      ],
+      onSubmit: ({ email, quotaMb }) => api.updateUser(u.username, { email: email.trim() || null, quotaMb: Number(quotaMb) || 0 }),
+    });
+    if (done?.user) {
+      Object.assign(u, done.user);
+      render();
+      toast('Сохранено', 'success');
+    }
+  }
+
+  async function resetTwoFactor(u) {
+    if (!(await confirmDialog('Сбросить 2FA?', `Для входа «${u.username}» снова будет достаточно пароля. Пользователь сможет включить 2FA заново в настройках.`, 'Сбросить'))) return;
+    try {
+      await api.resetTwoFactor(u.username);
+      u.twoFactor = false;
+      render();
+      toast('Двухфакторная аутентификация сброшена', 'success');
+    } catch (err) {
+      toast(err.message, 'error');
     }
   }
 

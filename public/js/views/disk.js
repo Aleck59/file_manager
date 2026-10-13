@@ -9,6 +9,7 @@ import { openShareDialog } from '../share-dialog.js';
 import { forgetFolder, isFavorite, refolderInLibrary, rememberOpened, removeFromLibrary, renameInLibrary, toggleFavorite } from '../library.js';
 import { labelDot, labelMenuItem } from '../labels.js';
 import { searchHash } from './search.js';
+import { openAclDialog } from '../acl-dialog.js';
 import { forgetThumb, thumbnail } from '../thumbs.js';
 import * as tree from '../tree.js';
 import {
@@ -253,8 +254,16 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     canEdit && { label: 'Переименовать', icon: 'pencil', onSelect: () => renameFolder(f) },
     canEdit && { label: 'Переместить…', icon: 'move', onSelect: () => moveFolder(f) },
     canEdit && labelMenuItem(() => btn, { folder: f.path }, f, () => renderList()),
+    ctx.can('admin') && { label: 'Доступ…', icon: 'lock', onSelect: async () => { if (await openAclDialog(f.path)) load(); } },
     canEdit && { label: 'Удалить папку', icon: 'trash', danger: true, onSelect: () => deleteFolder(f) },
   ]);
+
+  // Личная папка — «личная»; папка со своими правами (видит администратор) — замок.
+  function folderBadge(f) {
+    if (f.personal) return h('span', { class: 'shrink-0 text-slate-400', title: f.personal === ctx.user.username ? 'Ваша личная папка' : `Личная папка ${f.personal}`, role: 'img', 'aria-label': 'Личная папка' }, icon('user', 'h-3.5 w-3.5'));
+    if (f.restricted) return h('span', { class: 'shrink-0 text-amber-500', title: 'Доступ ограничен', role: 'img', 'aria-label': 'Доступ ограничен' }, icon('lock', 'h-3.5 w-3.5'));
+    return null;
+  }
 
   function folderItem(f) {
     const grid = state.layout === 'grid';
@@ -266,14 +275,14 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     grid
       ? [h('span', { class: 'tile-media bg-brand-50 text-brand-600 dark:bg-brand-950/50 dark:text-brand-400' }, icon('folder', 'h-10 w-10')),
         h('span', { class: 'tile-body' },
-          h('span', { class: 'flex min-w-0 items-center gap-1.5' }, labelDot(f.label), h('span', { class: 'block truncate text-sm font-medium', title: f.name }, f.name)),
+          h('span', { class: 'flex min-w-0 items-center gap-1.5' }, labelDot(f.label), h('span', { class: 'block truncate text-sm font-medium', title: f.name }, f.name), folderBadge(f)),
           h('span', { class: 'block text-xs text-slate-500 dark:text-slate-400' }, 'Папка')),
         h('span', { class: 'tile-actions' }, actionBtn('more', 'Действия с папкой', folderMenu(f)))]
       : [h('div', { class: 'flex min-w-0 items-center gap-3' },
         h('span', { class: 'check-cell' }),
         h('span', { class: 'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-950/60 dark:text-brand-400' }, icon('folder')),
         h('div', { class: 'min-w-0' },
-          h('div', { class: 'flex min-w-0 items-center gap-2' }, h('p', { class: 'truncate text-sm font-medium', title: f.name }, f.name), labelDot(f.label)),
+          h('div', { class: 'flex min-w-0 items-center gap-2' }, h('p', { class: 'truncate text-sm font-medium', title: f.name }, f.name), labelDot(f.label), folderBadge(f)),
           h('p', { class: 'text-xs text-slate-500 md:hidden dark:text-slate-400' }, 'Папка'))),
       h('span', { class: 'hidden text-right text-sm text-slate-400 md:block' }, '—'),
       h('span', { class: 'hidden text-sm text-slate-500 md:block dark:text-slate-400' }, 'Папка'),

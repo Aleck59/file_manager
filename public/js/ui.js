@@ -35,6 +35,8 @@ const ICONS = {
   download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
   tag: '<path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
+  lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  user: '<circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/>',
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
   close: '<path d="M18 6 6 18M6 6l12 12"/>',
@@ -248,7 +250,7 @@ export function openDialog({ title, text, fields = [], confirmLabel = 'OK', dang
       const control = f.type === 'select'
         ? h('select', { id, name: f.name, class: 'input' }, f.options.map(([v, l]) => h('option', { value: v, selected: v === f.value }, l)))
         : h('input', { id, name: f.name, type: f.type ?? 'text', class: 'input', value: f.value ?? '',
-          autocomplete: f.autocomplete ?? 'off', required: true, maxlength: f.maxlength ?? 256 });
+          autocomplete: f.autocomplete ?? 'off', required: !f.optional, maxlength: f.maxlength ?? 256, inputmode: f.inputmode, placeholder: f.placeholder });
       return h('div', {},
         h('label', { for: id, class: 'mb-1.5 block text-sm font-medium' }, f.label),
         control,

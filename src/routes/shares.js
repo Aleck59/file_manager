@@ -1,4 +1,5 @@
 // Публичные ссылки: управление (вошедшие, «Редактор» и выше) и гостевая часть (/api/public/s).
+import * as acl from '../acl.js';
 import { hasRole, requireRole } from '../auth.js';
 import { config } from '../config.js';
 import { Router } from '../http.js';
@@ -35,10 +36,12 @@ sharesRouter.post('/', async (req, res) => {
   let name;
   if (b.type === 'file') {
     const { st, rel } = storages.resolveRef(b.key);
-    if (!(await st.headObject(rel))) throw new HttpError(404, 'Файл не найден');
+    if (!acl.canRead(req.user, folderFromKey(rel)) || !(await st.headObject(rel))) throw new HttpError(404, 'Файл не найден');
     name = nameFromKey(rel);
   } else if (b.type === 'folder' || b.type === 'upload') {
     if (!isValidFolder(b.folder ?? '') || isReservedFolder(b.folder ?? '')) throw new HttpError(400, 'Некорректный путь папки');
+    if (!acl.canRead(req.user, b.folder ?? '')) throw new HttpError(404, 'Папка не найдена');
+    if (b.type === 'upload' && !acl.canWrite(req.user, b.folder ?? '')) throw new HttpError(403, 'Нет прав на загрузку в эту папку');
     name = folderLabel(b.folder ?? '');
   } else {
     throw new HttpError(400, 'Неизвестный вид ссылки');

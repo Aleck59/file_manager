@@ -10,6 +10,7 @@ import { audit, HttpError } from '../middleware/security.js';
 import { pipeline } from 'node:stream/promises';
 import { OFFICE_EXT, renderOffice } from '../office.js';
 import { entryStream, listZip } from '../zip.js';
+import * as acl from '../acl.js';
 import * as labels from '../labels.js';
 import * as sharesStore from '../shares.js';
 import * as storages from '../storages.js';
@@ -67,15 +68,88 @@ export function requireUploadId(uploadId) {
 
 const { resolveRef, fileInfo } = storages;
 
+// ---------- права на папки (acl.js) ----------
+// Нет доступа на чтение — отвечаем как будто папки/файла нет: не раскрываем, что они есть.
+function readFolder(req, folder) {
+  const f = requireFolder(folder);
+  if (!acl.canRead(req.user, f)) throw new HttpError(404, 'Папка не найдена');
+  return f;
+}
+function writeFolder(req, folder) {
+  const f = readFolder(req, folder);
+  if (!acl.canWrite(req.user, f)) throw new HttpError(403, 'Нет прав на изменения в этой папке');
+  return f;
+}
+// Удаление и перемещение папки затрагивает всё внутри — нужны права на каждую вложенную
+// папку со своим правилом (иначе через общую папку можно было бы удалить чужую личную).
+function writeTree(req, folder) {
+  const f = writeFolder(req, folder);
+  if (!acl.canWriteTree(req.user, f)) throw new HttpError(403, 'Внутри есть папки, на которые у вас нет прав');
+  return f;
+}
+function readRef(req, key) {
+  const ref = resolveRef(key);
+  if (!acl.canRead(req.user, folderFromKey(ref.rel))) throw new HttpError(404, 'Файл не найден');
+  return ref;
+}
+function writeRef(req, key) {
+  const ref = readRef(req, key);
+  if (!acl.canWrite(req.user, folderFromKey(ref.rel))) throw new HttpError(403, 'Нет прав на изменения в этой папке');
+  return ref;
+}
+const filterAcl = (req) => acl.hasRules() && !acl.isAdmin(req.user);
+
 // Подробности ошибок хранилищ (адреса, порты, коды) видит только администратор:
 // обычным пользователям незачем знать внутреннюю инфраструктуру.
 const publicWarnings = (req, warnings = []) => (hasRole(req.user, 'admin') ? warnings
   : warnings.map((w) => ({ storage: w.storage, error: 'нет связи с хранилищем' })));
 
+// ---------- квота личной папки ----------
+const quotaCache = new Map(); // логин → {at, bytes}
+async function personalUsage(user) {
+  const cached = quotaCache.get(user.username);
+  if (cached && Date.now() - cached.at < 60_000) return cached.bytes;
+  const prefix = acl.personalPath(user.username);
+  const { values } = await storages.everywhere(async (st) => {
+    let sum = 0;
+    await st.forEachObject(prefix, (o) => { sum += o.size; });
+    return sum;
+  });
+  const bytes = values.reduce((a, b) => a + b, 0);
+  quotaCache.set(user.username, { at: Date.now(), bytes });
+  return bytes;
+}
+function noteQuotaUse(user, size) {
+  const cached = quotaCache.get(user.username);
+  if (cached) cached.bytes += size;
+}
+export { personalUsage };
+
+/** Сколько ещё можно положить в папку с учётом квоты (undefined — квоты нет). */
+async function quotaLimit(user, folder, size) {
+  if (!user.quotaMb || !acl.inPersonal(user, folder)) return undefined;
+  const left = user.quotaMb * MB - await personalUsage(user);
+  if (left <= 0 || (Number.isSafeInteger(size) && size > left)) {
+    throw new HttpError(507, `Не хватает места в личной папке: свободно ${Math.max(0, Math.floor(left / MB))} МБ из ${user.quotaMb} МБ`);
+  }
+  return Math.min(config.limits.maxFileSize, left);
+}
+
+// GET /api/personal → {path, quotaMb, used} — личная папка и сколько в ней занято
+filesRouter.get('/personal', async (req, res) => {
+  if (!config.personal.enabled) return res.json({ personal: null });
+  const used = await personalUsage(req.user).catch(() => null);
+  res.json({ personal: { path: acl.personalPath(req.user.username), quotaMb: req.user.quotaMb ?? 0, used } });
+});
+
 // ---------- статистика ----------
 filesRouter.get('/stats', async (req, res) => {
-  const stats = { ...(await storages.getStats()), history: usageHistory() };
+  let stats = { ...(await storages.getStats()), history: usageHistory() };
   if (hasRole(req.user, 'admin')) return res.json(stats);
+  if (filterAcl(req)) {
+    const ok = (f) => acl.canRead(req.user, f.folder);
+    stats = { ...stats, recent: stats.recent.filter(ok), largest: stats.largest.filter(ok) };
+  }
   res.json({ ...stats, storages: stats.storages.map((s) => ({ ...s, error: s.error ? 'нет связи с хранилищем' : null })) });
 });
 
@@ -84,6 +158,7 @@ filesRouter.get('/stats', async (req, res) => {
 // GET /api/files?folder=a/b/&cursor=... — подпапки и файлы папки из всех хранилищ, новые сверху.
 filesRouter.get('/files', async (req, res) => {
   const folder = requireFolder(typeof req.query.folder === 'string' ? req.query.folder : '');
+  if (!acl.canSee(req.user, folder)) throw new HttpError(404, 'Папка не найдена');
   let cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
   // Курсор — последний выданный ключ этой же папки (файл или подпапка).
   if (cursor !== undefined && (!cursor.startsWith(folder) || !(isValidKey(cursor) || isValidFolder(cursor)))) {
@@ -91,9 +166,21 @@ filesRouter.get('/files', async (req, res) => {
   }
   if (cursor === '') cursor = undefined;
   const result = await storages.listFolder(folder, { cursor });
+  if (filterAcl(req)) {
+    result.folders = result.folders.filter((f) => acl.canSee(req.user, f.path));
+    // Папка-«проход» к доступной подпапке: своих файлов не показывает.
+    if (!acl.canRead(req.user, folder)) result.files = [];
+  }
+  const access = acl.access(req.user, folder);
+  // Замок у папок со своими правилами (видят администраторы) и у личных папок.
+  for (const f of result.folders) {
+    const rule = acl.getRule(f.path).own;
+    if (rule?.personal) f.personal = rule.personal;
+    else if (rule && acl.isAdmin(req.user)) f.restricted = true;
+  }
   for (const f of result.files) f.label = labels.get(f.key) ?? undefined;
   for (const f of result.folders) f.label = labels.get(labels.folderId(f.path)) ?? undefined;
-  res.json({ folder, ...result, warnings: publicWarnings(req, result.warnings) });
+  res.json({ folder, access, ...result, warnings: publicWarnings(req, result.warnings) });
 });
 
 // GET /api/search?q=&category=&label= — поиск по всему диску (имя, тип, метка)
@@ -103,7 +190,9 @@ filesRouter.get('/search', async (req, res) => {
   const category = CATEGORIES.includes(req.query.category) ? req.query.category : undefined;
   const label = labels.COLORS.includes(req.query.label) ? req.query.label : undefined;
   if (!q.trim() && !category && !label) throw new HttpError(400, 'Введите, что искать');
-  const match = label && ((key, isFolder) => labels.get(isFolder ? labels.folderId(key) : key) === label);
+  const byLabel = label && ((key, isFolder) => labels.get(isFolder ? labels.folderId(key) : key) === label);
+  const byAcl = filterAcl(req) && ((key, isFolder) => acl.canRead(req.user, isFolder ? key : folderFromKey(key.slice(key.indexOf(':') + 1))));
+  const match = (byLabel || byAcl) ? (key, isFolder) => (!byAcl || byAcl(key, isFolder)) && (!byLabel || byLabel(key, isFolder)) : undefined;
   const result = await storages.search({ q, category, match });
   for (const f of result.files) f.label = labels.get(f.key) ?? undefined;
   for (const f of result.folders) f.label = labels.get(labels.folderId(f.path)) ?? undefined;
@@ -116,11 +205,11 @@ filesRouter.put('/labels', canEdit, async (req, res) => {
   if (color !== null && !labels.COLORS.includes(color)) throw new HttpError(400, 'Неизвестный цвет метки');
   let id;
   if (req.body?.folder !== undefined) {
-    const path = requireFolder(req.body.folder);
+    const path = writeFolder(req, req.body.folder);
     if (!path) throw new HttpError(400, 'Корню метку не поставить');
     id = labels.folderId(path);
   } else {
-    const { st, rel } = resolveRef(req.body?.key);
+    const { st, rel } = writeRef(req, req.body?.key);
     id = formatRef(st.id, rel);
   }
   if (!labels.set(id, color)) throw new HttpError(507, 'Слишком много меток');
@@ -129,7 +218,7 @@ filesRouter.put('/labels', canEdit, async (req, res) => {
 
 // POST /api/folders {parent, name} — создать папку (во всех хранилищах).
 filesRouter.post('/folders', canEdit, async (req, res) => {
-  const parent = requireFolder(req.body?.parent);
+  const parent = writeFolder(req, req.body?.parent);
   const name = sanitizeFolderName(req.body?.name);
   if (!name) throw new HttpError(400, 'Введите название папки');
   const path = `${parent}${name}/`;
@@ -143,11 +232,12 @@ filesRouter.post('/folders', canEdit, async (req, res) => {
 // POST /api/folders/move {path, parent?, name?} — переименовать и/или переместить папку
 // со всем содержимым (во всех хранилищах; копирование внутри бакетов).
 filesRouter.post('/folders/move', canEdit, async (req, res) => {
-  const path = requireFolder(req.body?.path);
+  const path = writeTree(req, req.body?.path);
   if (!path) throw new HttpError(400, 'Корневую папку переместить нельзя');
+  if (acl.isPersonalRoot(path) && !acl.isAdmin(req.user)) throw new HttpError(403, 'Личную папку переместить нельзя');
   const currentName = path.slice(0, -1).split('/').pop();
   const currentParent = path.slice(0, path.length - currentName.length - 1);
-  const parent = req.body?.parent === undefined ? currentParent : requireFolder(req.body.parent);
+  const parent = req.body?.parent === undefined ? currentParent : writeFolder(req, req.body.parent);
   const name = req.body?.name === undefined ? currentName : sanitizeFolderName(req.body.name);
   if (!name) throw new HttpError(400, 'Введите название папки');
   const target = `${parent}${name}/`;
@@ -158,14 +248,16 @@ filesRouter.post('/folders/move', canEdit, async (req, res) => {
   storages.invalidateStats();
   sharesStore.refolder(path, target);
   labels.refolder(path, target);
+  acl.refolder(path, target);
   audit(req, 'folder.move', { from: path, to: target, moved });
   res.json({ ok: true, folder: { path: target, name }, moved, warnings: publicWarnings(req, warnings) });
 });
 
 // POST /api/folders/delete {path} — удалить папку со всем содержимым во всех хранилищах.
 filesRouter.post('/folders/delete', canEdit, async (req, res) => {
-  const path = requireFolder(req.body?.path);
+  const path = writeTree(req, req.body?.path);
   if (!path) throw new HttpError(400, 'Корневую папку удалить нельзя');
+  if (acl.isPersonalRoot(path) && !acl.isAdmin(req.user)) throw new HttpError(403, 'Личную папку удалить нельзя');
   if (trash.enabled()) {
     const { entry, warnings } = await trash.trashFolder(path, req.user.username);
     storages.invalidateStats();
@@ -177,6 +269,7 @@ filesRouter.post('/folders/delete', canEdit, async (req, res) => {
   storages.invalidateStats();
   sharesStore.folderGone(path);
   labels.forgetFolder(path);
+  acl.forgetFolder(path);
   audit(req, 'folder.delete', { path, deleted });
   res.json({ ok: true, deleted, warnings: publicWarnings(req, warnings) });
 });
@@ -185,15 +278,18 @@ filesRouter.post('/folders/delete', canEdit, async (req, res) => {
 
 // POST /api/uploads — начало загрузки. Сервер выбирает хранилище, ключ и способ загрузки.
 filesRouter.post('/uploads', canEdit, async (req, res) => {
-  const folder = withSubfolders(requireFolder(req.body?.folder), req.body?.subfolders);
+  const folder = withSubfolders(writeFolder(req, req.body?.folder), req.body?.subfolders);
+  if (!acl.canWrite(req.user, folder)) throw new HttpError(403, 'Нет прав на изменения в этой папке');
   const { name, size, type } = req.body ?? {};
-  res.json(await flow(() => uploadFlow.planUpload({ name, size, type, folder })));
+  const maxSize = await quotaLimit(req.user, folder, size);
+  res.json(await flow(() => uploadFlow.planUpload({ name, size, type, folder, maxSize })));
 });
 
 // ---------- загрузка по ссылке (сервер скачивает файл сам) ----------
 // POST /api/uploads/url {url, folder} → 202 {job}; статус — GET /api/uploads/url/:id
 filesRouter.post('/uploads/url', canEdit, async (req, res) => {
-  const folder = requireFolder(req.body?.folder);
+  const folder = writeFolder(req, req.body?.folder);
+  if (acl.inPersonal(req.user, folder) && req.user.quotaMb) throw new HttpError(400, 'В личную папку с квотой загрузите файл с компьютера');
   const job = await urlImport.startImport({
     url: req.body?.url, folder, user: req.user.username,
     onDone: (j) => {
@@ -219,6 +315,7 @@ filesRouter.post('/uploads/url/:id/cancel', canEdit, (req, res) => {
 filesRouter.post('/files/transfer', canEdit, async (req, res) => {
   const storage = req.body?.storage;
   if (typeof storage !== 'string') throw new HttpError(400, 'Не указано хранилище');
+  writeRef(req, req.body?.key);
   try {
     const job = await startTransfer({
       key: req.body?.key, storageId: storage, user: req.user.username,
@@ -249,6 +346,7 @@ filesRouter.post('/jobs/:id/cancel', canEdit, (req, res) => {
 // POST /api/uploads/parts — presigned URL для пачки частей multipart-загрузки.
 filesRouter.post('/uploads/parts', canEdit, async (req, res) => {
   const uploadId = requireUploadId(req.body?.uploadId);
+  writeRef(req, req.body?.key);
   res.json({ urls: await flow(() => uploadFlow.presignParts(req.body?.key, uploadId, req.body?.partNumbers)) });
 });
 
@@ -257,7 +355,12 @@ filesRouter.post('/uploads/parts', canEdit, async (req, res) => {
 // а превысившие его объекты сразу удаляются.
 filesRouter.post('/uploads/complete', canEdit, async (req, res) => {
   const uploadId = req.body?.uploadId === undefined ? undefined : requireUploadId(req.body.uploadId);
-  const { file, st, rel, size } = await flow(() => uploadFlow.completeUpload(req.body?.key, uploadId));
+  const ref = writeRef(req, req.body?.key);
+  // Квота: multipart собирается только сейчас — проверяем итоговый размер (одиночный PUT
+  // ограничен размером, заданным в подписи ссылки).
+  const maxSize = uploadId ? await quotaLimit(req.user, folderFromKey(ref.rel), 0) : undefined;
+  const { file, st, rel, size } = await flow(() => uploadFlow.completeUpload(req.body?.key, uploadId, maxSize ? { maxSize } : undefined));
+  if (acl.inPersonal(req.user, folderFromKey(rel))) noteQuotaUse(req.user, size);
   audit(req, 'file.upload', { storage: st.id, key: rel, size });
   res.json({ file });
 });
@@ -265,11 +368,13 @@ filesRouter.post('/uploads/complete', canEdit, async (req, res) => {
 // POST /api/uploads/resume {key, uploadId} → {parts: [{n, size}]} — что уже загружено.
 filesRouter.post('/uploads/resume', canEdit, async (req, res) => {
   const uploadId = requireUploadId(req.body?.uploadId);
+  writeRef(req, req.body?.key);
   res.json({ parts: await flow(() => uploadFlow.uploadedParts(req.body?.key, uploadId)) });
 });
 
 // POST /api/uploads/abort — отмена multipart-загрузки (освобождает место в бакете).
 filesRouter.post('/uploads/abort', canEdit, async (req, res) => {
+  writeRef(req, req.body?.key);
   await uploadFlow.abortUpload(req.body?.key, requireUploadId(req.body?.uploadId));
   res.json({ ok: true });
 });
@@ -278,7 +383,7 @@ filesRouter.post('/uploads/abort', canEdit, async (req, res) => {
 
 // POST /api/files/link — временная ссылка на скачивание напрямую из S3.
 filesRouter.post('/files/link', async (req, res) => {
-  const { st, rel } = resolveRef(req.body?.key);
+  const { st, rel } = readRef(req, req.body?.key);
   const ttl = req.body?.ttl ?? 24 * 3600;
   if (!LINK_TTLS.has(ttl) || ttl > config.limits.maxDownloadTtlSec) {
     throw new HttpError(400, 'Недопустимый срок действия ссылки');
@@ -297,6 +402,7 @@ filesRouter.post('/files/thumbs', async (req, res) => {
   const urls = {};
   for (const key of keys) {
     const { st, rel } = resolveRef(key);
+    if (!acl.canRead(req.user, folderFromKey(rel))) continue;
     const preview = previewKind(nameFromKey(rel));
     if (preview?.kind !== 'image') continue;
     urls[key] = await st.presignGet(rel, PREVIEW_TTL, { contentType: preview.contentType });
@@ -307,7 +413,7 @@ filesRouter.post('/files/thumbs', async (req, res) => {
 // POST /api/files/preview — короткоживущая inline-ссылка для предпросмотра.
 // Тип ответа S3 задаёт сервер по белому списку расширений (см. keys.js).
 filesRouter.post('/files/preview', async (req, res) => {
-  const { st, rel } = resolveRef(req.body?.key);
+  const { st, rel } = readRef(req, req.body?.key);
   const head = await st.headObject(rel);
   if (!head) throw new HttpError(404, 'Файл не найден');
   const meta = {
@@ -332,8 +438,8 @@ filesRouter.post('/files/preview', async (req, res) => {
 // ---------- содержимое архивов и документы Office ----------
 const ZIP_EXT = new Set(['zip', 'jar', 'apk', 'epub', 'cbz']);
 
-async function zipSource(key) {
-  const { st, rel } = resolveRef(key);
+async function zipSource(req, key) {
+  const { st, rel } = readRef(req, key);
   const head = await st.headObject(rel);
   if (!head) throw new HttpError(404, 'Файл не найден');
   return { st, rel, size: head.ContentLength ?? 0 };
@@ -341,14 +447,14 @@ async function zipSource(key) {
 
 // POST /api/files/zip {key} → {entries, total, truncated} — оглавление архива.
 filesRouter.post('/files/zip', async (req, res) => {
-  const { st, rel, size } = await zipSource(req.body?.key);
+  const { st, rel, size } = await zipSource(req, req.body?.key);
   const { entries, total, truncated } = await flow(() => listZip(st, rel, size));
   res.json({ entries: entries.map(({ offset, ...e }) => e), total, truncated });
 });
 
 // GET /api/files/zip/entry?key=&i= — скачать один файл из архива (распаковка потоком на сервере).
 filesRouter.get('/files/zip/entry', async (req, res) => {
-  const { st, rel, size } = await zipSource(req.query.key);
+  const { st, rel, size } = await zipSource(req, req.query.key);
   const i = Number(req.query.i);
   const { entries } = await flow(() => listZip(st, rel, size));
   const entry = Number.isInteger(i) ? entries[i] : undefined;
@@ -371,7 +477,7 @@ filesRouter.get('/files/zip/entry', async (req, res) => {
 
 // POST /api/files/office {key} — docx/xlsx/pptx в простую структуру для просмотра.
 filesRouter.post('/files/office', async (req, res) => {
-  const { st, rel, size } = await zipSource(req.body?.key);
+  const { st, rel, size } = await zipSource(req, req.body?.key);
   const ext = extOf(nameFromKey(rel));
   if (!OFFICE_EXT.has(ext)) throw new HttpError(400, 'Это не документ Office (docx, xlsx, pptx)');
   if (size > 100 * 1024 * 1024) throw new HttpError(413, 'Документ слишком большой для просмотра');
@@ -382,8 +488,8 @@ filesRouter.post('/files/office', async (req, res) => {
 // В S3 нет операции rename: объект копируется под новым ключом внутри своего бакета,
 // затем исходный удаляется. Ссылки, выданные на старый ключ, перестают работать.
 filesRouter.post('/files/move', canEdit, async (req, res) => {
-  const { st, rel } = resolveRef(req.body?.key);
-  const folder = req.body?.folder === undefined ? folderFromKey(rel) : requireFolder(req.body.folder);
+  const { st, rel } = writeRef(req, req.body?.key);
+  const folder = req.body?.folder === undefined ? folderFromKey(rel) : writeFolder(req, req.body.folder);
   let name = nameFromKey(rel);
   if (req.body?.name !== undefined) {
     if (typeof req.body.name !== 'string' || !req.body.name.trim()) throw new HttpError(400, 'Введите имя файла');
@@ -411,9 +517,9 @@ filesRouter.post('/files/move', canEdit, async (req, res) => {
 // POST /api/files/copy {key, folder?, name?} — копия файла (в том же бакете, байты не идут
 // через VDS). Без имени в той же папке получается «имя (копия).ext».
 filesRouter.post('/files/copy', canEdit, async (req, res) => {
-  const { st, rel } = resolveRef(req.body?.key);
+  const { st, rel } = readRef(req, req.body?.key);
   const sourceFolder = folderFromKey(rel);
-  const folder = req.body?.folder === undefined ? sourceFolder : requireFolder(req.body.folder);
+  const folder = writeFolder(req, req.body?.folder === undefined ? sourceFolder : req.body.folder);
   let name = nameFromKey(rel);
   if (req.body?.name !== undefined) {
     if (typeof req.body.name !== 'string' || !req.body.name.trim() || req.body.name.length > 500) throw new HttpError(400, 'Введите имя файла');
@@ -442,7 +548,7 @@ filesRouter.post('/files/copy', canEdit, async (req, res) => {
 
 // DELETE /api/files?key=... — удаление файла.
 filesRouter.delete('/files', canEdit, async (req, res) => {
-  const { st, rel } = resolveRef(req.query.key);
+  const { st, rel } = writeRef(req, req.query.key);
   const trashed = trash.enabled();
   let trashId;
   if (trashed) trashId = (await flow(() => trash.trashFiles([{ st, rel }], req.user.username))).entry.id;
@@ -460,7 +566,7 @@ filesRouter.delete('/files', canEdit, async (req, res) => {
 filesRouter.post('/files/delete', canEdit, async (req, res) => {
   const keys = req.body?.keys;
   if (!Array.isArray(keys) || !keys.length || keys.length > 500) throw new HttpError(400, 'Передайте от 1 до 500 файлов');
-  const refs = [...new Set(keys)].map((k) => resolveRef(k));
+  const refs = [...new Set(keys)].map((k) => writeRef(req, k));
   let deleted = [];
   let failed = 0;
   let trashId;

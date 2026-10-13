@@ -610,3 +610,50 @@ test('Office: docx — заголовки, оформление, списки, �
   const sheet = o.parseSheet('<sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1"><v>3.5</v></c></row><row r="3"><c r="B3" t="s"><v>1</v></c><c r="D3" t="b"><v>1</v></c></row></sheetData>', strings);
   assert.deepEqual(sheet.rows, [['Товар', '', '3.5'], [], ['', 'Яблоки', '', 'ИСТИНА']]);
 });
+
+test('права на папки: правила, наследование, «проход», роль как потолок', async () => {
+  const acl = await import('../src/acl.js');
+  const anna = { username: 'anna', role: 'editor' };
+  const bob = { username: 'bob', role: 'editor' };
+  const vera = { username: 'vera', role: 'viewer' };
+  const admin = { username: 'boss', role: 'admin' };
+  assert.equal(acl.access(anna, 'Общее/'), 'write', 'без правил — по роли');
+  assert.equal(acl.access(vera, 'Общее/'), 'read');
+  acl.setRule('Бухгалтерия/', { users: { anna: 'write', vera: 'write' }, others: 'none' });
+  acl.setRule('Бухгалтерия/Отчёты/', { users: {}, others: 'read' });
+  assert.equal(acl.access(anna, 'Бухгалтерия/2026/'), 'write', 'правило действует на подпапки');
+  assert.equal(acl.access(vera, 'Бухгалтерия/'), 'read', 'роль — потолок');
+  assert.equal(acl.access(bob, 'Бухгалтерия/'), 'none');
+  assert.equal(acl.access(bob, 'Бухгалтерия/Отчёты/'), 'read', 'ниже — своё правило');
+  assert.equal(acl.canSee(bob, 'Бухгалтерия/'), true, 'проход к доступной подпапке');
+  assert.equal(acl.canRead(bob, 'Бухгалтерия/'), false);
+  assert.equal(acl.access(admin, 'Бухгалтерия/'), 'write');
+  assert.equal(acl.canWriteTree(anna, 'Бухгалтерия/'), false, 'внутри папка только для чтения');
+  assert.equal(acl.canWriteTree(admin, 'Бухгалтерия/'), true);
+  acl.refolder('Бухгалтерия/', 'Архив/Бухгалтерия/');
+  assert.equal(acl.access(bob, 'Архив/Бухгалтерия/Отчёты/'), 'read');
+  assert.equal(acl.access(bob, 'Бухгалтерия/'), 'write', 'старый путь свободен');
+  acl.forgetFolder('Архив/');
+  assert.equal(acl.hasRules(), false);
+});
+
+test('2FA: TOTP по RFC 6238, без повтора кода, коды восстановления, билет', async () => {
+  const totp = await import('../src/totp.js');
+  // Тестовый вектор RFC 6238 (SHA1, секрет «12345678901234567890», T=59 с → 94287082 → 287082)
+  const secret = totp.base32(Buffer.from('12345678901234567890'));
+  assert.equal(totp.hotp(secret, 1), '287082');
+  const now = 59_000;
+  const step = totp.verify(secret, '287082', -1, now);
+  assert.equal(step, 1);
+  assert.equal(totp.verify(secret, '287082', step, now), null, 'повтор того же кода');
+  assert.equal(totp.verify(secret, '000000', -1, now), null);
+  const { codes, hashes } = totp.recoveryCodes(3);
+  const left = totp.useRecoveryCode(hashes, codes[1].toUpperCase());
+  assert.equal(left.length, 2);
+  assert.equal(totp.useRecoveryCode(left, codes[1]), null, 'код восстановления одноразовый');
+  const user = { username: 'anna', passwordHash: 'h1', totp: { secret } };
+  const ticket = totp.issueTicket(user, 'password');
+  assert.equal(totp.readTicket(ticket, () => user)?.user, user);
+  assert.equal(totp.readTicket(ticket, () => ({ ...user, passwordHash: 'h2' })), null, 'смена пароля обесценивает билет');
+  assert.equal(totp.readTicket(ticket.replace('.password.', '.google.'), () => user), null);
+});

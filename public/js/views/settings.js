@@ -2,7 +2,7 @@
 import { api } from '../api.js';
 import { TTL_LABELS } from '../preview.js';
 import { adminSettings } from './settings-admin.js';
-import { sessionsBlock, tokensBlock } from './security-settings.js';
+import { sessionsBlock, tokensBlock, twoFactorBlock } from './security-settings.js';
 import { applyTheme, h, prefs, toast } from '../ui.js';
 
 function section(title, description, ...content) {
@@ -91,7 +91,8 @@ export function mountSettings(view, ctx) {
 
   const security = section('Где выполнен вход', 'Устройства и браузеры, в которых открыт ваш аккаунт.', sessionsBlock());
   const tokens = section('API-токены', 'Доступ для скриптов и программ без пароля.', tokensBlock(ctx));
-  const sections = [profile, security, ui, tokens];
+  const twoFactor = section('Двухфакторная аутентификация', 'Код из приложения на телефоне при каждом входе.', twoFactorBlock(ctx));
+  const sections = [profile, twoFactor, security, ui, tokens];
 
   // Все параметры сервера (.env) — только для администратора.
   if (ctx.can('admin')) sections.push(adminSettings(ctx));

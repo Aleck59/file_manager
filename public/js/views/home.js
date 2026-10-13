@@ -116,6 +116,28 @@ function storagesUsage(list, ctx) {
   }));
 }
 
+// Личная папка: ссылка и, если задана квота, сколько занято.
+function personalCard(ctx) {
+  const info = h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Видна только вам и администраторам');
+  const bar = h('div', { class: 'progress mt-2 hidden' }, h('div'));
+  const card = h('a', { href: diskHash(ctx.personal.path), class: 'card flex items-center gap-4 p-4 transition hover:border-brand-300 dark:hover:border-brand-800' },
+    h('span', { class: 'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600 dark:bg-brand-950/60 dark:text-brand-400' }, icon('user', 'h-5 w-5')),
+    h('div', { class: 'min-w-0 flex-1' }, h('p', { class: 'font-semibold' }, 'Моя папка'), info, bar),
+    icon('chevronRight', 'h-4 w-4 text-slate-400'));
+  if (ctx.personal.quotaMb) {
+    api.personal().then(({ personal }) => {
+      if (!personal || personal.used === null) return;
+      const quota = personal.quotaMb * 1024 * 1024;
+      const share = Math.min(1, personal.used / quota);
+      info.textContent = `Занято ${formatSize(personal.used)} из ${formatSize(quota)}`;
+      bar.classList.remove('hidden');
+      bar.classList.toggle('is-error', share > 0.9);
+      bar.firstChild.style.transform = `translateX(${(share - 1) * 100}%)`;
+    }).catch(() => {});
+  }
+  return card;
+}
+
 export function mountHome(view, ctx) {
   ctx.setHeader(h('h1', { class: 'truncate text-base font-semibold' }, 'Главная'), ctx.can('editor')
     ? [h('button', { type: 'button', class: 'btn-primary', onclick: () => ctx.pickFiles('') }, icon('upload'), h('span', { class: 'hidden sm:inline' }, 'Загрузить'))]
@@ -150,6 +172,7 @@ export function mountHome(view, ctx) {
     h('div', {},
       h('h2', { class: 'text-2xl font-semibold tracking-tight' }, `${greeting()}, ${ctx.user.username}`),
       h('p', { class: 'mt-1 text-sm text-slate-500 dark:text-slate-400' }, 'Сводка по вашему диску')),
+    ctx.personal && personalCard(ctx),
     tiles,
     h('div', { class: 'grid gap-6 lg:grid-cols-5' },
       h('div', { class: 'space-y-6 lg:col-span-2' },

@@ -36,6 +36,14 @@ const q = (params) => {
 
 export const api = {
   me: () => request('GET', '/api/auth/me'),
+  twoFactorSetup: () => request('POST', '/api/auth/2fa/setup'),
+  twoFactorEnable: (code) => request('POST', '/api/auth/2fa/enable', { code }),
+  twoFactorDisable: (password) => request('POST', '/api/auth/2fa/disable', { password }),
+  twoFactorRecovery: (password) => request('POST', '/api/auth/2fa/recovery', { password }),
+  resetTwoFactor: (username) => request('POST', `/api/users/${encodeURIComponent(username)}/2fa/reset`),
+  acl: (folder) => request('GET', `/api/admin/acl${q({ folder })}`),
+  setAcl: (folder, rule) => request('PUT', '/api/admin/acl', { folder, rule }),
+  personal: () => request('GET', '/api/personal'),
   logout: () => request('POST', '/api/auth/logout'),
   changePassword: (currentPassword, newPassword) => request('POST', '/api/auth/password', { currentPassword, newPassword }),
   sessions: () => request('GET', '/api/auth/sessions'),
