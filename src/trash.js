@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
 import { formatRef, nameFromKey, TRASH } from './keys.js';
+import * as labels from './labels.js';
 import * as storages from './storages.js';
 
 const file = () => path.join(config.dataDir, 'trash.json');
@@ -38,7 +39,7 @@ const newId = () => `${Date.now().toString(36).padStart(9, '0')}-${crypto.random
 const timeOf = (id) => parseInt(id.slice(0, 9), 36);
 const prefixOf = (id) => `${TRASH}${id}/`;
 
-/** Параллельная обработка потока объектов с ограничением одновременных запросов. */
+/** Параллельная обработка с ограничением одновременных запросов. */
 function pool() {
   const running = new Set();
   return {
@@ -49,41 +50,6 @@ function pool() {
     },
     async done() { await Promise.all(running); },
   };
-}
-
-/** Переложить объекты под префиксом `from` в `to` (копия → удаление оригиналов пачками). */
-async function moveAll(st, from, to) {
-  const work = pool();
-  let pending = [];
-  let count = 0;
-  let size = 0;
-  let firstError = null;
-  const flush = async () => {
-    const rels = pending;
-    pending = [];
-    if (rels.length) await st.deleteMany(rels);
-  };
-  await st.forEachObject(from, async (o) => {
-    if (firstError) return;
-    const dst = to + o.rel.slice(from.length);
-    await work.add(async () => {
-      try {
-        // Больше 5 ГБ копируется по частям — тип содержимого тогда нужно передать явно.
-        const type = o.size > 5 * 1024 ** 3 ? (await st.headObject(o.rel))?.ContentType : undefined;
-        await st.copyObject(o.rel, dst, o.size, type, o.storageClass ?? st.storageClass);
-        pending.push(o.rel);
-        count += 1;
-        size += o.size;
-      } catch (err) {
-        firstError ??= err;
-      }
-    });
-    if (pending.length >= 500) await flush();
-  });
-  await work.done();
-  await flush(); // перенесённое удаляем и при ошибке: копия уже в корзине
-  if (firstError) throw firstError;
-  return { count, size };
 }
 
 async function moveOne(st, rel, id) {
@@ -143,7 +109,7 @@ export async function trashFolder(folderPath, user) {
   const id = newId();
   const ids = [];
   const { values, warnings } = await storages.everywhere(async (st) => {
-    const r = await moveAll(st, folderPath, prefixOf(id) + folderPath);
+    const r = await st.movePrefix(folderPath, prefixOf(id) + folderPath);
     if (r.count) ids.push(st.id);
     return r;
   });
@@ -167,12 +133,18 @@ function forget(id) {
   persist();
 }
 
+// Стёрто навсегда — метки больше не нужны (пока лежит в корзине, метка хранится).
+function forgetLabels(b) {
+  if (b.kind === 'folder') labels.forgetFolder(b.folder);
+  else for (const key of b.keys ?? [b.key]) labels.forget(key);
+}
+
 /** Вернуть партию на прежнее место. */
 export async function restore(id) {
   const b = get(id);
   if (!b) throw fail(404, 'В корзине такого нет');
   const prefix = prefixOf(id);
-  const { values, warnings } = await storages.everywhere((st) => moveAll(st, prefix, ''));
+  const { values, warnings } = await storages.everywhere((st) => st.movePrefix(prefix, ''));
   if (!values.some((v) => v.count)) {
     forget(id);
     throw fail(410, 'Файлы этой записи уже удалены из хранилища');
@@ -186,7 +158,10 @@ export async function purge(id) {
   const b = get(id);
   if (!b) throw fail(404, 'В корзине такого нет');
   const { warnings } = await storages.everywhere((st) => st.deleteFolder(prefixOf(id)));
-  if (!warnings.length) forget(id);
+  if (!warnings.length) {
+    forget(id);
+    forgetLabels(b);
+  }
   return { entry: b, warnings };
 }
 
@@ -194,6 +169,7 @@ export async function purge(id) {
 export async function empty() {
   const { values, warnings } = await storages.everywhere((st) => st.deleteFolder(TRASH));
   if (!warnings.length) {
+    batches.forEach(forgetLabels);
     batches = [];
     persist();
   }
@@ -224,6 +200,7 @@ export async function purgeExpired(now = Date.now()) {
     }
   }
   const before = batches.length;
+  batches.filter((b) => timeOf(b.id) <= cutoff).forEach(forgetLabels);
   batches = batches.filter((b) => timeOf(b.id) > cutoff);
   if (batches.length !== before) persist();
   if (removed) storages.invalidateStats();

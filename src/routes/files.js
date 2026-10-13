@@ -7,6 +7,7 @@ import {
   safeContentType, sanitizeFileName, sanitizeFolderName, formatRef, isReservedFolder,
 } from '../keys.js';
 import { audit, HttpError } from '../middleware/security.js';
+import * as labels from '../labels.js';
 import * as sharesStore from '../shares.js';
 import * as storages from '../storages.js';
 import { usageHistory } from '../usage-history.js';
@@ -87,7 +88,40 @@ filesRouter.get('/files', async (req, res) => {
   }
   if (cursor === '') cursor = undefined;
   const result = await storages.listFolder(folder, { cursor });
+  for (const f of result.files) f.label = labels.get(f.key) ?? undefined;
+  for (const f of result.folders) f.label = labels.get(labels.folderId(f.path)) ?? undefined;
   res.json({ folder, ...result, warnings: publicWarnings(req, result.warnings) });
+});
+
+// GET /api/search?q=&category=&label= — поиск по всему диску (имя, тип, метка)
+const CATEGORIES = ['image', 'video', 'audio', 'document', 'archive', 'other'];
+filesRouter.get('/search', async (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 200) : '';
+  const category = CATEGORIES.includes(req.query.category) ? req.query.category : undefined;
+  const label = labels.COLORS.includes(req.query.label) ? req.query.label : undefined;
+  if (!q.trim() && !category && !label) throw new HttpError(400, 'Введите, что искать');
+  const match = label && ((key, isFolder) => labels.get(isFolder ? labels.folderId(key) : key) === label);
+  const result = await storages.search({ q, category, match });
+  for (const f of result.files) f.label = labels.get(f.key) ?? undefined;
+  for (const f of result.folders) f.label = labels.get(labels.folderId(f.path)) ?? undefined;
+  res.json({ ...result, warnings: publicWarnings(req, result.warnings) });
+});
+
+// PUT /api/labels {key | folder, color|null} — цветная метка файла или папки
+filesRouter.put('/labels', canEdit, async (req, res) => {
+  const color = req.body?.color ?? null;
+  if (color !== null && !labels.COLORS.includes(color)) throw new HttpError(400, 'Неизвестный цвет метки');
+  let id;
+  if (req.body?.folder !== undefined) {
+    const path = requireFolder(req.body.folder);
+    if (!path) throw new HttpError(400, 'Корню метку не поставить');
+    id = labels.folderId(path);
+  } else {
+    const { st, rel } = resolveRef(req.body?.key);
+    id = formatRef(st.id, rel);
+  }
+  if (!labels.set(id, color)) throw new HttpError(507, 'Слишком много меток');
+  res.json({ ok: true, color });
 });
 
 // POST /api/folders {parent, name} — создать папку (во всех хранилищах).
@@ -101,6 +135,28 @@ filesRouter.post('/folders', canEdit, async (req, res) => {
   storages.invalidateStats();
   audit(req, 'folder.create', { path });
   res.status(201).json({ folder: { path, name }, warnings: publicWarnings(req, warnings) });
+});
+
+// POST /api/folders/move {path, parent?, name?} — переименовать и/или переместить папку
+// со всем содержимым (во всех хранилищах; копирование внутри бакетов).
+filesRouter.post('/folders/move', canEdit, async (req, res) => {
+  const path = requireFolder(req.body?.path);
+  if (!path) throw new HttpError(400, 'Корневую папку переместить нельзя');
+  const currentName = path.slice(0, -1).split('/').pop();
+  const currentParent = path.slice(0, path.length - currentName.length - 1);
+  const parent = req.body?.parent === undefined ? currentParent : requireFolder(req.body.parent);
+  const name = req.body?.name === undefined ? currentName : sanitizeFolderName(req.body.name);
+  if (!name) throw new HttpError(400, 'Введите название папки');
+  const target = `${parent}${name}/`;
+  if (!isValidFolder(target)) throw new HttpError(400, 'Слишком глубокая вложенность или длинный путь');
+  if (target === path) return res.json({ ok: true, folder: { path, name }, moved: 0 });
+  if (target.startsWith(path)) throw new HttpError(400, 'Нельзя переместить папку внутрь неё самой');
+  const { moved, warnings } = await flow(() => storages.moveFolder(path, target));
+  storages.invalidateStats();
+  sharesStore.refolder(path, target);
+  labels.refolder(path, target);
+  audit(req, 'folder.move', { from: path, to: target, moved });
+  res.json({ ok: true, folder: { path: target, name }, moved, warnings: publicWarnings(req, warnings) });
 });
 
 // POST /api/folders/delete {path} — удалить папку со всем содержимым во всех хранилищах.
@@ -117,6 +173,7 @@ filesRouter.post('/folders/delete', canEdit, async (req, res) => {
   const { deleted, warnings } = await storages.deleteFolder(path);
   storages.invalidateStats();
   sharesStore.folderGone(path);
+  labels.forgetFolder(path);
   audit(req, 'folder.delete', { path, deleted });
   res.json({ ok: true, deleted, warnings: publicWarnings(req, warnings) });
 });
@@ -165,6 +222,7 @@ filesRouter.post('/files/transfer', canEdit, async (req, res) => {
       onDone: (j) => {
         if (j.status !== 'done') return;
         sharesStore.rekeyFile(req.body.key, j.file.key);
+        labels.rekey(req.body.key, j.file.key);
         audit(req, 'file.transfer', { key: j.file.key, to: j.target, size: j.size });
       },
     });
@@ -283,6 +341,7 @@ filesRouter.post('/files/move', canEdit, async (req, res) => {
   await st.deleteObject(rel);
   storages.invalidateStats();
   sharesStore.rekeyFile(formatRef(st.id, rel), formatRef(st.id, target));
+  labels.rekey(formatRef(st.id, rel), formatRef(st.id, target));
   audit(req, 'file.move', { storage: st.id, from: rel, to: target });
   res.json({ file: fileInfo(st, target, size), folder });
 });
@@ -325,7 +384,10 @@ filesRouter.delete('/files', canEdit, async (req, res) => {
   const trashed = trash.enabled();
   let trashId;
   if (trashed) trashId = (await flow(() => trash.trashFiles([{ st, rel }], req.user.username))).entry.id;
-  else await st.deleteObject(rel);
+  else {
+    await st.deleteObject(rel);
+    labels.forget(formatRef(st.id, rel));
+  }
   storages.invalidateStats();
   sharesStore.fileGone(formatRef(st.id, rel));
   audit(req, trashed ? 'file.trash' : 'file.delete', { storage: st.id, key: rel });
@@ -351,7 +413,10 @@ filesRouter.post('/files/delete', canEdit, async (req, res) => {
     for (const [st, rels] of byStorage) {
       try {
         await st.deleteMany(rels);
-        deleted.push(...rels.map((rel) => formatRef(st.id, rel)));
+        for (const rel of rels) {
+          deleted.push(formatRef(st.id, rel));
+          labels.forget(formatRef(st.id, rel));
+        }
       } catch (err) {
         failed += rels.length;
         console.error(`[storage ${st.name}] удаление не удалось:`, err?.name, err?.message);

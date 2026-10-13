@@ -315,6 +315,52 @@ export class Storage {
     return deleted;
   }
 
+  /**
+   * Перенести все объекты под префиксом `from` в `to` (копия внутри бакета → удаление
+   * оригиналов пачками). До 8 копирований одновременно; список ключей в памяти не копится.
+   * Скопированное удаляется и при ошибке посередине — копия уже на новом месте.
+   */
+  async movePrefix(from, to) {
+    const running = new Set();
+    let pending = [];
+    let count = 0;
+    let size = 0;
+    let firstError = null;
+    const flush = async () => {
+      const rels = pending;
+      pending = [];
+      if (rels.length) await this.deleteMany(rels);
+    };
+    await this.forEachObject(from, async (o) => {
+      if (firstError) return;
+      while (running.size >= 8) await Promise.race(running);
+      const task = (async () => {
+        try {
+          // Больше 5 ГБ копируется по частям — тип содержимого тогда нужно передать явно.
+          const type = o.size > MAX_SINGLE_COPY ? (await this.headObject(o.rel))?.ContentType : undefined;
+          await this.copyObject(o.rel, to + o.rel.slice(from.length), o.size, type, o.storageClass ?? this.storageClass);
+          pending.push(o.rel);
+          count += 1;
+          size += o.size;
+        } catch (err) {
+          firstError ??= err;
+        }
+      })().finally(() => running.delete(task));
+      running.add(task);
+      if (pending.length >= 500) await flush();
+    });
+    await Promise.all(running);
+    await flush();
+    if (firstError) throw firstError;
+    return { count, size };
+  }
+
+  /** Есть ли хоть один объект под префиксом. */
+  async hasObjects(prefix) {
+    const out = await this.send(new ListObjectsV2Command({ Bucket: this.bucket, Prefix: this.abs(prefix), MaxKeys: 1 }));
+    return (out.KeyCount ?? out.Contents?.length ?? 0) > 0;
+  }
+
   putFolderMarker(folder) {
     return this.send(new PutObjectCommand({ Bucket: this.bucket, Key: this.abs(folder), Body: new Uint8Array(0), ContentLength: 0 }));
   }

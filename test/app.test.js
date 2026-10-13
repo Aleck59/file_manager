@@ -528,3 +528,24 @@ test('корзина: файлы переезжают в .trash/<партия>/ 
   assert.ok(Date.parse(listed.expiresAt) - Date.parse(listed.deletedAt) === 30 * 86_400_000);
   await assert.rejects(trash.trashFiles([{ st, rel: missing }], 'admin'), /не найден/);
 });
+
+test('метки и ссылки следуют за папкой при переименовании', async () => {
+  const labels = await import('../src/labels.js');
+  const shares = await import('../src/shares.js');
+  const inside = keys.generateKey('x.txt', 'Фото/2026/');
+  const outside = keys.generateKey('y.txt', 'Фотоальбом/');
+  labels.set(`s1:${inside}`, 'red');
+  labels.set(`s1:${outside}`, 'blue');
+  labels.set(labels.folderId('Фото/2026/'), 'green');
+  const s = await shares.create({ type: 'file', key: `s1:${inside}`, name: 'x.txt', user: 'admin' });
+  labels.refolder('Фото/', 'Архив/Фото/');
+  shares.refolder('Фото/', 'Архив/Фото/');
+  const moved = inside.replace('Фото/', 'Архив/Фото/');
+  assert.equal(labels.get(`s1:${moved}`), 'red');
+  assert.equal(labels.get(`s1:${inside}`), null);
+  assert.equal(labels.get(`s1:${outside}`), 'blue', '«Фотоальбом/» — другая папка');
+  assert.equal(labels.get(labels.folderId('Архив/Фото/2026/')), 'green');
+  assert.equal(shares.get(s.id).key, `s1:${moved}`);
+  labels.forgetFolder('Архив/');
+  assert.equal(labels.get(`s1:${moved}`), null);
+});

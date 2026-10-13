@@ -10,7 +10,7 @@
 //   получает предупреждение.
 import { config, onConfigChange } from './config.js';
 import { recordUsage } from './usage-history.js';
-import { categoryOf, compareKeys, folderFromKey, formatRef, isValidKey, nameFromKey, parseRef } from './keys.js';
+import { categoryOf, compareKeys, folderFromKey, formatRef, isValidFolder, isValidKey, nameFromKey, parseRef } from './keys.js';
 import { describeS3Error, Storage } from './s3.js';
 
 const GB = 1024 ** 3;
@@ -202,6 +202,70 @@ export async function listFolder(folder, { cursor, limit = 200 } = {}) {
 
 export async function createFolder(path) {
   return everywhere((st) => st.putFolderMarker(path));
+}
+
+// ---------- поиск по всему диску ----------
+const SEARCH_MAX_OBJECTS = 50_000; // на одно хранилище
+// toLowerCase, а не toLocaleLowerCase: без подгрузки ICU; кириллицу понижает правильно.
+const fold = (t) => t.normalize('NFC').toLowerCase().replaceAll('ё', 'е');
+
+/**
+ * Поиск файлов и папок по имени (подстрока, без учёта регистра и «ё»), типу и метке.
+ * Обходит бакеты потоком, в памяти — только найденное (не больше limit).
+ * @param {{q?: string, category?: string, match?: (key: string, isFolder: boolean) => boolean, limit?: number}} opts
+ */
+export async function search({ q = '', category, match, limit = 200 }) {
+  const needle = fold(q.trim());
+  const files = [];
+  const folders = new Map();
+  let complete = true;
+  const warnings = [];
+  const wantFolder = (p) => {
+    if (folders.has(p) || category || folders.size >= 50 || !isValidFolder(p)) return;
+    const name = p.slice(0, -1).split('/').pop();
+    if ((!needle || fold(name).includes(needle)) && (!match || match(p, true))) folders.set(p, { path: p, name });
+  };
+  for (const st of all()) {
+    try {
+      const down = skipWhileDown(st);
+      if (down) throw down;
+      const done = await st.forEachObject('', async (o) => {
+        if (o.rel.startsWith('.trash/')) return;
+        // Папки — по маркерам и по путям файлов.
+        let f = folderFromKey(o.rel);
+        while (f) {
+          wantFolder(f);
+          f = f.slice(0, f.slice(0, -1).lastIndexOf('/') + 1);
+        }
+        if (o.rel.endsWith('/') || !isValidKey(o.rel) || files.length >= limit) return;
+        const name = nameFromKey(o.rel);
+        if (needle && !fold(name).includes(needle)) return;
+        if (category && categoryOf(name) !== category) return;
+        const key = formatRef(st.id, o.rel);
+        if (match && !match(key, false)) return;
+        files.push({ ...fileInfo(st, o.rel, o.size, o.lastModified), folder: folderFromKey(o.rel) });
+      }, { max: SEARCH_MAX_OBJECTS });
+      complete &&= done;
+      markOk(st.id);
+    } catch (err) {
+      if (!err.skipped) markFailed(st.id, err);
+      warnings.push({ storage: st.name, error: err.skipped ? err.message : describeS3Error(err) });
+    }
+  }
+  return {
+    files: files.sort(byDateDesc),
+    folders: [...folders.values()],
+    truncated: files.length >= limit || !complete,
+    warnings,
+  };
+}
+
+/** Переименовать/переместить папку во всех хранилищах. 409, если на новом месте что-то есть. */
+export async function moveFolder(from, to) {
+  const { values: taken } = await everywhere((st) => st.hasObjects(to));
+  if (taken.some(Boolean)) throw Object.assign(new Error('Папка с таким именем уже есть'), { status: 409 });
+  const { values, warnings } = await everywhere((st) => st.movePrefix(from, to));
+  return { moved: values.reduce((a, v) => a + v.count, 0), warnings };
 }
 
 export async function deleteFolder(path) {

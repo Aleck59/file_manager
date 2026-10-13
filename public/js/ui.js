@@ -34,6 +34,7 @@ const ICONS = {
   upload: '<path d="M12 13v8"/><path d="m8 17 4-4 4 4"/><path d="M20.4 15.6A5 5 0 0 0 18 6h-1.3A8 8 0 1 0 4 14.3"/>',
   download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  tag: '<path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
   close: '<path d="M18 6 6 18M6 6l12 12"/>',
@@ -308,7 +309,7 @@ export function openMenu(anchor, items) {
       ? 'text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950'
       : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`,
     onclick: (e) => { e.stopPropagation(); close(); item.onSelect(); },
-  }, icon(item.icon), item.label)));
+  }, item.lead ?? icon(item.icon), item.label)));
   document.body.append(menu);
 
   const r = anchor.getBoundingClientRect();

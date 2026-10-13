@@ -4,6 +4,7 @@ import { favorites, recentFiles } from './library.js';
 import { knownFolders } from './tree.js';
 import { $, applyTheme, folderLabel, h, icon, prefs } from './ui.js';
 import { diskHash } from './views/disk.js';
+import { searchHash } from './views/search.js';
 
 let openDialogEl = null;
 
@@ -43,6 +44,9 @@ export function openPalette(ctx) {
       .sort((a, b) => b.s - a.s || a.c.order - b.c.order)
       .slice(0, 50)
       .map((x) => x.c);
+    // Всегда последней строкой — поиск по всему диску (по имени файла на сервере).
+    const raw = input.value.trim();
+    if (raw) shown.push({ group: 'Поиск', title: `Искать «${raw}» по всему диску`, icon: 'search', run: () => ctx.navigate(searchHash({ q: raw })) });
     active = Math.min(active, Math.max(0, shown.length - 1));
     let lastGroup = '';
     const items = [];
@@ -107,6 +111,8 @@ function buildCommands(ctx) {
   if (ctx.can('admin')) add('Переход', 'Пользователи', 'users', () => ctx.navigate('#/users'));
   add('Переход', 'Настройки', 'settings', () => ctx.navigate('#/settings'));
   if (ctx.can('admin')) add('Переход', 'Журнал действий', 'clock', () => ctx.navigate('#/audit'));
+  if (ctx.can('editor')) add('Переход', 'Корзина', 'trash', () => ctx.navigate('#/trash'));
+  add('Переход', 'Поиск по диску', 'search', () => ctx.navigate('#/search'));
 
   for (const f of favorites()) {
     if (f.type === 'folder') add('Избранное', f.name, 'folder', () => ctx.navigate(diskHash(f.path)), folderLabel(f.path));

@@ -84,3 +84,25 @@ export function forgetFolder(path) {
     if (next.length !== list.length) write(name, next);
   }
 }
+
+// Папку переименовали/переместили: закладки на неё, её подпапки и файлы внутри — следом.
+export function refolderInLibrary(oldPath, newPath) {
+  const swap = (p) => (p?.startsWith(oldPath) ? newPath + p.slice(oldPath.length) : p);
+  const swapKey = (key) => {
+    const i = key?.indexOf(':') ?? -1;
+    return i > 0 && key.slice(i + 1).startsWith(oldPath) ? key.slice(0, i + 1) + newPath + key.slice(i + 1 + oldPath.length) : key;
+  };
+  for (const name of ['favorites', 'recent']) {
+    const list = read(name);
+    let changed = false;
+    for (const item of list) {
+      const next = { path: swap(item.path), folder: swap(item.folder), key: swapKey(item.key) };
+      if (next.path !== item.path || next.folder !== item.folder || next.key !== item.key) {
+        for (const [k, v] of Object.entries(next)) if (v !== undefined) item[k] = v;
+        if (item.type === 'folder' && item.path === newPath) item.name = newPath.slice(0, -1).split('/').pop();
+        changed = true;
+      }
+    }
+    if (changed) write(name, list);
+  }
+}

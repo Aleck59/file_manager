@@ -148,10 +148,16 @@ export function folderBack(pathPrefix) {
   for (const s of shares) if (s.folder?.startsWith(pathPrefix) && s.missing) { s.missing = false; changed = true; }
   if (changed) persist();
 }
+// Папку переименовали/переместили: ссылки на неё, её подпапки и файлы внутри следуют за ней.
 export function refolder(oldPath, newPath) {
   let changed = false;
   for (const s of shares) {
     if (s.folder && s.folder.startsWith(oldPath)) { s.folder = newPath + s.folder.slice(oldPath.length); changed = true; }
+    if (s.type === 'file') {
+      const i = s.key.indexOf(':');
+      const rel = s.key.slice(i + 1);
+      if (rel.startsWith(oldPath)) { s.key = `${s.key.slice(0, i + 1)}${newPath}${rel.slice(oldPath.length)}`; changed = true; }
+    }
   }
   if (changed) persist();
 }

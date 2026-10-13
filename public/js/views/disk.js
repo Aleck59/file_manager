@@ -6,7 +6,9 @@ import { api } from '../api.js';
 import { closePreview, copyFileLink, isPreviewing, setPreviewEnabled, showPreview, TTL_LABELS } from '../preview.js';
 import { pickFolder } from '../folder-picker.js';
 import { openShareDialog } from '../share-dialog.js';
-import { forgetFolder, isFavorite, rememberOpened, removeFromLibrary, renameInLibrary, toggleFavorite } from '../library.js';
+import { forgetFolder, isFavorite, refolderInLibrary, rememberOpened, removeFromLibrary, renameInLibrary, toggleFavorite } from '../library.js';
+import { labelDot, labelMenuItem } from '../labels.js';
+import { searchHash } from './search.js';
 import { forgetThumb, thumbnail } from '../thumbs.js';
 import * as tree from '../tree.js';
 import {
@@ -233,6 +235,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     canEdit && { label: 'Копировать…', icon: 'copy', onSelect: () => copyFiles([file]) },
     canEdit && { label: 'Сделать копию', icon: 'copy', onSelect: () => copyFiles([file], folder) },
     canEdit && ctx.storages.length > 1 && { label: 'Перенести в хранилище…', icon: 'server', onSelect: () => transferFiles([file]) },
+    canEdit && labelMenuItem(() => btn, { key: file.key }, file, () => renderList()),
     canEdit && { label: 'Удалить', icon: 'trash', danger: true, onSelect: () => deleteFile(file) },
   ]);
 
@@ -247,6 +250,9 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     { label: 'Открыть', icon: 'folder', onSelect: () => ctx.navigate(diskHash(f.path)) },
     favoriteItem({ type: 'folder', path: f.path, name: f.name }),
     canEdit && { label: 'Поделиться…', icon: 'globe', onSelect: () => openShareDialog({ folder: f.path }) },
+    canEdit && { label: 'Переименовать', icon: 'pencil', onSelect: () => renameFolder(f) },
+    canEdit && { label: 'Переместить…', icon: 'move', onSelect: () => moveFolder(f) },
+    canEdit && labelMenuItem(() => btn, { folder: f.path }, f, () => renderList()),
     canEdit && { label: 'Удалить папку', icon: 'trash', danger: true, onSelect: () => deleteFolder(f) },
   ]);
 
@@ -260,14 +266,14 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     grid
       ? [h('span', { class: 'tile-media bg-brand-50 text-brand-600 dark:bg-brand-950/50 dark:text-brand-400' }, icon('folder', 'h-10 w-10')),
         h('span', { class: 'tile-body' },
-          h('span', { class: 'block truncate text-sm font-medium', title: f.name }, f.name),
+          h('span', { class: 'flex min-w-0 items-center gap-1.5' }, labelDot(f.label), h('span', { class: 'block truncate text-sm font-medium', title: f.name }, f.name)),
           h('span', { class: 'block text-xs text-slate-500 dark:text-slate-400' }, 'Папка')),
         h('span', { class: 'tile-actions' }, actionBtn('more', 'Действия с папкой', folderMenu(f)))]
       : [h('div', { class: 'flex min-w-0 items-center gap-3' },
         h('span', { class: 'check-cell' }),
         h('span', { class: 'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-950/60 dark:text-brand-400' }, icon('folder')),
         h('div', { class: 'min-w-0' },
-          h('p', { class: 'truncate text-sm font-medium', title: f.name }, f.name),
+          h('div', { class: 'flex min-w-0 items-center gap-2' }, h('p', { class: 'truncate text-sm font-medium', title: f.name }, f.name), labelDot(f.label)),
           h('p', { class: 'text-xs text-slate-500 md:hidden dark:text-slate-400' }, 'Папка'))),
       h('span', { class: 'hidden text-right text-sm text-slate-400 md:block' }, '—'),
       h('span', { class: 'hidden text-sm text-slate-500 md:block dark:text-slate-400' }, 'Папка'),
@@ -307,7 +313,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
       ? [h('span', { class: 'tile-media' }, thumbnail(file, { cls: 'h-full w-full', iconSize: 'h-9 w-9' })),
         h('span', { class: 'tile-check' }, check),
         h('span', { class: 'tile-body' },
-          h('span', { class: 'block truncate text-sm font-medium', title: file.name }, file.name),
+          h('span', { class: 'flex min-w-0 items-center gap-1.5' }, labelDot(file.label), h('span', { class: 'block truncate text-sm font-medium', title: file.name }, file.name)),
           h('span', { class: 'block truncate text-xs tabular-nums text-slate-500 dark:text-slate-400', title: formatDate(file.lastModified) },
             `${formatSize(file.size)} · ${formatDateShort(file.lastModified, { time: false })}`)),
         h('span', { class: 'tile-actions' }, actionBtn('more', 'Действия', fileMenu(file)))]
@@ -317,6 +323,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
         h('div', { class: 'min-w-0' },
           h('div', { class: 'flex min-w-0 items-center gap-2' },
             h('p', { class: 'truncate text-sm font-medium', title: file.name }, file.name),
+            labelDot(file.label),
             storageChip(file)),
           h('p', { class: 'truncate text-xs tabular-nums text-slate-500 md:hidden dark:text-slate-400' }, `${formatSize(file.size)} · ${formatDateShort(file.lastModified)}`))),
       h('span', { class: 'hidden text-right text-sm tabular-nums text-slate-500 md:block dark:text-slate-400' }, formatSize(file.size)),
@@ -375,6 +382,8 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
         h('p', { class: 'font-medium' }, state.query ? 'Ничего не найдено' : 'Папка пуста'),
         h('p', { class: 'mt-1 text-sm text-slate-500 dark:text-slate-400' },
           state.query ? 'Попробуйте изменить запрос.' : canEdit ? 'Перетащите сюда файлы или папки, вставьте скриншот (Ctrl+V) или нажмите «Загрузить».' : 'Здесь пока нет файлов.'),
+        state.query && h('div', { class: 'mt-5 flex justify-center' },
+          h('a', { class: 'btn-ghost', href: searchHash({ q: search.value.trim() }) }, icon('search'), 'Искать по всему диску')),
         canEdit && !state.query && h('div', { class: 'mt-5 flex justify-center gap-2' },
           h('button', { type: 'button', class: 'btn-primary', onclick: () => ctx.pickFiles(folder) }, icon('upload'), 'Загрузить файлы'),
           h('button', { type: 'button', class: 'btn-ghost', onclick: () => ctx.pickFolder(folder) }, icon('folderUp'), 'Папку')));
@@ -937,6 +946,50 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     } catch (err) {
       toast(err.message, 'error');
     }
+  }
+
+  async function renameFolder(f) {
+    await openDialog({
+      title: 'Переименовать папку',
+      text: 'Всё содержимое переедет вместе с папкой. Публичные ссылки и метки сохранятся; ссылки на скачивание, выданные раньше, перестанут работать.',
+      confirmLabel: 'Переименовать',
+      fields: [{ name: 'name', label: 'Новое название', value: f.name, maxlength: 100, select: [0, f.name.length] }],
+      async onSubmit({ name }) {
+        const trimmed = name.trim();
+        if (!trimmed) throw new Error('Введите название папки');
+        if (trimmed === f.name) return {};
+        const res = await api.moveFolder(f.path, { name: trimmed });
+        applyFolderMoved(f, res.folder);
+        toast(`Папка переименована в «${res.folder.name}»`, 'success');
+        return res;
+      },
+    });
+  }
+
+  async function moveFolder(f) {
+    const parent = f.path.slice(0, f.path.length - f.name.length - 1);
+    const target = await pickFolder({ title: `Переместить папку «${f.name}»`, current: parent });
+    if (target === null || target === parent) return;
+    if (target.startsWith(f.path)) return toast('Нельзя переместить папку внутрь неё самой', 'error');
+    try {
+      const res = await api.moveFolder(f.path, { parent: target });
+      applyFolderMoved(f, res.folder);
+      toast(`Папка перемещена в «${folderLabel(target)}»`, 'success');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  function applyFolderMoved(f, moved) {
+    const old = f.path;
+    refolderInLibrary(old, moved.path);
+    tree.forget(old);
+    const stays = moved.path.slice(0, moved.path.length - moved.name.length - 1) === folder;
+    state.folders = state.folders.filter((x) => x.path !== old);
+    if (stays) state.folders = [...state.folders, { ...f, path: moved.path, name: moved.name }].sort((a, b) => a.name.localeCompare(b.name, 'ru', { numeric: true }));
+    tree.setChildren(folder, state.folders);
+    renderList();
+    ctx.refreshStats();
   }
 
   function addFolder(created) {

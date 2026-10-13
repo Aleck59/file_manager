@@ -34,6 +34,7 @@
   @media (prefers-reduced-motion: reduce) {
     .progress.is-finishing > div, .upload-row { animation: none; }
   }
+  .label-chip { @apply inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:bg-slate-100 aria-pressed:border-brand-500 aria-pressed:bg-brand-50 aria-pressed:text-brand-700 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800 dark:aria-pressed:bg-brand-950/50 dark:aria-pressed:text-brand-300; }
   .dropzone-active { @apply border-brand-500 bg-brand-50 dark:bg-brand-950/40; }
   dialog::backdrop { background: rgb(15 23 42 / 0.5); backdrop-filter: blur(2px); }
 }

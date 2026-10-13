@@ -14,6 +14,7 @@ import { filesRouter } from './routes/files.js';
 import { settingsRouter } from './routes/settings.js';
 import { trashRouter } from './routes/trash.js';
 import * as trash from './trash.js';
+import * as labelsStore from './labels.js';
 import { usersRouter } from './routes/users.js';
 import { initUsers } from './users.js';
 
@@ -97,6 +98,7 @@ export function shutdown(code = 0) {
   sessionsRegistry.flush();
   sharesStore.flush();
   apiTokens.flush();
+  labelsStore.flush();
   server.close(() => process.exit(code));
   server.closeAllConnections?.();
   setTimeout(() => process.exit(code), 3000).unref();
