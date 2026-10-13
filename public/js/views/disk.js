@@ -156,6 +156,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', onclick: () => bulkCopyLinks() }, icon('link'), h('span', { class: 'hidden xl:inline' }, 'Ссылки')),
     canEdit && h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', onclick: () => bulkMove() }, icon('move'), h('span', { class: 'hidden xl:inline' }, 'Переместить')),
     canEdit && h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', title: 'Копировать', 'aria-label': 'Копировать выбранные', onclick: () => copyFiles(checkedFiles()) }, icon('copy'), h('span', { class: 'hidden 2xl:inline' }, 'Копировать')),
+    canEdit && ctx.storages.length > 1 && h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', title: 'Перенести в другое хранилище', 'aria-label': 'Перенести выбранные в другое хранилище', onclick: () => transferFiles(checkedFiles()) }, icon('server')),
     canEdit && h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5 text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950', onclick: () => bulkDelete() }, icon('trash'), h('span', { class: 'hidden xl:inline' }, 'Удалить')));
 
   // ---------- разметка ----------
@@ -228,6 +229,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     canEdit && { label: 'Переместить…', icon: 'move', onSelect: () => moveFile(file) },
     canEdit && { label: 'Копировать…', icon: 'copy', onSelect: () => copyFiles([file]) },
     canEdit && { label: 'Сделать копию', icon: 'copy', onSelect: () => copyFiles([file], folder) },
+    canEdit && ctx.storages.length > 1 && { label: 'Перенести в хранилище…', icon: 'server', onSelect: () => transferFiles([file]) },
     canEdit && { label: 'Удалить', icon: 'trash', danger: true, onSelect: () => deleteFile(file) },
   ]);
 
@@ -544,6 +546,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
           { label: `Скопировать ссылки (${state.checked.size})`, icon: 'link', onSelect: bulkCopyLinks },
           canEdit && { label: 'Переместить…', icon: 'move', onSelect: bulkMove },
           canEdit && { label: 'Копировать…', icon: 'copy', onSelect: () => copyFiles(checkedFiles()) },
+          canEdit && ctx.storages.length > 1 && { label: 'Перенести в хранилище…', icon: 'server', onSelect: () => transferFiles(checkedFiles()) },
           canEdit && { label: `Удалить (${state.checked.size})`, icon: 'trash', danger: true, onSelect: bulkDelete },
         ]);
       }
@@ -795,6 +798,49 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     if (failed) load();
   }
 
+  // ---------- перенос между хранилищами ----------
+  function pickStorage(files) {
+    return new Promise((resolve) => {
+      const from = new Set(files.map((f) => f.storage));
+      let chosen = null;
+      const options = ctx.storages.map((st) => {
+        const only = from.size === 1 && from.has(st.id);
+        const input = h('input', { type: 'radio', name: 'target-storage', value: st.id, class: 'check', disabled: only,
+          onchange: () => { chosen = st; ok.disabled = false; } });
+        return h('label', { class: `flex items-center gap-3 rounded-lg border border-slate-200 px-3 py-2.5 text-sm dark:border-slate-700 ${only ? 'opacity-50' : 'cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800'}` },
+          input, icon('server', 'h-4 w-4 text-slate-400'), h('span', { class: 'flex-1' }, st.name), only && h('span', { class: 'text-xs text-slate-500' }, 'сейчас здесь'));
+      });
+      const ok = h('button', { type: 'button', class: 'btn-primary', disabled: true, onclick: () => { dialog.close(); resolve(chosen); } }, 'Перенести');
+      const dialog = h('dialog', { class: 'w-[min(28rem,calc(100%-2rem))] rounded-2xl bg-white p-0 text-slate-800 shadow-xl dark:bg-slate-900 dark:text-slate-200' },
+        h('div', { class: 'space-y-4 p-6' },
+          h('h3', { class: 'text-lg font-semibold' }, files.length === 1 ? `Перенести «${files[0].name}»` : `Перенести ${pluralize(files.length, FILES)}`),
+          h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' },
+            'Файл останется в той же папке диска, но физически переедет в другой бакет. Сервер скачает его и загрузит заново — это займёт время и трафик VDS. Ссылки, выданные раньше, перестанут работать.'),
+          h('div', { class: 'space-y-2', role: 'radiogroup', 'aria-label': 'Хранилище' }, options),
+          h('div', { class: 'flex justify-end gap-2' },
+            h('button', { type: 'button', class: 'btn-ghost', onclick: () => dialog.close() }, 'Отмена'), ok)));
+      dialog.addEventListener('close', () => { dialog.remove(); resolve(null); });
+      document.body.append(dialog);
+      dialog.showModal();
+    });
+  }
+
+  // Файлы переносятся по одному (сервер одновременно ведёт не больше двух переносов).
+  async function transferFiles(files) {
+    const target = await pickStorage(files);
+    if (!target) return;
+    let moved = 0;
+    for (const file of files.filter((f) => f.storage !== target.id)) {
+      try {
+        const job = await ctx.transferFile(file, target);
+        if (job?.status === 'done') moved++;
+      } catch (err) {
+        toast(`${file.name}: ${err.message}`, 'error');
+      }
+    }
+    if (moved) toast(`Перенесено в «${target.name}»: ${pluralize(moved, FILES)}`, 'success');
+  }
+
   // Цель перетаскивания: папка в списке, в дереве или в хлебных крошках.
   function moveByKeys(keys, target) {
     const set = new Set(String(keys).split('\n'));
@@ -921,6 +967,12 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
       } else {
         return;
       }
+      renderList();
+    },
+    // Перенос в другое хранилище завершён: ключ файла сменился (префикс хранилища).
+    onTransferred(oldKey, file) {
+      if (!state.files.some((f) => f.key === oldKey)) return;
+      applyMoved(oldKey, file, folder);
       renderList();
     },
     // Загрузка с заменой: старые версии файла удалены.

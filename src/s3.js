@@ -394,6 +394,12 @@ export class Storage {
     return parts.sort((a, b) => a.PartNumber - b.PartNumber);
   }
 
+  // Для переноса между хранилищами: объект читается потоком (см. transfer.js).
+  async getStream(rel) {
+    const out = await this.send(new GetObjectCommand({ Bucket: this.bucket, Key: this.abs(rel) }));
+    return { body: out.Body, contentType: out.ContentType, size: out.ContentLength };
+  }
+
   // Для загрузки по ссылке: данные идут через сервер частями (см. url-import.js).
   putBuffer(rel, body, contentType) {
     return this.send(new PutObjectCommand({ Bucket: this.bucket, Key: this.abs(rel), Body: body, ContentLength: body.length, ContentType: contentType, StorageClass: this.storageClass }));

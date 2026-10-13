@@ -9,6 +9,7 @@ import {
 import { audit, HttpError } from '../middleware/security.js';
 import * as storages from '../storages.js';
 import { usageHistory } from '../usage-history.js';
+import { startTransfer } from '../transfer.js';
 import * as urlImport from '../url-import.js';
 
 export const filesRouter = Router();
@@ -149,6 +150,33 @@ filesRouter.get('/uploads/url/:id', canEdit, (req, res) => {
 });
 
 filesRouter.post('/uploads/url/:id/cancel', canEdit, (req, res) => {
+  if (!urlImport.cancelJob(req.params.id, req.user.username)) throw new HttpError(404, 'Задание не найдено');
+  res.json({ ok: true });
+});
+
+// ---------- фоновые задания: перенос между хранилищами ----------
+// POST /api/files/transfer {key, storage} → 202 {job}
+filesRouter.post('/files/transfer', canEdit, async (req, res) => {
+  const storage = req.body?.storage;
+  if (typeof storage !== 'string') throw new HttpError(400, 'Не указано хранилище');
+  try {
+    const job = await startTransfer({
+      key: req.body?.key, storageId: storage, user: req.user.username,
+      onDone: (j) => { if (j.status === 'done') audit(req, 'file.transfer', { key: j.file.key, to: j.target, size: j.size }); },
+    });
+    res.status(202).json({ job });
+  } catch (err) {
+    throw err instanceof HttpError ? err : new HttpError(err.status ?? 400, err.message);
+  }
+});
+
+filesRouter.get('/jobs/:id', canEdit, (req, res) => {
+  const job = urlImport.getJob(req.params.id, req.user.username);
+  if (!job) throw new HttpError(404, 'Задание не найдено');
+  res.json({ job });
+});
+
+filesRouter.post('/jobs/:id/cancel', canEdit, (req, res) => {
   if (!urlImport.cancelJob(req.params.id, req.user.username)) throw new HttpError(404, 'Задание не найдено');
   res.json({ ok: true });
 });

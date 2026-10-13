@@ -38,6 +38,7 @@ const ctx = {
   },
   enqueue,
   importFromUrl,
+  transferFile,
   refreshStats,
   selectAfterNavigate: null,
   newFolderHere: null,
@@ -356,20 +357,30 @@ async function importFromUrl(folder) {
     },
   });
   if (!values?.job) return;
-  trackImport(values.job, folder);
+  trackJob(values.job, { folder });
 }
 
-function trackImport(job, folder) {
+// Перенос файла в другое хранилище (байты идут через сервер). Промис — по завершении.
+async function transferFile(file, storage) {
+  const { job } = await api.transfer(file.key, storage.id);
+  return trackJob(job, { kind: 'transfer', oldKey: file.key, label: `${file.name} → ${storage.name}` });
+}
+
+// Строка фонового задания (загрузка по ссылке или перенос) в панели загрузок.
+function trackJob(job, { folder = '', kind = 'url', oldKey, label } = {}) {
+  let settle;
+  const done = new Promise((resolve) => { settle = resolve; });
   clearTimeout(hideTimer);
   if (!active && !queue.length && !importsActive) { finished = 0; failed = 0; $('#upload-list').replaceChildren(); }
   $('#uploads').classList.remove('hidden');
   importsActive++;
   const status = h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400' }, 'подключение…');
   const bar = h('div');
-  const title = h('p', { class: 'truncate text-sm font-medium' }, job.name);
-  const cancel = h('button', { type: 'button', class: 'icon-btn h-7 w-7', title: 'Отменить', 'aria-label': 'Отменить загрузку по ссылке', onclick: () => api.importCancel(job.id).catch(() => {}) }, icon('close'));
+  const title = h('p', { class: 'truncate text-sm font-medium' }, label ?? job.name);
+  const what = kind === 'transfer' ? 'перенос в другое хранилище' : 'загрузку по ссылке';
+  const cancel = h('button', { type: 'button', class: 'icon-btn h-7 w-7', title: 'Отменить', 'aria-label': `Отменить ${what}`, onclick: () => api.jobCancel(job.id).catch(() => {}) }, icon('close'));
   const row = h('li', { class: 'upload-row flex items-center gap-3 px-4 py-3' },
-    h('span', { class: 'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-600 dark:bg-sky-950/60 dark:text-sky-400', title: 'Загрузка по ссылке' }, icon('globe')),
+    h('span', { class: 'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-600 dark:bg-sky-950/60 dark:text-sky-400', title: kind === 'transfer' ? 'Перенос между хранилищами' : 'Загрузка по ссылке' }, icon(kind === 'transfer' ? 'server' : 'globe')),
     h('div', { class: 'min-w-0 flex-1' },
       h('div', { class: 'flex items-baseline justify-between gap-3' }, title, status),
       h('div', { class: 'progress mt-2' }, bar)),
@@ -390,13 +401,14 @@ function trackImport(job, folder) {
   const poll = async () => {
     let j;
     try {
-      ({ job: j } = await api.importStatus(job.id));
+      ({ job: j } = await api.jobStatus(job.id));
     } catch (err) {
       status.textContent = 'Ошибка';
+      settle(null);
       return finish(false);
     }
-    title.textContent = j.name;
-    title.title = j.name;
+    title.textContent = label ?? j.name;
+    title.title = title.textContent;
     if (j.size && !progress) progress = new ProgressView(bar, status, j.size);
     if (progress) progress.update(j.loaded);
     else if (j.loaded) status.textContent = `${formatSize(j.loaded)} скачано`;
@@ -405,18 +417,21 @@ function trackImport(job, folder) {
       finished++;
       finish(true);
       status.textContent = 'Готово';
-      current?.onUploaded?.(j.file, j.folder ?? folder);
+      if (kind === 'transfer') current?.onTransferred?.(oldKey, j.file);
+      else current?.onUploaded?.(j.file, j.folder ?? folder);
       refreshStats();
     } else {
-      if (j.status === 'cancelled') { finish(false); row.remove(); return; }
+      if (j.status === 'cancelled') { finish(false); row.remove(); settle(j); return; }
       failed++;
       finish(false);
       status.textContent = 'Ошибка';
       status.classList.add('text-rose-600');
       toast(`${j.name}: ${j.error}`, 'error');
     }
+    settle(j);
   };
   poll();
+  return done;
 }
 
 // ---------- пауза ----------

@@ -58,8 +58,9 @@ export const api = {
   partUrls: (key, uploadId, partNumbers) => request('POST', '/api/uploads/parts', { key, uploadId, partNumbers }),
   completeUpload: (key, uploadId) => request('POST', '/api/uploads/complete', { key, uploadId }),
   importUrl: (url, folder) => request('POST', '/api/uploads/url', { url, folder }),
-  importStatus: (id) => request('GET', `/api/uploads/url/${encodeURIComponent(id)}`),
-  importCancel: (id) => request('POST', `/api/uploads/url/${encodeURIComponent(id)}/cancel`),
+  jobStatus: (id) => request('GET', `/api/jobs/${encodeURIComponent(id)}`),
+  jobCancel: (id) => request('POST', `/api/jobs/${encodeURIComponent(id)}/cancel`),
+  transfer: (key, storage) => request('POST', '/api/files/transfer', { key, storage }),
   abortUpload: (key, uploadId) => request('POST', '/api/uploads/abort', { key, uploadId }),
 
   downloadLink: (key, ttl) => request('POST', '/api/files/link', { key, ttl }),

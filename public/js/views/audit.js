@@ -11,6 +11,7 @@ const ACTIONS = {
   'file.delete': ['Удаление файла', 'trash'],
   'file.move': ['Перемещение / переименование', 'move'],
   'file.copy': ['Копирование файла', 'copy'],
+  'file.transfer': ['Перенос в другое хранилище', 'server'],
   'folder.create': ['Новая папка', 'folderPlus'],
   'folder.delete': ['Удаление папки', 'trash'],
   'user.create': ['Новый пользователь', 'users'],
@@ -42,6 +43,7 @@ function describe(e) {
   switch (e.action) {
     case 'file.upload': case 'file.delete': return `${nameFromKey(d.key)}${d.size ? ` · ${formatSize(d.size)}` : ''} · ${folderLabel(folderOf(d.key))}`;
     case 'file.upload_url': return `${nameFromKey(d.key)} · ${formatSize(d.size ?? 0)} · с ${d.host}`;
+    case 'file.transfer': return `${nameFromKey(d.key)} · ${formatSize(d.size ?? 0)} → ${d.to}`;
     case 'file.move': case 'file.copy': return `${nameFromKey(d.from)} → ${folderLabel(folderOf(d.to))} / ${nameFromKey(d.to)}`;
     case 'folder.create': case 'folder.delete': return folderLabel(d.path ?? '');
     case 'settings.update': case 'settings.reset': return (d.keys ?? []).join(', ');

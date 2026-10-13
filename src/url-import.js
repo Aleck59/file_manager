@@ -120,12 +120,68 @@ function fileNameFrom(res, url) {
   return 'download';
 }
 
+// ---------- поток в хранилище частями ----------
+/**
+ * Читает source (Readable) и кладёт в S3: до 5 МБ — одним PutObject, больше — multipart
+ * частями по 5 МБ. Память — одна часть. job.loaded растёт по мере чтения.
+ * onUploadId сообщает id multipart-загрузки (чтобы при ошибке её отменить).
+ * @returns {Promise<string|null>} uploadId или null
+ */
+export async function streamInto(st, rel, contentType, source, job, onUploadId = () => {}) {
+  const parts = [];
+  let chunks = [];
+  let buffered = 0;
+  let uploadId = null;
+  const flush = async (final) => {
+    const body = Buffer.concat(chunks, buffered);
+    chunks = [];
+    buffered = 0;
+    if (!uploadId) {
+      if (final) return st.putBuffer(rel, body, contentType); // небольшой файл — одним запросом
+      uploadId = await st.createMultipart(rel, contentType);
+      onUploadId(uploadId);
+    }
+    if (final && !body.length && parts.length) return;
+    const n = parts.length + 1;
+    parts.push({ PartNumber: n, ETag: await st.uploadPartBuffer(rel, uploadId, n, body) });
+  };
+  for await (const chunk of source) {
+    if (job.controller.signal.aborted) throw new Error('Отменено');
+    job.loaded += chunk.length;
+    if (job.loaded > (job.max ?? Infinity)) {
+      source.destroy?.();
+      throw new Error(`Файл больше допустимого размера (${Math.round(job.max / 1024 / 1024)} МБ)`);
+    }
+    chunks.push(chunk);
+    buffered += chunk.length;
+    if (buffered >= PART) await flush(false);
+  }
+  if (job.controller.signal.aborted) throw new Error('Отменено');
+  await flush(true);
+  if (uploadId) await st.completeMultipart(rel, uploadId, parts);
+  return uploadId;
+}
+
 // ---------- задания ----------
-const jobs = new Map(); // id → job
+const jobs = new Map(); // id → job (загрузки по ссылке и переносы между хранилищами)
+
+/** Новое задание в общем реестре (статус — GET /api/jobs/:id). */
+export function createJob(fields) {
+  const job = {
+    id: crypto.randomBytes(9).toString('base64url'), size: null, loaded: 0, status: 'running', error: null, file: null,
+    startedAt: new Date().toISOString(), controller: new AbortController(), ...fields,
+  };
+  jobs.set(job.id, job);
+  return job;
+}
+export function finishJob(job) {
+  setTimeout(() => jobs.delete(job.id), KEEP_FINISHED_MS).unref();
+}
+export const activeJobs = () => [...jobs.values()].filter((j) => j.status === 'running');
 
 function publicJob(job) {
-  const { id, name, folder, size, loaded, status, error, file, startedAt } = job;
-  return { id, name, folder, size, loaded, status, error, file, startedAt };
+  const { id, type, name, folder, size, loaded, status, error, file, startedAt, target } = job;
+  return { id, type, name, folder, size, loaded, status, error, file, startedAt, target };
 }
 
 export function getJob(id, user) {
@@ -147,17 +203,12 @@ export function cancelJob(id, user) {
 export async function startImport({ url: raw, folder, user, onDone }) {
   if (!isValidFolder(folder)) throw Object.assign(new Error('Некорректный путь папки'), { status: 400 });
   const url = parseImportUrl(raw);
-  const running = [...jobs.values()].filter((j) => j.status === 'running');
+  const running = activeJobs();
   if (running.length >= MAX_ACTIVE) throw Object.assign(new Error('Сервер уже скачивает файлы по ссылкам — попробуйте через минуту'), { status: 429 });
   if (running.some((j) => j.user === user)) throw Object.assign(new Error('Дождитесь окончания предыдущей загрузки по ссылке'), { status: 429 });
   await resolvePublic(url.hostname); // быстрый отказ до создания задания
 
-  const job = {
-    id: crypto.randomBytes(9).toString('base64url'), user, folder, host: url.host,
-    name: sanitizeFileName(fileNameFrom({ headers: {} }, url)), size: null, loaded: 0,
-    status: 'running', error: null, file: null, startedAt: new Date().toISOString(), controller: new AbortController(),
-  };
-  jobs.set(job.id, job);
+  const job = createJob({ type: 'url', user, folder, host: url.host, name: sanitizeFileName(fileNameFrom({ headers: {} }, url)) });
   run(job, url).then(() => onDone?.(job), () => onDone?.(job));
   return publicJob(job);
 }
@@ -175,40 +226,15 @@ async function run(job, url) {
       throw new Error(`Файл больше допустимого размера (${Math.round(config.limits.maxFileSize / 1024 / 1024)} МБ)`);
     }
     job.size = Number.isFinite(length) ? length : null;
+    job.max = config.limits.maxFileSize;
     job.name = sanitizeFileName(fileNameFrom(res, finalUrl));
     const contentType = safeContentType(String(res.headers['content-type'] ?? '').split(';')[0]);
     st = await storages.pickForUpload(job.size ?? 0);
     rel = generateKey(job.name, job.folder);
 
-    const parts = [];
-    let chunks = [];
-    let buffered = 0;
-    const flush = async (final) => {
-      const body = Buffer.concat(chunks, buffered);
-      chunks = [];
-      buffered = 0;
-      if (!uploadId) {
-        if (final) return st.putBuffer(rel, body, contentType); // небольшой файл — одним запросом
-        uploadId = await st.createMultipart(rel, contentType);
-      }
-      if (final && !body.length && parts.length) return;
-      const n = parts.length + 1;
-      parts.push({ PartNumber: n, ETag: await st.uploadPartBuffer(rel, uploadId, n, body) });
-    };
     res.setTimeout(TIMEOUT_MS, () => res.destroy(new Error('Скачивание прервалось: сервер по ссылке замолчал')));
-    for await (const chunk of res) {
-      job.loaded += chunk.length;
-      if (job.loaded > config.limits.maxFileSize) {
-        res.destroy();
-        throw new Error(`Файл больше допустимого размера (${Math.round(config.limits.maxFileSize / 1024 / 1024)} МБ)`);
-      }
-      chunks.push(chunk);
-      buffered += chunk.length;
-      if (buffered >= PART) await flush(false);
-    }
-    if (signal.aborted) throw new Error('Отменено');
-    await flush(true);
-    if (uploadId) await st.completeMultipart(rel, uploadId, parts);
+    await streamInto(st, rel, contentType, res, job, (n) => { uploadId = n; });
+    uploadId = null; // загрузка завершена — отменять нечего
     storages.noteUploaded(st.id, job.loaded);
     storages.invalidateStats();
     job.size = job.loaded;
@@ -219,6 +245,6 @@ async function run(job, url) {
     job.status = signal.aborted ? 'cancelled' : 'error';
     job.error = signal.aborted ? 'Отменено' : (err.message || 'Ошибка загрузки');
   } finally {
-    setTimeout(() => jobs.delete(job.id), KEEP_FINISHED_MS).unref();
+    finishJob(job);
   }
 }
