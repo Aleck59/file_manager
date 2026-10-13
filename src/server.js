@@ -4,6 +4,8 @@ import { currentUser, requireAuth, requireRole } from './auth.js';
 import { createApp, json, Router, serveStatic } from './http.js';
 import { branding, currentLogo, MAX_LOGO, saveLogo } from './branding.js';
 import { audit, errorHandler, HttpError, rateLimit, sameOriginOnly, securityHeaders } from './middleware/security.js';
+import * as apiTokens from './api-tokens.js';
+import * as sessionsRegistry from './sessions.js';
 import { adminRouter } from './routes/admin.js';
 import { authRouter } from './routes/auth.js';
 import { filesRouter } from './routes/files.js';
@@ -79,6 +81,8 @@ const server = app.listen(config.port, config.host, () => {
 });
 
 export function shutdown(code = 0) {
+  sessionsRegistry.flush();
+  apiTokens.flush();
   server.close(() => process.exit(code));
   server.closeAllConnections?.();
   setTimeout(() => process.exit(code), 3000).unref();

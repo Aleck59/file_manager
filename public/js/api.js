@@ -38,6 +38,12 @@ export const api = {
   me: () => request('GET', '/api/auth/me'),
   logout: () => request('POST', '/api/auth/logout'),
   changePassword: (currentPassword, newPassword) => request('POST', '/api/auth/password', { currentPassword, newPassword }),
+  sessions: () => request('GET', '/api/auth/sessions'),
+  revokeSession: (id) => request('DELETE', `/api/auth/sessions/${encodeURIComponent(id)}`),
+  revokeOtherSessions: () => request('POST', '/api/auth/sessions/revoke-others'),
+  tokens: () => request('GET', '/api/auth/tokens'),
+  createToken: (name, readOnly) => request('POST', '/api/auth/tokens', { name, readOnly }),
+  revokeToken: (id) => request('DELETE', `/api/auth/tokens/${encodeURIComponent(id)}`),
 
   stats: () => request('GET', '/api/stats'),
   // Папки сортируются здесь, «по-русски» и с учётом чисел (на сервере — без ICU ради памяти).

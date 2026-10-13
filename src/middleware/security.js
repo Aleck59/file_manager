@@ -64,6 +64,8 @@ export function securityHeaders(req, res, next) {
 // Вместе с SameSite=Strict cookie этого достаточно без CSRF-токенов.
 export function sameOriginOnly(req, res, next) {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  // API-токен без cookie: браузер сам такой заголовок не отправит — CSRF невозможен.
+  if (/^Bearer\s/i.test(req.headers.authorization ?? '') && !req.headers.cookie) return next();
   const origin = req.get('origin');
   const fetchSite = req.get('sec-fetch-site');
   if (origin === config.appOrigin || (!origin && fetchSite === 'same-origin')) return next();

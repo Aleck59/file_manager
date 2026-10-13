@@ -6,7 +6,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import * as apiTokens from './api-tokens.js';
 import { config } from './config.js';
+import * as sessions from './sessions.js';
 import { verifyPassword } from './password.js';
 import { getUser, ROLES } from './users.js';
 
@@ -62,7 +64,25 @@ export function revokeToken(token) {
   const parts = token.split('.');
   revoked.set(parts[4], Number(parts[2]));
   persistRevoked();
+  sessions.forget(parts[3]);
 }
+
+/** Завершает одну из сессий пользователя (по id из списка). */
+export function revokeSession(user, id) {
+  const s = sessions.get(id);
+  if (!s || s.user !== user.username) return false;
+  revoked.set(s.sig, s.exp);
+  persistRevoked();
+  sessions.forget(id);
+  return true;
+}
+
+// Части токена: [v3, логин, exp, nonce, подпись]
+const tokenParts = (token) => {
+  const p = token.split('.');
+  return { nonce: p[3], sig: p[4], exp: Number(p[2]) };
+};
+export const sessionIdOf = (token) => (typeof token === 'string' ? token.split('.')[3] : null);
 
 // Возвращает пользователя по токену или null.
 export function userFromToken(token) {
@@ -96,7 +116,10 @@ function readCookie(req, name) {
 }
 
 export function currentUser(req) {
-  return userFromToken(readCookie(req, cookieName()));
+  const token = readCookie(req, cookieName());
+  const user = userFromToken(token);
+  if (user) sessions.touch({ ...tokenParts(token), user, req });
+  return user;
 }
 
 export function currentToken(req) {
@@ -104,7 +127,9 @@ export function currentToken(req) {
 }
 
 export function setSessionCookie(res, user) {
-  res.cookie(cookieName(), issueToken(user), {
+  const token = issueToken(user);
+  sessions.register({ ...tokenParts(token), user, req: res.req });
+  res.cookie(cookieName(), token, {
     httpOnly: true,
     secure: config.secureCookies,
     sameSite: 'strict',
@@ -118,9 +143,26 @@ export function clearSessionCookie(res) {
 }
 
 export function requireAuth(req, res, next) {
-  const user = currentUser(req);
+  let user = currentUser(req);
+  // API-токен (скрипты): только если нет cookie-сессии.
+  if (!user && req.headers.authorization) {
+    const token = apiTokens.verify(req.headers.authorization, req.ip);
+    user = token && getUser(token.user);
+    if (user) {
+      req.apiToken = token;
+      if (token.readOnly && !['GET', 'HEAD'].includes(req.method)) {
+        return res.status(403).json({ error: 'Токен только для чтения' });
+      }
+    }
+  }
   if (!user) return res.status(401).json({ error: 'Требуется вход в систему' });
   req.user = user;
+  next();
+}
+
+/** Только обычный вход (не API-токен) — для управления токенами и сессиями. */
+export function requireSession(req, res, next) {
+  if (req.apiToken) return res.status(403).json({ error: 'Это действие недоступно по API-токену' });
   next();
 }
 

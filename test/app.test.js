@@ -438,3 +438,33 @@ test('загрузка по ссылке: localhost и частные имена
   await assert.rejects(startImport({ url: 'http://localhost/', folder: '', user: 'u2' }), /внутреннюю сеть/);
   await assert.rejects(startImport({ url: 'http://[::1]/', folder: '', user: 'u3' }), /внутреннюю сеть/);
 });
+
+test('API-токены: проверка, только чтение, отзыв; секрет не хранится', async () => {
+  const apiTokens = await import('../src/api-tokens.js');
+  const { token, info } = apiTokens.create('admin', { name: 'Бэкап', readOnly: true });
+  assert.match(token, /^fmt_[0-9a-f]{12}_[A-Za-z0-9_-]{43}$/);
+  assert.equal(apiTokens.verify(`Bearer ${token}`, '1.2.3.4').readOnly, true);
+  assert.equal(apiTokens.verify(`Bearer ${token.slice(0, -1)}${token.endsWith('A') ? 'B' : 'A'}`), null, 'чужой секрет');
+  assert.equal(apiTokens.verify(token), null, 'без Bearer');
+  const saved = fs.readFileSync(path.join(dataDir, 'api-tokens.json'), 'utf8');
+  assert.ok(!saved.includes(token.split('_')[2]), 'в файле только хеш');
+  assert.throws(() => apiTokens.create('admin', { name: ' ' }), /название/);
+  assert.equal(apiTokens.revoke('someone-else', info.id), false, 'чужой токен не отозвать');
+  assert.equal(apiTokens.revoke('admin', info.id), true);
+  assert.equal(apiTokens.verify(`Bearer ${token}`), null, 'после отзыва');
+});
+
+test('сессии: вход регистрируется, завершение отдельной сессии', async () => {
+  const sessions = await import('../src/sessions.js');
+  const user = users.getUser('admin');
+  const issued = [];
+  const res = { req: { ip: '10.0.0.5', headers: { 'user-agent': 'Test/1.0' } }, cookie: (n, v) => issued.push(v) };
+  auth.setSessionCookie(res, user);
+  auth.setSessionCookie(res, user);
+  const ids = sessions.listFor(user).map((s) => s.id);
+  for (const t of issued) assert.ok(ids.includes(auth.sessionIdOf(t)));
+  assert.equal(auth.revokeSession({ username: 'чужой' }, auth.sessionIdOf(issued[0])), false);
+  assert.equal(auth.revokeSession(user, auth.sessionIdOf(issued[0])), true);
+  assert.equal(auth.userFromToken(issued[0]), null, 'завершённая сессия недействительна');
+  assert.ok(auth.userFromToken(issued[1]), 'другая продолжает работать');
+});

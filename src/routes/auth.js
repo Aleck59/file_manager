@@ -1,9 +1,14 @@
 import { Router } from '../http.js';
 import * as auditLog from '../audit-log.js';
-import { authenticate, clearSessionCookie, currentToken, currentUser, hasRole, requireAuth, revokeToken, setSessionCookie } from '../auth.js';
+import * as apiTokens from '../api-tokens.js';
+import {
+  authenticate, clearSessionCookie, currentToken, currentUser, hasRole, requireAuth, requireSession, revokeSession, revokeToken,
+  sessionIdOf, setSessionCookie,
+} from '../auth.js';
+import * as sessions from '../sessions.js';
 import { config } from '../config.js';
 import * as storages from '../storages.js';
-import { HttpError, rateLimit } from '../middleware/security.js';
+import { audit, HttpError, rateLimit } from '../middleware/security.js';
 import { hashPassword, verifyPassword } from '../password.js';
 import { getUser, publicUser, updateUser } from '../users.js';
 
@@ -82,5 +87,49 @@ authRouter.post('/password', requireAuth, loginLimiter, async (req, res) => {
   const result = updateUser(req.user.username, { passwordHash: await hashPassword(newPassword) });
   if (result.error) throw new HttpError(result.status ?? 400, result.error);
   setSessionCookie(res, getUser(req.user.username));
+  res.json({ ok: true });
+});
+
+// ---------- сессии: где выполнен вход ----------
+authRouter.get('/sessions', requireAuth, requireSession, (req, res) => {
+  const current = sessionIdOf(currentToken(req));
+  res.json({ sessions: sessions.listFor(req.user).map((x) => ({ ...x, current: x.id === current })) });
+});
+
+// DELETE /api/auth/sessions/:id — завершить сессию (свою; текущую — через «Выйти»)
+authRouter.delete('/sessions/:id', requireAuth, requireSession, (req, res) => {
+  if (req.params.id === sessionIdOf(currentToken(req))) throw new HttpError(400, 'Это текущая сессия — для неё нажмите «Выйти»');
+  if (!revokeSession(req.user, req.params.id)) throw new HttpError(404, 'Сессия не найдена');
+  audit(req, 'session.revoke', { count: 1 });
+  res.json({ ok: true });
+});
+
+// POST /api/auth/sessions/revoke-others — выйти на всех остальных устройствах
+authRouter.post('/sessions/revoke-others', requireAuth, requireSession, (req, res) => {
+  const current = sessionIdOf(currentToken(req));
+  let count = 0;
+  for (const x of sessions.listFor(req.user)) if (x.id !== current && revokeSession(req.user, x.id)) count++;
+  audit(req, 'session.revoke', { count });
+  res.json({ ok: true, count });
+});
+
+// ---------- API-токены ----------
+authRouter.get('/tokens', requireAuth, requireSession, (req, res) => {
+  res.json({ tokens: apiTokens.listFor(req.user.username) });
+});
+
+authRouter.post('/tokens', requireAuth, requireSession, (req, res) => {
+  try {
+    const { token, info } = apiTokens.create(req.user.username, { name: req.body?.name, readOnly: req.body?.readOnly === true });
+    audit(req, 'token.create', { name: info.name, readOnly: info.readOnly });
+    res.status(201).json({ token, info });
+  } catch (err) {
+    throw new HttpError(err.status ?? 400, err.message);
+  }
+});
+
+authRouter.delete('/tokens/:id', requireAuth, requireSession, (req, res) => {
+  if (!apiTokens.revoke(req.user.username, req.params.id)) throw new HttpError(404, 'Токен не найден');
+  audit(req, 'token.revoke', { id: req.params.id });
   res.json({ ok: true });
 });

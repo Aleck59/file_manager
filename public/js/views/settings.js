@@ -2,6 +2,7 @@
 import { api } from '../api.js';
 import { TTL_LABELS } from '../preview.js';
 import { adminSettings } from './settings-admin.js';
+import { sessionsBlock, tokensBlock } from './security-settings.js';
 import { applyTheme, h, prefs, toast } from '../ui.js';
 
 function section(title, description, ...content) {
@@ -88,7 +89,9 @@ export function mountSettings(view, ctx) {
         (v) => { prefs.set('upload-limit', v); toast(v === '0' ? 'Загрузка без ограничения скорости' : `Загрузка не быстрее ${v} МБ/с в среднем`); }, 'Скорость загрузки'),
       'Чтобы загрузка не занимала весь канал. Ограничение среднее: браузер отправляет файл частями и делает паузы между ними.'));
 
-  const sections = [profile, ui];
+  const security = section('Где выполнен вход', 'Устройства и браузеры, в которых открыт ваш аккаунт.', sessionsBlock());
+  const tokens = section('API-токены', 'Доступ для скриптов и программ без пароля.', tokensBlock(ctx));
+  const sections = [profile, security, ui, tokens];
 
   // Все параметры сервера (.env) — только для администратора.
   if (ctx.can('admin')) sections.push(adminSettings(ctx));
