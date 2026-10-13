@@ -7,6 +7,8 @@ import { audit, errorHandler, HttpError, rateLimit, sameOriginOnly, securityHead
 import * as apiTokens from './api-tokens.js';
 import * as sessionsRegistry from './sessions.js';
 import { adminRouter } from './routes/admin.js';
+import { publicSharesRouter, sharesRouter } from './routes/shares.js';
+import * as sharesStore from './shares.js';
 import { authRouter } from './routes/auth.js';
 import { filesRouter } from './routes/files.js';
 import { settingsRouter } from './routes/settings.js';
@@ -53,10 +55,13 @@ api.use((req, res, next) => {
 api.use('/auth', authRouter);
 // Название и логотип — без входа: их показывает и страница входа.
 api.get('/branding', (req, res) => res.json(branding()));
+// Публичные ссылки — без входа (у них свои ограничения и пароль).
+api.use('/public/s', publicSharesRouter);
 api.use(requireAuth, rateLimit({ windowMs: 60 * 1000, max: 600 }));
 api.use('/users', requireRole('admin'), usersRouter);
 api.use('/settings', requireRole('admin'), settingsRouter);
 api.use('/admin', requireRole('admin'), adminRouter);
+api.use('/shares', sharesRouter);
 api.use(filesRouter);
 api.use((req, res) => res.status(404).json({ error: 'Маршрут не найден' }));
 app.use('/api', api);
@@ -65,11 +70,15 @@ app.use('/api', api);
 const page = (file) => (req, res) => res.sendFile(path.join(publicDir, file), { cacheControl: 'no-cache' });
 const indexPage = page('index.html');
 const loginPage = page('login.html');
+const sharePage = page('share.html');
 
 app.get('/', (req, res) => (currentUser(req) ? indexPage(req, res) : res.redirect(302, '/login')));
 app.get('/index.html', (req, res) => (currentUser(req) ? indexPage(req, res) : res.redirect(302, '/login')));
 app.get('/login', (req, res) => (currentUser(req) ? res.redirect(302, '/') : loginPage(req, res)));
 app.get('/login.html', (req, res) => (currentUser(req) ? res.redirect(302, '/') : loginPage(req, res)));
+
+// Страница публичной ссылки: /s/<id> (данные она берёт из /api/public/s/<id>).
+app.get('/s/:id', (req, res) => sharePage(req, res));
 
 app.use(serveStatic(publicDir, { maxAge: 3600 }));
 app.use((req, res) => res.status(404).type('text/plain; charset=utf-8').send('Not found'));
@@ -82,6 +91,7 @@ const server = app.listen(config.port, config.host, () => {
 
 export function shutdown(code = 0) {
   sessionsRegistry.flush();
+  sharesStore.flush();
   apiTokens.flush();
   server.close(() => process.exit(code));
   server.closeAllConnections?.();

@@ -27,12 +27,16 @@ const ACTIONS = {
   'storage.placement': ['Политика размещения', 'server'],
   'sessions.reset_all': ['Завершение всех сессий', 'shield'],
   'session.revoke': ['Завершение сессии', 'shield'],
+  'share.create': ['Публичная ссылка', 'globe'],
+  'share.revoke': ['Отзыв ссылки', 'globe'],
+  'share.download': ['Скачивание по ссылке', 'download'],
+  'share.upload': ['Загрузка по ссылке гостем', 'upload'],
   'token.create': ['Новый API-токен', 'token'],
   'token.revoke': ['Отзыв API-токена', 'token'],
   'server.restart': ['Перезапуск сервера', 'refresh'],
 };
 const GROUPS = [['', 'Все действия'], ['auth', 'Входы'], ['file', 'Файлы'], ['folder', 'Папки'], ['user', 'Пользователи'],
-  ['settings', 'Настройки'], ['storage', 'Хранилища'], ['session', 'Сессии'], ['token', 'API-токены']];
+  ['settings', 'Настройки'], ['storage', 'Хранилища'], ['share', 'Публичные ссылки'], ['session', 'Сессии'], ['token', 'API-токены']];
 
 // Имя файла из ключа «…~имя» — понятнее, чем ключ целиком.
 const nameFromKey = (key) => String(key ?? '').split('~').slice(1).join('~') || String(key ?? '');
@@ -48,6 +52,8 @@ function describe(e) {
     case 'folder.create': case 'folder.delete': return folderLabel(d.path ?? '');
     case 'settings.update': case 'settings.reset': return (d.keys ?? []).join(', ');
     case 'storage.add': case 'storage.update': case 'storage.remove': return `${d.name ?? ''}${d.bucket ? ` (${d.bucket})` : ''}`;
+    case 'share.create': case 'share.download': return `${d.name ?? ''} · /s/${d.id}`;
+    case 'share.upload': return `${nameFromKey(d.key)} · ${formatSize(d.size ?? 0)} · /s/${d.id}`;
     case 'auth.login': return d.ua ? describeUA(d.ua) : '';
     default: return Object.entries(d).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(', ');
   }

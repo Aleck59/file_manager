@@ -5,6 +5,7 @@
 import { api } from '../api.js';
 import { closePreview, copyFileLink, isPreviewing, setPreviewEnabled, showPreview, TTL_LABELS } from '../preview.js';
 import { pickFolder } from '../folder-picker.js';
+import { openShareDialog } from '../share-dialog.js';
 import { forgetFolder, isFavorite, rememberOpened, removeFromLibrary, renameInLibrary, toggleFavorite } from '../library.js';
 import { forgetThumb, thumbnail } from '../thumbs.js';
 import * as tree from '../tree.js';
@@ -123,6 +124,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   if (crumbs.length > 2) breadcrumb.firstElementChild.classList.add('hidden', 'sm:block');
 
   ctx.setHeader(breadcrumb, canEdit ? [
+    h('button', { type: 'button', class: 'btn-ghost', onclick: () => openShareDialog({ folder }), title: 'Поделиться этой папкой' }, icon('globe'), h('span', { class: 'hidden lg:inline' }, 'Поделиться')),
     h('button', { type: 'button', class: 'btn-ghost', onclick: newFolder, title: 'Новая папка' }, icon('folderPlus'), h('span', { class: 'hidden md:inline' }, 'Папка')),
     h('button', { type: 'button', class: 'btn-primary', onclick: () => ctx.pickFiles(folder) }, icon('upload'), h('span', { class: 'hidden sm:inline' }, 'Загрузить')),
   ] : []);
@@ -223,6 +225,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   const fileMenu = (file) => (btn) => openMenu(btn, [
     { label: 'Скачать', icon: 'download', onSelect: () => download(file) },
     { label: 'Скопировать ссылку', icon: 'link', onSelect: () => copyFileLink(file) },
+    canEdit && { label: 'Поделиться…', icon: 'globe', onSelect: () => openShareDialog({ file }) },
     { label: state.checked.has(file.key) ? 'Снять выбор' : 'Выбрать', icon: 'check', onSelect: () => toggleChecked(file.key) },
     favoriteItem({ type: 'file', key: file.key, name: file.name, folder }),
     canEdit && { label: 'Переименовать', icon: 'pencil', onSelect: () => renameFile(file) },
@@ -243,6 +246,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   const folderMenu = (f) => (btn) => openMenu(btn, [
     { label: 'Открыть', icon: 'folder', onSelect: () => ctx.navigate(diskHash(f.path)) },
     favoriteItem({ type: 'folder', path: f.path, name: f.name }),
+    canEdit && { label: 'Поделиться…', icon: 'globe', onSelect: () => openShareDialog({ folder: f.path }) },
     canEdit && { label: 'Удалить папку', icon: 'trash', danger: true, onSelect: () => deleteFolder(f) },
   ]);
 

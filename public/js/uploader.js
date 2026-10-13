@@ -111,8 +111,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @param {{ folder?: string, subfolders?: string[], onProgress: (loaded: number, total: number) => void, signal: AbortSignal }} opts
  * @returns {Promise<{file: {key: string, name: string, size: number, lastModified: string}, folder: string}>}
  */
-export async function uploadFile(file, { folder = '', subfolders, onProgress, signal, control = new UploadControl() }) {
-  let plan = await api.startUpload(file, folder, subfolders);
+// client — набор методов API (по умолчанию — обычный; для гостевой загрузки по ссылке — свой).
+export async function uploadFile(file, { folder = '', subfolders, onProgress, signal, control = new UploadControl(), client = api }) {
+  let plan = await client.startUpload(file, folder, subfolders);
   // Итоговая папка (с подпапками при загрузке папки целиком) — её определяет сервер.
   const target = plan.folder ?? folder;
 
@@ -128,10 +129,10 @@ export async function uploadFile(file, { folder = '', subfolders, onProgress, si
         onProgress(0, file.size);
         // После паузы ссылка могла истечь — берём новую (файл ещё не загружен, ключ не важен).
         await control.untilResumed(signal);
-        plan = await api.startUpload(file, folder, subfolders);
+        plan = await client.startUpload(file, folder, subfolders);
       }
     }
-    return { file: (await api.completeUpload(plan.key)).file, folder: target };
+    return { file: (await client.completeUpload(plan.key)).file, folder: target };
   }
 
   const { key, uploadId, partSize, partCount } = plan;
@@ -150,7 +151,7 @@ export async function uploadFile(file, { folder = '', subfolders, onProgress, si
     if (!urls.has(n)) {
       const batch = [];
       for (let i = n; i < n + URL_BATCH && i <= partCount; i++) if (!urls.has(i)) batch.push(i);
-      const req = api.partUrls(key, uploadId, batch);
+      const req = client.partUrls(key, uploadId, batch);
       for (const i of batch) urls.set(i, req.then((res) => res.urls[i]));
     }
     return urls.get(n);
@@ -200,10 +201,10 @@ export async function uploadFile(file, { folder = '', subfolders, onProgress, si
     // С ограничением скорости части идут по одной — так среднее точнее.
     const concurrency = speedLimit() ? 1 : PART_CONCURRENCY;
     await Promise.all(Array.from({ length: Math.min(concurrency, partCount) }, worker));
-    return { file: (await api.completeUpload(key, uploadId)).file, folder: target };
+    return { file: (await client.completeUpload(key, uploadId)).file, folder: target };
   } catch (err) {
     // Незавершённая multipart-загрузка занимает место в бакете — отменяем её.
-    api.abortUpload(key, uploadId).catch(() => {});
+    client.abortUpload(key, uploadId).catch(() => {});
     throw err;
   }
 }

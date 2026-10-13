@@ -76,6 +76,10 @@ export const api = {
   deleteUser: (username) => request('DELETE', `/api/users/${encodeURIComponent(username)}`),
 
   audit: (filter) => request('GET', `/api/admin/audit${q(filter)}`),
+  shares: (all) => request('GET', `/api/shares${all ? '?all=1' : ''}`),
+  createShare: (data) => request('POST', '/api/shares', data),
+  revokeShare: (id) => request('POST', `/api/shares/${encodeURIComponent(id)}/revoke`),
+  deleteShare: (id) => request('DELETE', `/api/shares/${encodeURIComponent(id)}`),
   getSettings: () => request('GET', '/api/settings'),
   branding: () => request('GET', '/api/branding'),
   uploadLogo: (data) => request('PUT', '/api/settings/logo', { data }),

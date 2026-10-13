@@ -4,12 +4,14 @@ import { config } from '../config.js';
 import { Router } from '../http.js';
 import {
   folderFromKey, generateKey, isValidFolder, isValidKey, nameFromKey, previewKind, rebuildKey,
-  safeContentType, sanitizeFileName, sanitizeFolderName,
+  safeContentType, sanitizeFileName, sanitizeFolderName, formatRef,
 } from '../keys.js';
 import { audit, HttpError } from '../middleware/security.js';
+import * as sharesStore from '../shares.js';
 import * as storages from '../storages.js';
 import { usageHistory } from '../usage-history.js';
 import { startTransfer } from '../transfer.js';
+import * as uploadFlow from '../upload-flow.js';
 import * as urlImport from '../url-import.js';
 
 export const filesRouter = Router();
@@ -41,7 +43,16 @@ function withSubfolders(folder, subfolders) {
   return path;
 }
 
-function requireUploadId(uploadId) {
+// Ошибки модулей ({status, message}) → HttpError.
+async function flow(fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    throw err instanceof HttpError || !err.status ? err : new HttpError(err.status, err.message);
+  }
+}
+
+export function requireUploadId(uploadId) {
   // eslint-disable-next-line no-control-regex
   if (typeof uploadId !== 'string' || !uploadId || uploadId.length > 1024 || /[\u0000-\u001f]/.test(uploadId)) {
     throw new HttpError(400, 'Некорректный uploadId');
@@ -97,6 +108,7 @@ filesRouter.post('/folders/delete', canEdit, async (req, res) => {
   if (!path) throw new HttpError(400, 'Корневую папку удалить нельзя');
   const { deleted, warnings } = await storages.deleteFolder(path);
   storages.invalidateStats();
+  sharesStore.folderGone(path);
   audit(req, 'folder.delete', { path, deleted });
   res.json({ ok: true, deleted, warnings: publicWarnings(req, warnings) });
 });
@@ -105,29 +117,9 @@ filesRouter.post('/folders/delete', canEdit, async (req, res) => {
 
 // POST /api/uploads — начало загрузки. Сервер выбирает хранилище, ключ и способ загрузки.
 filesRouter.post('/uploads', canEdit, async (req, res) => {
-  const { name, size, type } = req.body ?? {};
   const folder = withSubfolders(requireFolder(req.body?.folder), req.body?.subfolders);
-  if (typeof name !== 'string' || !name.trim()) throw new HttpError(400, 'Не указано имя файла');
-  if (!Number.isSafeInteger(size) || size < 0) throw new HttpError(400, 'Некорректный размер файла');
-  if (size > config.limits.maxFileSize) {
-    throw new HttpError(413, `Файл больше допустимого размера (${Math.round(config.limits.maxFileSize / MB)} МБ)`);
-  }
-
-  const st = await storages.pickForUpload(size);
-  const rel = generateKey(name, folder);
-  const key = fileInfo(st, rel, size).key;
-  const contentType = safeContentType(type);
-
-  if (size <= config.limits.multipartThreshold) {
-    const { url, headers } = await st.presignPut(rel, contentType, size);
-    return res.json({ mode: 'single', key, url, headers, storage: st.id, folder });
-  }
-
-  // Размер части — не меньше настроенного и такой, чтобы уложиться в 10 000 частей.
-  const partSize = Math.max(config.limits.partSize, Math.ceil(size / MAX_PARTS / MB) * MB);
-  const partCount = Math.ceil(size / partSize);
-  const uploadId = await st.createMultipart(rel, contentType);
-  res.json({ mode: 'multipart', key, uploadId, partSize, partCount, storage: st.id, folder });
+  const { name, size, type } = req.body ?? {};
+  res.json(await flow(() => uploadFlow.planUpload({ name, size, type, folder })));
 });
 
 // ---------- загрузка по ссылке (сервер скачивает файл сам) ----------
@@ -162,7 +154,11 @@ filesRouter.post('/files/transfer', canEdit, async (req, res) => {
   try {
     const job = await startTransfer({
       key: req.body?.key, storageId: storage, user: req.user.username,
-      onDone: (j) => { if (j.status === 'done') audit(req, 'file.transfer', { key: j.file.key, to: j.target, size: j.size }); },
+      onDone: (j) => {
+        if (j.status !== 'done') return;
+        sharesStore.rekeyFile(req.body.key, j.file.key);
+        audit(req, 'file.transfer', { key: j.file.key, to: j.target, size: j.size });
+      },
     });
     res.status(202).json({ job });
   } catch (err) {
@@ -183,63 +179,23 @@ filesRouter.post('/jobs/:id/cancel', canEdit, (req, res) => {
 
 // POST /api/uploads/parts — presigned URL для пачки частей multipart-загрузки.
 filesRouter.post('/uploads/parts', canEdit, async (req, res) => {
-  const { st, rel } = resolveRef(req.body?.key);
   const uploadId = requireUploadId(req.body?.uploadId);
-  const numbers = req.body?.partNumbers;
-  if (
-    !Array.isArray(numbers) || numbers.length === 0 || numbers.length > 50 ||
-    !numbers.every((n) => Number.isInteger(n) && n >= 1 && n <= MAX_PARTS)
-  ) {
-    throw new HttpError(400, 'Некорректный список частей');
-  }
-  const urls = {};
-  for (const n of numbers) urls[n] = await st.presignPart(rel, uploadId, n);
-  res.json({ urls });
+  res.json({ urls: await flow(() => uploadFlow.presignParts(req.body?.key, uploadId, req.body?.partNumbers)) });
 });
 
 // POST /api/uploads/complete — подтверждение загрузки и проверка лимита размера.
 // Presigned PUT не ограничивает размер тела, поэтому лимит проверяется здесь,
 // а превысившие его объекты сразу удаляются.
 filesRouter.post('/uploads/complete', canEdit, async (req, res) => {
-  const { st, rel } = resolveRef(req.body?.key);
-
-  if (req.body?.uploadId === undefined) {
-    const head = await st.headObject(rel);
-    if (!head) throw new HttpError(404, 'Загруженный файл не найден в хранилище');
-    if ((head.ContentLength ?? 0) > config.limits.maxFileSize) {
-      await st.deleteObject(rel);
-      throw new HttpError(413, 'Файл превышает допустимый размер и был удалён');
-    }
-    storages.noteUploaded(st.id, head.ContentLength ?? 0);
-    storages.invalidateStats();
-    audit(req, 'file.upload', { storage: st.id, key: rel, size: head.ContentLength ?? 0 });
-    return res.json({ file: fileInfo(st, rel, head.ContentLength ?? 0, head.LastModified) });
-  }
-
-  const uploadId = requireUploadId(req.body.uploadId);
-  const parts = await st.listAllParts(rel, uploadId);
-  if (parts.length === 0) throw new HttpError(400, 'Ни одна часть файла не загружена');
-  const total = parts.reduce((sum, p) => sum + p.Size, 0);
-  if (total > config.limits.maxFileSize) {
-    await st.abortMultipart(rel, uploadId);
-    throw new HttpError(413, 'Файл превышает допустимый размер, загрузка отменена');
-  }
-  await st.completeMultipart(rel, uploadId, parts);
-  storages.noteUploaded(st.id, total);
-  storages.invalidateStats();
-  audit(req, 'file.upload', { storage: st.id, key: rel, size: total });
-  res.json({ file: fileInfo(st, rel, total) });
+  const uploadId = req.body?.uploadId === undefined ? undefined : requireUploadId(req.body.uploadId);
+  const { file, st, rel, size } = await flow(() => uploadFlow.completeUpload(req.body?.key, uploadId));
+  audit(req, 'file.upload', { storage: st.id, key: rel, size });
+  res.json({ file });
 });
 
 // POST /api/uploads/abort — отмена multipart-загрузки (освобождает место в бакете).
 filesRouter.post('/uploads/abort', canEdit, async (req, res) => {
-  const { st, rel } = resolveRef(req.body?.key);
-  const uploadId = requireUploadId(req.body?.uploadId);
-  try {
-    await st.abortMultipart(rel, uploadId);
-  } catch (err) {
-    if (err.name !== 'NoSuchUpload') throw err;
-  }
+  await uploadFlow.abortUpload(req.body?.key, requireUploadId(req.body?.uploadId));
   res.json({ ok: true });
 });
 
@@ -318,6 +274,7 @@ filesRouter.post('/files/move', canEdit, async (req, res) => {
   await st.copyObject(rel, target, size, head.ContentType, head.StorageClass ?? st.storageClass);
   await st.deleteObject(rel);
   storages.invalidateStats();
+  sharesStore.rekeyFile(formatRef(st.id, rel), formatRef(st.id, target));
   audit(req, 'file.move', { storage: st.id, from: rel, to: target });
   res.json({ file: fileInfo(st, target, size), folder });
 });
@@ -359,6 +316,7 @@ filesRouter.delete('/files', canEdit, async (req, res) => {
   const { st, rel } = resolveRef(req.query.key);
   await st.deleteObject(rel);
   storages.invalidateStats();
+  sharesStore.fileGone(formatRef(st.id, rel));
   audit(req, 'file.delete', { storage: st.id, key: rel });
   res.json({ ok: true });
 });

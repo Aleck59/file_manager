@@ -4,6 +4,7 @@
 // загруженный HTML/JS никогда не исполняется.
 import { api } from './api.js';
 import { openGallery } from './gallery.js';
+import { openShareDialog } from './share-dialog.js';
 import { richView } from './textview.js';
 import qrcode from './vendor/qrcode.js';
 import {
@@ -162,6 +163,7 @@ export async function showPreview(file, { folder, onDelete, onRename, onMove, ga
   const secondary = [
     h('button', { type: 'button', class: outline, onclick: copyLink }, icon('link'), 'Ссылка'),
     h('button', { type: 'button', class: outline, onclick: () => showQr(file) }, icon('qr'), 'QR-код'),
+    onRename && h('button', { type: 'button', class: outline, onclick: () => openShareDialog({ file }) }, icon('globe'), 'Поделиться'),
     onRename && h('button', { type: 'button', class: outline, onclick: () => onRename(file) }, icon('pencil'), 'Переименовать'),
     onMove && h('button', { type: 'button', class: outline, onclick: () => onMove(file) }, icon('move'), 'Переместить'),
     onDelete && h('button', { type: 'button', class: `${outline} text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950`, onclick: () => onDelete(file) }, icon('trash'), 'Удалить'),

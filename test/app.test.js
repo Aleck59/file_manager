@@ -469,3 +469,27 @@ test('сессии: вход регистрируется, завершение 
   assert.equal(auth.userFromToken(issued[0]), null, 'завершённая сессия недействительна');
   assert.ok(auth.userFromToken(issued[1]), 'другая продолжает работать');
 });
+
+test('публичные ссылки: срок, лимит, пароль, отзыв, следуют за файлом', async () => {
+  const shares = await import('../src/shares.js');
+  const s = await shares.create({ type: 'file', key: 'main:2wqqqqqqq-AAAAAAAAAAAAAAAA~a.txt', name: 'a.txt', user: 'admin', expiresInDays: 1, password: 'pass1234', maxDownloads: 1 });
+  assert.match(s.id, /^[a-zA-Z0-9]{12}$/);
+  assert.equal(shares.stateOf(s), 'active');
+  assert.equal(shares.isUnlocked(s, undefined), false, 'без пароля закрыто');
+  assert.equal(await shares.unlock(s, 'wrong'), null);
+  const cookie = await shares.unlock(s, 'pass1234');
+  assert.equal(shares.isUnlocked(s, cookie.value), true);
+  assert.equal(shares.isUnlocked(s, cookie.value.replace(/.$/, (c) => (c === 'A' ? 'B' : 'A'))), false, 'подделка cookie');
+  const other = await shares.create({ type: 'file', key: 'main:2wqqqqqqq-BBBBBBBBBBBBBBBB~b.txt', name: 'b', user: 'admin', password: 'pass1234' });
+  assert.equal(shares.isUnlocked(other, cookie.value), false, 'cookie одной ссылки не открывает другую');
+  shares.rekeyFile('main:2wqqqqqqq-AAAAAAAAAAAAAAAA~a.txt', 'main:Папка/2wqqqqqqq-AAAAAAAAAAAAAAAA~a.txt');
+  assert.equal(shares.get(s.id).key, 'main:Папка/2wqqqqqqq-AAAAAAAAAAAAAAAA~a.txt');
+  shares.touch(s, 'downloads');
+  assert.equal(shares.stateOf(s), 'exhausted');
+  assert.equal(shares.stateOf({ ...s, downloads: 0, expiresAt: new Date(Date.now() - 1000).toISOString() }), 'expired');
+  assert.equal(shares.revoke(other.id, 'чужой', false), false, 'чужую ссылку не отозвать');
+  assert.equal(shares.revoke(other.id, 'admin', false), true);
+  assert.equal(shares.stateOf(shares.get(other.id)), 'revoked');
+  await assert.rejects(shares.create({ type: 'file', key: 'x', name: 'x', user: 'u', expiresInDays: 999 }), /Срок/);
+  assert.equal(shares.get('../../etc'), null, 'id проверяется по формату');
+});
