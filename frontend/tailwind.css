@@ -182,3 +182,52 @@
   .palette-item[aria-selected="true"] { @apply bg-slate-100 dark:bg-slate-800; }
   dialog.palette::backdrop { background: rgb(15 23 42 / 0.35); }
 }
+
+/* ---------- галерея ---------- */
+@layer components {
+  dialog.gallery { @apply fixed inset-0 m-0 flex h-full max-h-none w-full max-w-none flex-col bg-slate-950/95 p-0 text-white; }
+  dialog.gallery:not([open]) { display: none; }
+  dialog.gallery[open] { animation: backdrop-in .2s ease-out; }
+  dialog.gallery::backdrop { background: rgb(2 6 23 / .9); }
+  .gallery-stage { @apply relative flex min-h-0 flex-1 touch-none select-none items-center justify-center overflow-hidden px-4 pb-6; cursor: zoom-in; }
+  .gallery-stage.is-zoomed { cursor: grab; }
+  .gallery-stage.is-zoomed:active { cursor: grabbing; }
+  .gallery-img { @apply max-h-full max-w-full rounded-md object-contain shadow-2xl; opacity: 0; transition: opacity 180ms ease-out; transform-origin: center; will-change: transform; }
+  .gallery-img.is-loaded { opacity: 1; }
+  .gallery-btn { @apply inline-flex h-10 w-10 items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/10 hover:text-white disabled:pointer-events-none disabled:opacity-30; }
+  .gallery-nav { @apply absolute top-1/2 hidden -translate-y-1/2 bg-white/5 backdrop-blur sm:inline-flex; }
+  .slide-left .gallery-img { animation: slide-in-left .22s cubic-bezier(.22, 1, .36, 1); }
+  .slide-right .gallery-img { animation: slide-in-right .22s cubic-bezier(.22, 1, .36, 1); }
+  @keyframes slide-in-left { from { transform: translateX(24px); opacity: .4; } }
+  @keyframes slide-in-right { from { transform: translateX(-24px); opacity: .4; } }
+}
+
+/* ---------- текстовые файлы: таблица, Markdown, подсветка ---------- */
+@layer components {
+  .tv-box { @apply max-h-[28rem] overflow-auto rounded-xl bg-slate-50 p-4 text-sm dark:bg-slate-950; }
+  .tv-scroll { @apply overflow-auto; }
+  .tv-box.tv-scroll { @apply p-0; }
+  .tv-table { @apply w-full border-collapse text-xs; }
+  .tv-th { @apply sticky top-0 whitespace-nowrap border-b border-slate-200 bg-slate-100 px-3 py-2 text-left font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200; }
+  .tv-td { @apply max-w-[16rem] truncate border-b border-slate-100 px-3 py-1.5 text-slate-600 dark:border-slate-800 dark:text-slate-300; }
+  .tv-num { @apply text-right tabular-nums; }
+  .tv-note { @apply px-3 py-2 text-xs text-slate-500; }
+  .tv-code { @apply m-0 overflow-auto whitespace-pre font-mono text-xs leading-relaxed text-slate-700 dark:text-slate-300; }
+  .tv-box.tv-code { @apply whitespace-pre-wrap break-words; }
+  .tk-comment { @apply italic text-slate-400 dark:text-slate-500; }
+  .tk-string { @apply text-emerald-700 dark:text-emerald-400; }
+  .tk-number { @apply text-amber-700 dark:text-amber-400; }
+  .tk-keyword { @apply font-medium text-violet-700 dark:text-violet-400; }
+  .tk-func { @apply text-sky-700 dark:text-sky-400; }
+  .md { @apply space-y-3 leading-relaxed text-slate-700 dark:text-slate-300; }
+  .md h1 { @apply text-xl font-semibold text-slate-900 dark:text-white; }
+  .md h2 { @apply text-lg font-semibold text-slate-900 dark:text-white; }
+  .md h3, .md h4, .md h5, .md h6 { @apply font-semibold text-slate-900 dark:text-white; }
+  .md ul { @apply list-disc space-y-1 pl-5; }
+  .md ol { @apply list-decimal space-y-1 pl-5; }
+  .md blockquote { @apply border-l-4 border-slate-300 pl-3 italic text-slate-500 dark:border-slate-700; }
+  .md hr { @apply border-slate-200 dark:border-slate-800; }
+  .md .tv-code { @apply rounded-lg bg-white p-3 dark:bg-slate-900; }
+  .md-code { @apply rounded bg-slate-200/70 px-1 py-0.5 font-mono text-[0.85em] dark:bg-slate-800; }
+  .md-link { @apply font-medium text-brand-700 underline underline-offset-2 dark:text-brand-400; }
+}

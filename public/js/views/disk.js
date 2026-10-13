@@ -9,7 +9,7 @@ import { forgetFolder, isFavorite, rememberOpened, removeFromLibrary, renameInLi
 import { forgetThumb, thumbnail } from '../thumbs.js';
 import * as tree from '../tree.js';
 import {
-  confirmDialog, copyToClipboard, DRAG_TYPE, FILES, folderLabel, FOLDERS, formatDate, formatDateShort, formatSize, h, icon,
+  categoryOf, confirmDialog, copyToClipboard, DRAG_TYPE, FILES, folderLabel, FOLDERS, formatDate, formatDateShort, formatSize, h, icon,
   makeDropTarget, openDialog, openMenu, pluralize, prefs, toast,
 } from '../ui.js';
 
@@ -430,9 +430,11 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     rememberOpened(file, folder);
     state.selected = file.key;
     markSelection();
+    // Галерея листает изображения папки в текущем порядке сортировки.
+    const gallery = () => visible().files.filter((f) => categoryOf(f.name) === 'image');
     showPreview(file, canEdit
-      ? { folder, onDelete: deleteFile, onRename: renameFile, onMove: moveFile }
-      : { folder });
+      ? { folder, gallery, onDelete: deleteFile, onRename: renameFile, onMove: moveFile }
+      : { folder, gallery });
   }
 
   // ---------- вид и сортировка ----------
