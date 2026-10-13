@@ -5,6 +5,7 @@
 import { api } from '../api.js';
 import { closePreview, copyFileLink, isPreviewing, setPreviewEnabled, showPreview, TTL_LABELS } from '../preview.js';
 import { pickFolder } from '../folder-picker.js';
+import { forgetFolder, isFavorite, rememberOpened, removeFromLibrary, renameInLibrary, toggleFavorite } from '../library.js';
 import { forgetThumb, thumbnail } from '../thumbs.js';
 import * as tree from '../tree.js';
 import {
@@ -152,8 +153,9 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     h('button', { type: 'button', class: 'icon-btn', title: 'Снять выбор (Esc)', 'aria-label': 'Снять выбор', onclick: () => clearChecked() }, icon('close')),
     bulkCount,
     h('span', { class: 'mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700' }),
-    h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', onclick: () => bulkCopyLinks() }, icon('copy'), h('span', { class: 'hidden xl:inline' }, 'Ссылки')),
+    h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', onclick: () => bulkCopyLinks() }, icon('link'), h('span', { class: 'hidden xl:inline' }, 'Ссылки')),
     canEdit && h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', onclick: () => bulkMove() }, icon('move'), h('span', { class: 'hidden xl:inline' }, 'Переместить')),
+    canEdit && h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', title: 'Копировать', 'aria-label': 'Копировать выбранные', onclick: () => copyFiles(checkedFiles()) }, icon('copy'), h('span', { class: 'hidden 2xl:inline' }, 'Копировать')),
     canEdit && h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5 text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950', onclick: () => bulkDelete() }, icon('trash'), h('span', { class: 'hidden xl:inline' }, 'Удалить')));
 
   // ---------- разметка ----------
@@ -219,9 +221,25 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     { label: 'Скачать', icon: 'download', onSelect: () => download(file) },
     { label: 'Скопировать ссылку', icon: 'link', onSelect: () => copyFileLink(file) },
     { label: state.checked.has(file.key) ? 'Снять выбор' : 'Выбрать', icon: 'check', onSelect: () => toggleChecked(file.key) },
+    favoriteItem({ type: 'file', key: file.key, name: file.name, folder }),
     canEdit && { label: 'Переименовать', icon: 'pencil', onSelect: () => renameFile(file) },
     canEdit && { label: 'Переместить…', icon: 'move', onSelect: () => moveFile(file) },
+    canEdit && { label: 'Копировать…', icon: 'copy', onSelect: () => copyFiles([file]) },
+    canEdit && { label: 'Сделать копию', icon: 'copy', onSelect: () => copyFiles([file], folder) },
     canEdit && { label: 'Удалить', icon: 'trash', danger: true, onSelect: () => deleteFile(file) },
+  ]);
+
+  const favoriteItem = (item) => {
+    const fav = isFavorite(item);
+    return { label: fav ? 'Убрать из избранного' : 'В избранное', icon: 'star', onSelect: () => {
+      toast(toggleFavorite(item) ? `«${item.name}» в избранном` : `«${item.name}» убран из избранного`, 'success');
+    } };
+  };
+
+  const folderMenu = (f) => (btn) => openMenu(btn, [
+    { label: 'Открыть', icon: 'folder', onSelect: () => ctx.navigate(diskHash(f.path)) },
+    favoriteItem({ type: 'folder', path: f.path, name: f.name }),
+    canEdit && { label: 'Удалить папку', icon: 'trash', danger: true, onSelect: () => deleteFolder(f) },
   ]);
 
   function folderItem(f) {
@@ -236,7 +254,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
         h('span', { class: 'tile-body' },
           h('span', { class: 'block truncate text-sm font-medium', title: f.name }, f.name),
           h('span', { class: 'block text-xs text-slate-500 dark:text-slate-400' }, 'Папка')),
-        canEdit && h('span', { class: 'tile-actions' }, actionBtn('trash', 'Удалить папку', () => deleteFolder(f), true))]
+        h('span', { class: 'tile-actions' }, actionBtn('more', 'Действия с папкой', folderMenu(f)))]
       : [h('div', { class: 'flex min-w-0 items-center gap-3' },
         h('span', { class: 'check-cell' }),
         h('span', { class: 'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600 dark:bg-brand-950/60 dark:text-brand-400' }, icon('folder')),
@@ -246,7 +264,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
       h('span', { class: 'hidden text-right text-sm text-slate-400 md:block' }, '—'),
       h('span', { class: 'hidden text-sm text-slate-500 md:block dark:text-slate-400' }, 'Папка'),
       h('div', { class: 'row-actions flex justify-end gap-0.5' },
-        canEdit && actionBtn('trash', 'Удалить папку', () => deleteFolder(f), true))]);
+        actionBtn('more', 'Действия с папкой', folderMenu(f)))]);
     if (canEdit) makeDropTarget(li, (keys) => moveByKeys(keys, f.path));
     return li;
   }
@@ -409,6 +427,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   }
 
   function select(file) {
+    rememberOpened(file, folder);
     state.selected = file.key;
     markSelection();
     showPreview(file, canEdit
@@ -503,6 +522,76 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
   });
   on(list, 'focusin', (e) => { if (e.target.matches?.('[role=option]')) setRoving(e.target); });
 
+  // ---------- контекстное меню (правый клик) ----------
+  const atPointer = (e) => ({
+    getBoundingClientRect: () => ({ left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY }),
+    setAttribute() {}, focus() {},
+  });
+  on(view, 'contextmenu', (e) => {
+    if (e.target.closest('input, textarea, a[href]:not([role=option])')) return;
+    const item = e.target.closest('[role=option]');
+    if (item?.dataset.key) {
+      const file = state.files.find((f) => f.key === item.dataset.key);
+      if (!file) return;
+      e.preventDefault();
+      // Правый клик по невыбранному файлу при наличии выбора — действует на него одного.
+      if (state.checked.size > 1 && state.checked.has(file.key)) {
+        return openMenu(atPointer(e), [
+          { label: `Скопировать ссылки (${state.checked.size})`, icon: 'link', onSelect: bulkCopyLinks },
+          canEdit && { label: 'Переместить…', icon: 'move', onSelect: bulkMove },
+          canEdit && { label: 'Копировать…', icon: 'copy', onSelect: () => copyFiles(checkedFiles()) },
+          canEdit && { label: `Удалить (${state.checked.size})`, icon: 'trash', danger: true, onSelect: bulkDelete },
+        ]);
+      }
+      return fileMenu(file)(atPointer(e));
+    }
+    if (item?.dataset.folder !== undefined) {
+      const f = state.folders.find((x) => x.path === item.dataset.folder);
+      if (f) { e.preventDefault(); folderMenu(f)(atPointer(e)); }
+      return;
+    }
+    if (!canEdit) return;
+    e.preventDefault();
+    openMenu(atPointer(e), [
+      { label: 'Загрузить файлы', icon: 'upload', onSelect: () => ctx.pickFiles(folder) },
+      { label: 'Загрузить папку', icon: 'folderUp', onSelect: () => ctx.pickFolder(folder) },
+      { label: 'Новая папка', icon: 'folderPlus', onSelect: newFolder },
+      state.files.length && { label: 'Выбрать все файлы', icon: 'check', onSelect: checkAllFiles },
+    ]);
+  });
+
+  // ---------- выделение рамкой (мышью по пустому месту) ----------
+  on(view, 'pointerdown', (e) => {
+    if (e.button !== 0 || e.pointerType !== 'mouse') return;
+    if (e.target.closest('[role=option], button, a, input, label, select, textarea, .dropzone, .bulk-bar, .list-head')) return;
+    const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+    const base = additive ? new Set(state.checked) : new Set();
+    const start = { x: e.clientX, y: e.clientY };
+    let band = null;
+    e.preventDefault(); // без выделения текста при протягивании
+    const move = (ev) => {
+      if (!band && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < 6) return;
+      if (!band) { band = h('div', { class: 'select-band', 'aria-hidden': 'true' }); document.body.append(band); }
+      const x1 = Math.min(start.x, ev.clientX); const x2 = Math.max(start.x, ev.clientX);
+      const y1 = Math.min(start.y, ev.clientY); const y2 = Math.max(start.y, ev.clientY);
+      Object.assign(band.style, { left: `${x1}px`, top: `${y1}px`, width: `${x2 - x1}px`, height: `${y2 - y1}px` });
+      state.checked = new Set(base);
+      for (const li of list.querySelectorAll('[data-key]')) {
+        const r = li.getBoundingClientRect();
+        if (r.right > x1 && r.left < x2 && r.bottom > y1 && r.top < y2) state.checked.add(li.dataset.key);
+      }
+      markSelection();
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      if (band) band.remove();
+      else if (!additive && state.checked.size) clearChecked(); // клик по пустому месту снимает выбор
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  });
+
   on(document, 'keydown', (e) => {
     if (document.querySelector('dialog[open]') || isTyping(document.activeElement)) {
       if (e.key === 'Escape' && document.activeElement === search && search.value) { search.value = ''; state.query = ''; renderList(); }
@@ -587,6 +676,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     const gone = new Set(keys);
     state.files = state.files.filter((f) => !gone.has(f.key));
     for (const key of keys) { state.checked.delete(key); forgetThumb(key); }
+    removeFromLibrary(keys);
     if (gone.has(state.selected)) closePreview();
   }
 
@@ -608,6 +698,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     const wasSelected = state.selected === oldKey;
     const wasChecked = state.checked.delete(oldKey);
     forgetThumb(oldKey);
+    renameInLibrary(oldKey, file, targetFolder);
     if (targetFolder === folder) {
       state.files = state.files.map((f) => (f.key === oldKey ? file : f));
       if (wasChecked) state.checked.add(file.key);
@@ -675,6 +766,30 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     if (failed) load();
   }
 
+  // Копии файлов: target не задан — спросить папку; та же папка — «имя (копия).ext».
+  async function copyFiles(files, target) {
+    if (!files.length) return;
+    if (target === undefined) {
+      target = await pickFolder({ title: files.length === 1 ? `Копировать «${files[0].name}»` : `Копировать ${pluralize(files.length, FILES)}`, current: folder, allowCurrent: true, confirmLabel: 'Копировать сюда' });
+      if (target === null) return;
+    }
+    const copied = [];
+    const failed = await eachLimited(files, async (file) => {
+      const res = await api.copyFile(file.key, { folder: target });
+      copied.push(res.file);
+    });
+    if (target === folder) {
+      for (const file of copied) if (!state.files.some((f) => f.key === file.key)) state.files.unshift(file);
+    }
+    renderList();
+    ctx.refreshStats();
+    if (copied.length) {
+      toast(target === folder && copied.length === 1 ? `Создана «${copied[0].name}»`
+        : `Скопировано ${pluralize(copied.length, FILES)} в «${folderLabel(target)}»`, 'success');
+    }
+    if (failed) load();
+  }
+
   // Цель перетаскивания: папка в списке, в дереве или в хлебных крошках.
   function moveByKeys(keys, target) {
     const set = new Set(String(keys).split('\n'));
@@ -724,6 +839,7 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
       const { deleted } = await api.deleteFolder(f.path);
       state.folders = state.folders.filter((x) => x.path !== f.path);
       tree.forget(f.path);
+      forgetFolder(f.path);
       tree.setChildren(folder, state.folders);
       renderList();
       ctx.refreshStats();
@@ -755,6 +871,9 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
     });
   }
   ctx.newFolderHere = canEdit ? newFolder : null;
+  ctx.currentFolder = () => folder;
+  // Для проверки дубликатов при загрузке: файлы, которые уже есть в этой папке.
+  ctx.existingFiles = (target) => (target === folder ? state.files : null);
 
   // ---------- загрузка: перетаскивание и вставка ----------
   if (canEdit) {
@@ -799,9 +918,16 @@ export function mountDisk(view, ctx, folder, { selectKey } = {}) {
       }
       renderList();
     },
+    // Загрузка с заменой: старые версии файла удалены.
+    onReplaced(keys) {
+      removeFiles(keys);
+      renderList();
+    },
     unmount() {
       cleanup.forEach((fn) => fn());
       ctx.newFolderHere = null;
+      ctx.currentFolder = null;
+      ctx.existingFiles = null;
       tree.setDropHandler(null);
       ctx.onPreviewClosed = null;
       setPreviewEnabled(false);

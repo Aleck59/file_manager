@@ -1,6 +1,8 @@
 // Оболочка приложения: роутер (#/...), левая панель (навигация + дерево диска),
 // заголовок страницы, очередь загрузок. Разделы — в ./views/*.
 import { api } from './api.js';
+import { favorites, initLibrary, onLibraryChange, toggleFavorite } from './library.js';
+import { initPalette } from './palette.js';
 import { initPreview } from './preview.js';
 import { ProgressView } from './progress.js';
 import * as tree from './tree.js';
@@ -109,6 +111,30 @@ function initSidebar() {
   });
 
   tree.initTree($('#tree'), (path) => ctx.navigate(diskHash(path)), { load: ctx.storageConfigured });
+
+  $('#palette-icon').append(icon('search'));
+  renderFavorites();
+  onLibraryChange(renderFavorites);
+}
+
+// «Избранное» в левой панели: папки и файлы, закреплённые пользователем.
+function renderFavorites() {
+  const list = favorites();
+  $('#favorites').classList.toggle('hidden', !list.length);
+  $('#favorites-list').replaceChildren(...list.map((f) => {
+    const isFolder = f.type === 'folder';
+    const link = h('a', {
+      href: diskHash(isFolder ? f.path : f.folder),
+      class: 'nav-link min-w-0 flex-1 py-1.5',
+      title: f.name,
+      onclick: () => { if (!isFolder) ctx.selectAfterNavigate = f.key; },
+    }, icon(isFolder ? 'folder' : 'file', 'h-4 w-4 text-amber-500'), h('span', { class: 'truncate font-normal' }, f.name));
+    const remove = h('button', {
+      type: 'button', class: 'icon-btn fav-remove h-7 w-7', title: 'Убрать из избранного', 'aria-label': `Убрать «${f.name}» из избранного`,
+      onclick: () => toggleFavorite(f),
+    }, icon('close', 'h-3.5 w-3.5'));
+    return h('li', { class: 'fav-item flex items-center' }, link, remove);
+  }));
 }
 
 let statsTimer;
@@ -181,14 +207,85 @@ function updateUploadsTitle() {
   $('#uploads-title').textContent = pending ? `Загрузка · осталось ${pending}` : `Готово · ${pluralize(finished, FILES)}`;
 }
 
+// ---------- файлы с такими же именами ----------
+// Спрашиваем, что делать: заменить (старый удаляется после успешной загрузки),
+// сохранить оба (новому — «имя (1).ext») или пропустить. Можно применить ко всем.
+function askDuplicate(name, left) {
+  return new Promise((resolve) => {
+    let result = { action: 'skip', all: false };
+    const all = h('input', { type: 'checkbox', id: 'dup-all', class: 'check' });
+    const choose = (action) => () => { result = { action, all: all.checked }; dialog.close(); };
+    const dialog = h('dialog', { class: 'w-[min(30rem,calc(100%-2rem))] rounded-2xl bg-white p-0 text-slate-800 shadow-xl dark:bg-slate-900 dark:text-slate-200', 'aria-labelledby': 'dup-title' },
+      h('div', { class: 'space-y-4 p-6' },
+        h('h3', { id: 'dup-title', class: 'text-lg font-semibold' }, 'Такой файл уже есть'),
+        h('p', { class: 'break-words text-sm text-slate-500 dark:text-slate-400' }, `В этой папке уже есть «${name}».`),
+        left > 0 && h('label', { for: 'dup-all', class: 'flex items-center gap-2 text-sm' }, all, `Применить ко всем совпадениям (ещё ${left})`),
+        h('div', { class: 'flex flex-wrap justify-end gap-2 pt-1' },
+          h('button', { type: 'button', class: 'btn-ghost', onclick: choose('skip') }, 'Пропустить'),
+          h('button', { type: 'button', class: 'btn-ghost', onclick: choose('keep') }, 'Сохранить оба'),
+          h('button', { type: 'button', class: 'btn-primary', onclick: choose('replace') }, 'Заменить'))));
+    dialog.addEventListener('close', () => { dialog.remove(); resolve(result); });
+    document.body.append(dialog);
+    dialog.showModal();
+    dialog.querySelector('.btn-primary').focus();
+  });
+}
+
+function freeName(name, taken) {
+  const dot = name.lastIndexOf('.');
+  const [base, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+  for (let i = 1; ; i++) {
+    const candidate = `${base} (${i})${ext}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+async function resolveDuplicates(items, folder) {
+  const existing = ctx.existingFiles?.(folder);
+  if (!existing?.length) return items;
+  const byName = new Map();
+  for (const f of existing) {
+    const k = f.name.toLowerCase();
+    if (!byName.has(k)) byName.set(k, []);
+    byName.get(k).push(f.key);
+  }
+  const taken = new Set(byName.keys());
+  const dupCount = items.filter((it) => !it.subfolders?.length && byName.has(it.file.name.toLowerCase())).length;
+  let seen = 0;
+  let always = null;
+  const out = [];
+  for (const item of items) {
+    const lower = item.file.name.toLowerCase();
+    if (item.subfolders?.length || !byName.has(lower)) { taken.add(lower); out.push(item); continue; }
+    seen++;
+    let action = always;
+    if (!action) {
+      const choice = await askDuplicate(item.file.name, dupCount - seen);
+      action = choice.action;
+      if (choice.all) always = action;
+    }
+    if (action === 'skip') continue;
+    if (action === 'replace') {
+      out.push({ ...item, replaceKeys: byName.get(lower) });
+    } else {
+      const name = freeName(item.file.name, taken);
+      taken.add(name.toLowerCase());
+      out.push({ ...item, file: new File([item.file], name, { type: item.file.type, lastModified: item.file.lastModified }) });
+    }
+  }
+  return out;
+}
+
 // files: File или { file, subfolders } (загрузка папки целиком — путь внутри неё).
-function enqueue(files, folder) {
+async function enqueue(files, folder) {
   if (!ctx.can('editor')) return toast('Недостаточно прав для загрузки', 'error');
+  files = await resolveDuplicates(files.map((it) => (it instanceof File ? { file: it } : it)), folder);
+  if (!files.length) return;
   clearTimeout(hideTimer);
   if (!active && !queue.length) { finished = 0; failed = 0; $('#upload-list').replaceChildren(); }
   $('#uploads').classList.remove('hidden');
   for (const item of files) {
-    const { file, subfolders = [] } = item instanceof File ? { file: item } : item;
+    const { file, subfolders = [], replaceKeys } = item;
     const label = [...subfolders, file.name].join(' / ');
     const controller = new AbortController();
     const status = h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400' }, `${formatSize(file.size)} · в очереди`);
@@ -203,7 +300,7 @@ function enqueue(files, folder) {
         h('div', { class: 'progress mt-2' }, bar)),
       cancel);
     $('#upload-list').append(row);
-    queue.push({ file, folder, subfolders: subfolders.length ? subfolders : undefined, controller, ui: { row, status, bar, cancel } });
+    queue.push({ file, folder, subfolders: subfolders.length ? subfolders : undefined, replaceKeys, controller, ui: { row, status, bar, cancel } });
   }
   updateUploadsTitle();
   pump();
@@ -225,7 +322,7 @@ function pump() {
   }
 }
 
-async function runUpload({ file, folder, subfolders, controller, ui }) {
+async function runUpload({ file, folder, subfolders, replaceKeys, controller, ui }) {
   const { status, bar, row, cancel } = ui;
   if (controller.signal.aborted) { row.remove(); return; }
   const progress = new ProgressView(bar, status, file.size);
@@ -243,6 +340,12 @@ async function runUpload({ file, folder, subfolders, controller, ui }) {
     cancel.replaceChildren(icon('check'));
     cancel.disabled = true;
     current?.onUploaded?.(result.file, result.folder);
+    // «Заменить»: новая версия уже загружена — удаляем прежнюю.
+    if (replaceKeys?.length) {
+      const removed = [];
+      for (const key of replaceKeys) await api.deleteFile(key).then(() => removed.push(key)).catch(() => {});
+      current?.onReplaced?.(removed);
+    }
   } catch (err) {
     if (err instanceof UploadCancelled) { row.remove(); return; }
     failed++;
@@ -269,7 +372,9 @@ async function start() {
   } catch {
     return; // при 401 api сам перенаправит на /login
   }
+  initLibrary(ctx.user.username);
   initSidebar();
+  initPalette(ctx);
   initPreview(ctx);
   setStorageConfigured(ctx.storageConfigured);
 

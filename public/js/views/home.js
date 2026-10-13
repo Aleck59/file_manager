@@ -1,5 +1,6 @@
 // Раздел «Главная»: сводка по диску, структура хранилища по типам и недавние файлы.
 import { api } from '../api.js';
+import { recentFiles } from '../library.js';
 import { thumbnail } from '../thumbs.js';
 import { $, FILES, folderLabel, formatDate, formatDateShort, formatSize, h, icon, pluralize, toast } from '../ui.js';
 import { diskHash, storageNotice } from './disk.js';
@@ -119,6 +120,23 @@ export function mountHome(view, ctx) {
     ? [h('button', { type: 'button', class: 'btn-primary', onclick: () => ctx.pickFiles('') }, icon('upload'), h('span', { class: 'hidden sm:inline' }, 'Загрузить'))]
     : []);
 
+  // «Недавно открытые» — из этого браузера (см. library.js).
+  function openedCard() {
+    const items = recentFiles().slice(0, 6);
+    if (!items.length) return null;
+    return h('section', { class: 'card overflow-hidden' },
+      h('div', { class: 'border-b border-slate-200 px-5 py-4 dark:border-slate-800' },
+        h('h3', { class: 'font-semibold' }, 'Недавно открытые'),
+        h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Файлы, которые вы смотрели')),
+      h('ul', { class: 'divide-y divide-slate-100 dark:divide-slate-800' }, items.map((f) => h('li', {},
+        h('a', { href: diskHash(f.folder), class: 'flex items-center gap-3 px-5 py-2.5 transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/40',
+          onclick: () => { ctx.selectAfterNavigate = f.key; } },
+        thumbnail(f, { cls: 'h-8 w-8 rounded-lg' }),
+        h('span', { class: 'min-w-0 flex-1' },
+          h('span', { class: 'block truncate text-sm font-medium' }, f.name),
+          h('span', { class: 'block truncate text-xs text-slate-500 dark:text-slate-400', title: formatDate(f.at) }, `${folderLabel(f.folder)} · ${formatDateShort(f.at)}`)))))));
+  }
+
   const tiles = h('div', { class: 'grid grid-cols-2 gap-4 lg:grid-cols-4' },
     [1, 2, 3, 4].map(() => h('div', { class: 'card h-[6.5rem] animate-pulse' })));
   const structure = h('div', { class: 'h-24 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800' });
@@ -131,10 +149,12 @@ export function mountHome(view, ctx) {
       h('p', { class: 'mt-1 text-sm text-slate-500 dark:text-slate-400' }, 'Сводка по вашему диску')),
     tiles,
     h('div', { class: 'grid gap-6 lg:grid-cols-5' },
-      h('section', { class: 'card p-5 lg:col-span-2' },
-        h('h3', { class: 'font-semibold' }, 'Структура хранилища'),
-        h('p', { class: 'mb-4 text-sm text-slate-500 dark:text-slate-400' }, 'Занятое место по типам файлов'),
-        structure),
+      h('div', { class: 'space-y-6 lg:col-span-2' },
+        h('section', { class: 'card p-5' },
+          h('h3', { class: 'font-semibold' }, 'Структура хранилища'),
+          h('p', { class: 'mb-4 text-sm text-slate-500 dark:text-slate-400' }, 'Занятое место по типам файлов'),
+          structure),
+        openedCard()),
       h('section', { class: 'card overflow-hidden lg:col-span-3' },
         h('div', { class: 'flex items-center justify-between border-b border-slate-200 p-5 dark:border-slate-800' },
           h('div', {},

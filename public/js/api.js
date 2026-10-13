@@ -58,6 +58,7 @@ export const api = {
   thumbs: (keys) => request('POST', '/api/files/thumbs', { keys }),
   deleteFile: (key) => request('DELETE', `/api/files${q({ key })}`),
   moveFile: (key, { folder, name } = {}) => request('POST', '/api/files/move', { key, folder, name }),
+  copyFile: (key, { folder, name } = {}) => request('POST', '/api/files/copy', { key, folder, name }),
 
   listUsers: () => request('GET', '/api/users'),
   createUser: (user) => request('POST', '/api/users', user),

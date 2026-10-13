@@ -3,11 +3,12 @@ import { api } from './api.js';
 import { folderLabel, h, icon } from './ui.js';
 
 /**
- * @param {{ title: string, current: string, confirmLabel?: string }} opts
- *   current — папка, в которой файл лежит сейчас (её выбрать нельзя).
+ * @param {{ title: string, current: string, confirmLabel?: string, allowCurrent?: boolean }} opts
+ *   current — папка, в которой файл лежит сейчас (её выбрать нельзя, если не allowCurrent —
+ *   например, при копировании: копия в той же папке получает имя «… (копия)»).
  * @returns {Promise<string|null>} путь выбранной папки или null при отмене
  */
-export function pickFolder({ title, current, confirmLabel = 'Переместить' }) {
+export function pickFolder({ title, current, confirmLabel = 'Переместить', allowCurrent = false }) {
   return new Promise((resolve) => {
     const nodes = new Map(); // path -> { children, expanded }
     const node = (p) => nodes.get(p) ?? nodes.set(p, { children: null, expanded: false }).get(p);
@@ -42,16 +43,16 @@ export function pickFolder({ title, current, confirmLabel = 'Перемести�
     }
 
     function select(path) {
-      if (path === current) return;
+      if (path === current && !allowCurrent) return;
       selected = path;
       confirm.disabled = false;
-      hint.textContent = `Переместить в: ${folderLabel(path)}`;
+      hint.textContent = `${confirmLabel.replace(/ сюда$/, '')} в: ${folderLabel(path)}`;
       render();
     }
 
     function row(path, name, depth) {
       const n = node(path);
-      const isCurrent = path === current;
+      const isCurrent = path === current && !allowCurrent;
       const isSelected = path === selected;
       const hasKids = n.children === null || n.children.length > 0;
       const el = h('div', {

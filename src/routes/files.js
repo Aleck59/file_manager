@@ -268,6 +268,38 @@ filesRouter.post('/files/move', canEdit, async (req, res) => {
   res.json({ file: fileInfo(st, target, size), folder });
 });
 
+// POST /api/files/copy {key, folder?, name?} — копия файла (в том же бакете, байты не идут
+// через VDS). Без имени в той же папке получается «имя (копия).ext».
+filesRouter.post('/files/copy', canEdit, async (req, res) => {
+  const { st, rel } = resolveRef(req.body?.key);
+  const sourceFolder = folderFromKey(rel);
+  const folder = req.body?.folder === undefined ? sourceFolder : requireFolder(req.body.folder);
+  let name = nameFromKey(rel);
+  if (req.body?.name !== undefined) {
+    if (typeof req.body.name !== 'string' || !req.body.name.trim() || req.body.name.length > 500) throw new HttpError(400, 'Введите имя файла');
+    name = sanitizeFileName(req.body.name);
+  } else if (folder === sourceFolder) {
+    const dot = name.lastIndexOf('.');
+    name = sanitizeFileName(dot > 0 ? `${name.slice(0, dot)} (копия)${name.slice(dot)}` : `${name} (копия)`);
+  }
+  const target = generateKey(name, folder);
+  if (!isValidKey(target)) throw new HttpError(400, 'Слишком длинный путь или имя файла');
+
+  const head = await st.headObject(rel);
+  if (!head) throw new HttpError(404, 'Файл не найден');
+  const size = head.ContentLength ?? 0;
+  if (st.def.quotaGb > 0) {
+    const stats = await storages.getStats();
+    const used = stats.storages.find((x) => x.id === st.id)?.bucketSize ?? 0;
+    if (used + size > st.def.quotaGb * 1024 ** 3) throw new HttpError(507, `Нет места в хранилище «${st.name}»: квота исчерпана`);
+  }
+  await st.copyObject(rel, target, size, head.ContentType, head.StorageClass ?? st.storageClass);
+  storages.noteUploaded(st.id, size);
+  storages.invalidateStats();
+  audit(req, 'file.copy', { storage: st.id, from: rel, to: target });
+  res.status(201).json({ file: fileInfo(st, target, size), folder });
+});
+
 // DELETE /api/files?key=... — удаление файла.
 filesRouter.delete('/files', canEdit, async (req, res) => {
   const { st, rel } = resolveRef(req.query.key);

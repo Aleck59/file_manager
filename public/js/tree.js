@@ -135,3 +135,10 @@ export function initTree(el, navigate, { load = true } = {}) {
 }
 
 export { parentOf };
+
+/** Все папки, о которых дерево уже знает (для командной палитры): [{path, name}]. */
+export function knownFolders() {
+  const out = new Map();
+  for (const n of nodes.values()) for (const child of n.children ?? []) out.set(child.path, child);
+  return [...out.values()];
+}

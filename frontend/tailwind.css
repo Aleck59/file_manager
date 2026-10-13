@@ -170,3 +170,15 @@
   }
   [data-theme="dark"] .login-bg { background-image: radial-gradient(rgb(255 255 255 / .06) 1px, transparent 1px); }
 }
+
+@layer components {
+  /* Рамка выделения мышью. */
+  .select-band { @apply pointer-events-none fixed z-40 rounded border border-brand-500 bg-brand-500/10; }
+  /* Кнопка «убрать» в избранном — по наведению. */
+  @media (hover: hover) {
+    .fav-item .fav-remove { opacity: 0; transition: opacity 120ms ease-out; }
+    .fav-item:hover .fav-remove, .fav-item:focus-within .fav-remove { opacity: 1; }
+  }
+  .palette-item[aria-selected="true"] { @apply bg-slate-100 dark:bg-slate-800; }
+  dialog.palette::backdrop { background: rgb(15 23 42 / 0.35); }
+}
