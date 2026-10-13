@@ -447,7 +447,8 @@ test('API-токены: проверка, только чтение, отзыв;
   assert.equal(apiTokens.verify(`Bearer ${token.slice(0, -1)}${token.endsWith('A') ? 'B' : 'A'}`), null, 'чужой секрет');
   assert.equal(apiTokens.verify(token), null, 'без Bearer');
   const saved = fs.readFileSync(path.join(dataDir, 'api-tokens.json'), 'utf8');
-  assert.ok(!saved.includes(token.split('_')[2]), 'в файле только хеш');
+  // Секрет — после «fmt_<12 hex>_»; сам он может содержать «_» (base64url), поэтому не split.
+  assert.ok(!saved.includes(token.slice('fmt_'.length + 12 + 1)), 'в файле только хеш');
   assert.throws(() => apiTokens.create('admin', { name: ' ' }), /название/);
   assert.equal(apiTokens.revoke('someone-else', info.id), false, 'чужой токен не отозвать');
   assert.equal(apiTokens.revoke('admin', info.id), true);
