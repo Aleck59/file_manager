@@ -70,6 +70,10 @@ export const api = {
 
   audit: (filter) => request('GET', `/api/admin/audit${q(filter)}`),
   getSettings: () => request('GET', '/api/settings'),
+  branding: () => request('GET', '/api/branding'),
+  uploadLogo: (data) => request('PUT', '/api/settings/logo', { data }),
+  removeLogo: () => request('DELETE', '/api/settings/logo'),
+  importSettings: (data) => request('POST', '/api/settings/import', { data }),
   saveSettings: (values, opts = {}) => request('PUT', '/api/settings', { values, ...opts }),
   resetSettings: (keys, opts = {}) => request('POST', '/api/settings/reset', { keys, ...opts }),
   checkStorage: (storage, id) => request('POST', '/api/settings/storages/check', { storage, id }),

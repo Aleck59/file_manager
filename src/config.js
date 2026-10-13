@@ -27,6 +27,7 @@ const MB = 1024 * 1024;
 // apply: live — применяется сразу; restart — после перезапуска процесса
 export const FIELDS = {
   APP_ORIGIN: { section: 'app', type: 'origin', apply: 'live' },
+  APP_NAME: { section: 'app', type: 'string', default: 'Файлообменник', maxLength: 40, apply: 'live' },
   TRUST_PROXY: { section: 'app', type: 'int', default: 1, min: 0, max: 10, apply: 'live' },
   HOST: { section: 'app', type: 'string', default: '127.0.0.1', apply: 'restart' },
   PORT: { section: 'app', type: 'int', default: 3000, min: 1, max: 65535, apply: 'restart' },
@@ -243,6 +244,7 @@ export const config = {
 function apply(v) {
   if (!v.APP_ORIGIN) throw new Error('Не задан APP_ORIGIN — публичный адрес сайта, например https://files.example.com (см. .env.example)');
   config.appOrigin = v.APP_ORIGIN;
+  config.appName = v.APP_NAME;
   // Secure-cookie только по HTTPS; для локальной разработки по http выключается автоматически.
   config.secureCookies = v.APP_ORIGIN.startsWith('https:');
   config.trustProxy = v.TRUST_PROXY;
@@ -391,6 +393,66 @@ export function reorderStorages(ids) {
   }
   storages = ids.map((id) => findStorageDef(id));
   storagesChanged();
+}
+
+// ---------- перенос настроек на другой сервер ----------
+// Секрет сессий не переносится никогда; ключи S3 — только по явному выбору.
+// Адрес сайта не импортируется: на новом сервере он свой, а смена заблокировала бы вход.
+const NOT_IMPORTED = new Set(['APP_ORIGIN', 'SESSION_SECRET']);
+
+export function exportSettings({ secrets = false } = {}) {
+  const settings = {};
+  for (const [key, value] of Object.entries(overrides)) if (key !== 'SESSION_SECRET') settings[key] = value;
+  return {
+    format: 'file-manager-settings',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    withSecrets: Boolean(secrets),
+    settings,
+    placement,
+    storages: storages.map((def) => (secrets ? { ...def } : publicStorageForExport(def))),
+  };
+}
+const publicStorageForExport = (def) => {
+  const { secretAccessKey, ...rest } = def;
+  return rest;
+};
+
+/**
+ * Применяет файл экспорта. Хранилища сопоставляются по id: существующее обновляется
+ * (пустой ключ — прежний), новое добавляется, только если в файле есть секретный ключ.
+ * @returns {{ settings: string[], added: string[], updated: string[], skipped: string[] }}
+ */
+export function importSettings(data) {
+  if (data?.format !== 'file-manager-settings' || data.version !== 1) {
+    throw Object.assign(new Error('Это не файл настроек файлообменника'), { status: 400 });
+  }
+  const report = { settings: [], added: [], updated: [], skipped: [] };
+  const values = {};
+  for (const [key, value] of Object.entries(data.settings ?? {})) {
+    if (isField(key) && !NOT_IMPORTED.has(key)) values[key] = value;
+  }
+  if (Object.keys(values).length) report.settings = updateSettings(values);
+  const list = Array.isArray(data.storages) ? data.storages.slice(0, 50) : [];
+  for (const input of list) {
+    const name = String(input?.name ?? input?.bucket ?? 'хранилище').slice(0, 60);
+    const existing = typeof input?.id === 'string' ? findStorageDef(input.id) : null;
+    if (existing) {
+      updateStorage(existing.id, { ...input, secretAccessKey: input.secretAccessKey ?? '' });
+      report.updated.push(name);
+    } else if (input?.secretAccessKey) {
+      const def = parseStorageDef(input);
+      if (typeof input.id === 'string' && /^[a-z0-9]{1,24}$/.test(input.id)) def.id = input.id; // ссылки на файлы сохранятся
+      while (findStorageDef(def.id)) def.id = newStorageId();
+      storages = [...storages, def];
+      storagesChanged();
+      report.added.push(name);
+    } else {
+      report.skipped.push(name);
+    }
+  }
+  if (PLACEMENTS.includes(data.placement) && data.placement !== placement) setPlacement(data.placement);
+  return report;
 }
 
 export function setPlacement(value) {

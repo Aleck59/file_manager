@@ -2,7 +2,8 @@ import path from 'node:path';
 import { config } from './config.js';
 import { currentUser, requireAuth, requireRole } from './auth.js';
 import { createApp, json, Router, serveStatic } from './http.js';
-import { errorHandler, rateLimit, sameOriginOnly, securityHeaders } from './middleware/security.js';
+import { branding, currentLogo, MAX_LOGO, saveLogo } from './branding.js';
+import { audit, errorHandler, HttpError, rateLimit, sameOriginOnly, securityHeaders } from './middleware/security.js';
 import { adminRouter } from './routes/admin.js';
 import { authRouter } from './routes/auth.js';
 import { filesRouter } from './routes/files.js';
@@ -21,6 +22,24 @@ app.use(securityHeaders);
 
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
+// Логотип — публичный (нужен и на странице входа). Только растровые форматы, nosniff.
+app.get('/branding/logo', (req, res) => {
+  const logo = currentLogo();
+  if (!logo) return res.status(404).type('text/plain; charset=utf-8').send('Not found');
+  res.setHeader('Content-Type', logo.type);
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+  res.sendFile(logo.file, { cacheControl: 'public, max-age=300' });
+});
+
+// Загрузка логотипа: base64 в JSON больше общего лимита API (32 КБ), поэтому — отдельный маршрут.
+app.put('/api/settings/logo', json({ limit: Math.ceil(MAX_LOGO * 1.4) + 1024 }), sameOriginOnly, requireAuth, requireRole('admin'), (req, res) => {
+  const data = req.body?.data;
+  if (typeof data !== 'string') throw new HttpError(400, 'Нет файла');
+  saveLogo(Buffer.from(data, 'base64'));
+  audit(req, 'settings.update', { keys: ['LOGO'] });
+  res.json(branding());
+});
+
 // --- API ---
 const api = Router();
 api.use(json({ limit: 32 * 1024 }));
@@ -30,6 +49,8 @@ api.use((req, res, next) => {
   next();
 });
 api.use('/auth', authRouter);
+// Название и логотип — без входа: их показывает и страница входа.
+api.get('/branding', (req, res) => res.json(branding()));
 api.use(requireAuth, rateLimit({ windowMs: 60 * 1000, max: 600 }));
 api.use('/users', requireRole('admin'), usersRouter);
 api.use('/settings', requireRole('admin'), settingsRouter);

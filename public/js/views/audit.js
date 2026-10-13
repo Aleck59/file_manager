@@ -19,6 +19,7 @@ const ACTIONS = {
   'settings.update': ['Изменение настроек', 'settings'],
   'settings.reset': ['Сброс настроек к .env', 'settings'],
   'settings.import': ['Импорт настроек', 'settings'],
+  'settings.export': ['Экспорт настроек', 'download'],
   'storage.add': ['Подключение хранилища', 'server'],
   'storage.update': ['Изменение хранилища', 'server'],
   'storage.remove': ['Отключение хранилища', 'server'],

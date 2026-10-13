@@ -5,11 +5,12 @@
 import crypto from 'node:crypto';
 import { setSessionCookie } from '../auth.js';
 import {
-  addStorage, config, describeSettings, findStorageDef, isField, parseField, parseStorageDef, PLACEMENTS,
+  addStorage, config, describeSettings, exportSettings, importSettings, findStorageDef, isField, parseField, parseStorageDef, PLACEMENTS,
   publicStorage, removeStorage, reorderStorages, resetSettings, setPlacement, settingsFilePath, updateSettings, updateStorage,
 } from '../config.js';
 import { Router } from '../http.js';
 import { audit, HttpError } from '../middleware/security.js';
+import { branding, removeLogo } from '../branding.js';
 import { Storage, testConnection, preflightCheck } from '../s3.js';
 import * as storagesRegistry from '../storages.js';
 import { getUser } from '../users.js';
@@ -175,6 +176,30 @@ settingsRouter.post('/storages/:id/cors', async (req, res) => {
   const r = await applyCors(def);
   if (!r.ok) throw new HttpError(422, r.error);
   res.json({ ok: true, origin: config.appOrigin });
+});
+
+// ---------- оформление и перенос настроек ----------
+
+// DELETE /api/settings/logo — вернуть стандартный значок
+settingsRouter.delete('/logo', (req, res) => {
+  removeLogo();
+  audit(req, 'settings.update', { keys: ['LOGO'] });
+  res.json(branding());
+});
+
+// GET /api/settings/export?secrets=1 — файл настроек для переноса на другой сервер
+settingsRouter.get('/export', (req, res) => {
+  const secrets = req.query.secrets === '1';
+  audit(req, 'settings.export', { secrets });
+  res.setHeader('Content-Disposition', `attachment; filename="file-manager-settings-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.json(exportSettings({ secrets }));
+});
+
+// POST /api/settings/import {data} — применить файл экспорта
+settingsRouter.post('/import', (req, res) => {
+  const report = wrap(() => importSettings(req.body?.data));
+  audit(req, 'settings.import', { settings: report.settings, added: report.added, updated: report.updated, skipped: report.skipped });
+  res.json({ ...payload(), report });
 });
 
 // ---------- сессии и перезапуск ----------

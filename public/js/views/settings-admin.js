@@ -117,7 +117,7 @@ export function adminSettings(ctx) {
 
   function render() {
     const f = Object.fromEntries(data.fields.map((x) => [x.key, x]));
-    root.replaceChildren(storagesCard(), limitsCard(f), appCard(f), infoCard());
+    root.replaceChildren(storagesCard(), limitsCard(f), appCard(f), brandCard(f), transferCard(), infoCard());
   }
 
   // ---------- Хранилища (единый диск) ----------
@@ -537,6 +537,7 @@ export function adminSettings(ctx) {
       try {
         const res = await api.saveSettings(values, opts);
         applyResult(res, 'Настройки сохранены');
+        if (values.APP_NAME !== undefined) api.branding().then((b) => window.dispatchEvent(new CustomEvent('fm-branding', { detail: b }))).catch(() => {});
         if (opts.confirmOriginChange) {
           await openDialog({ title: 'Адрес сайта изменён', text: `Откройте файлообменник по новому адресу: ${values.APP_ORIGIN}`, confirmLabel: 'Перейти' })
             .then((go) => { if (go) window.location.assign(values.APP_ORIGIN); });
@@ -548,6 +549,118 @@ export function adminSettings(ctx) {
       }
     } }, 'Сохранить');
     return h('div', { class: 'space-y-3' }, h('div', {}, btn), status);
+  }
+
+  // ---------- Название и логотип ----------
+  function brandCard(f) {
+    const name = settingField(f.APP_NAME, { label: 'Название', wide: true, onReset: reset,
+      hint: 'Показывается в левой панели, на странице входа и в заголовке вкладки.' });
+    const img = h('img', { alt: '', class: 'h-12 w-12 rounded-xl object-contain' });
+    const status = statusLine();
+    const input = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', class: 'sr-only', id: 'logo-input' });
+    const removeBtn = h('button', { type: 'button', class: 'btn-ghost', onclick: removeLogo }, icon('trash'), 'Стандартный');
+    const show = (b) => {
+      img.src = b.logo ?? '/favicon.svg';
+      removeBtn.classList.toggle('hidden', !b.logo);
+      window.dispatchEvent(new CustomEvent('fm-branding', { detail: b }));
+    };
+    api.branding().then(show).catch(() => {});
+    input.addEventListener('change', async () => {
+      const file = input.files[0];
+      input.value = '';
+      if (!file) return;
+      if (file.size > 256 * 1024) return setStatus(status, 'error', 'Логотип больше 256 КБ');
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      try {
+        show(await api.uploadLogo(btoa(bin)));
+        setStatus(status, 'ok', 'Логотип обновлён');
+      } catch (err) {
+        setStatus(status, 'error', err.message);
+      }
+    });
+    async function removeLogo() {
+      try {
+        show(await api.removeLogo());
+        setStatus(status, 'ok', 'Возвращён стандартный значок');
+      } catch (err) {
+        setStatus(status, 'error', err.message);
+      }
+    }
+    return card('Название и логотип', 'Как называется файлообменник для пользователей.', 'image',
+      h('div', { class: 'grid gap-4 sm:grid-cols-2' }, name.el),
+      h('div', {},
+        h('p', { class: 'mb-1.5 text-sm font-medium' }, 'Логотип'),
+        h('div', { class: 'flex flex-wrap items-center gap-3' },
+          h('span', { class: 'flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800' }, img),
+          h('label', { for: 'logo-input', class: 'btn-ghost cursor-pointer border border-slate-200 dark:border-slate-700' }, icon('upload'), 'Загрузить'),
+          input, removeBtn),
+        h('p', { class: 'mt-1 text-xs text-slate-500 dark:text-slate-400' }, 'PNG, JPEG или WebP до 256 КБ, лучше квадратный. SVG не принимается: в нём может быть скрипт.'),
+        status),
+      saveRow([name]));
+  }
+
+  // ---------- Перенос настроек ----------
+  function transferCard() {
+    const withSecrets = h('input', { type: 'checkbox', id: 'export-secrets', class: 'check' });
+    const status = statusLine();
+    const fileInput = h('input', { type: 'file', accept: 'application/json,.json', class: 'sr-only', id: 'import-input' });
+    async function doExport() {
+      try {
+        const res = await fetch(`/api/settings/export${withSecrets.checked ? '?secrets=1' : ''}`, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Ошибка ${res.status}`);
+        const url = URL.createObjectURL(await res.blob());
+        const a = h('a', { href: url, download: `file-manager-settings-${new Date().toISOString().slice(0, 10)}.json` });
+        document.body.append(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setStatus(status, 'ok', withSecrets.checked ? 'Файл скачан. В нём ключи S3 — храните его как пароль.' : 'Файл скачан (без ключей S3).');
+      } catch (err) {
+        setStatus(status, 'error', err.message);
+      }
+    }
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      fileInput.value = '';
+      if (!file) return;
+      let data;
+      try {
+        data = JSON.parse(await file.text());
+      } catch {
+        return setStatus(status, 'error', 'Файл не похож на JSON');
+      }
+      const ok = await confirmDialog('Применить настройки из файла?',
+        'Параметры загрузки, сессий и хранилищ будут заменены значениями из файла. Адрес сайта и секрет сессий не меняются. Хранилища без ключа в файле не добавляются.', 'Применить');
+      if (!ok) return;
+      try {
+        const res = await api.importSettings(data);
+        const r = res.report;
+        const parts = [];
+        if (r.settings.length) parts.push(`настройки: ${r.settings.join(', ')}`);
+        if (r.updated.length) parts.push(`обновлены хранилища: ${r.updated.join(', ')}`);
+        if (r.added.length) parts.push(`добавлены: ${r.added.join(', ')}`);
+        if (r.skipped.length) parts.push(`без ключа, пропущены: ${r.skipped.join(', ')}`);
+        setStatus(status, r.skipped.length ? 'info' : 'ok', parts.length ? `Готово — ${parts.join('; ')}.` : 'Изменений нет.');
+        if (r.added.length || r.updated.length) {
+          toast('Хранилища изменены — страница обновится', 'success');
+          setTimeout(() => window.location.reload(), 2500);
+        }
+      } catch (err) {
+        setStatus(status, 'error', err.message);
+      }
+    });
+    return card('Перенос настроек', 'Файл с настройками — для переноса на другой сервер или резервной копии.', 'download',
+      h('div', { class: 'flex flex-wrap items-center gap-3' },
+        h('button', { type: 'button', class: 'btn-ghost border border-slate-200 dark:border-slate-700', onclick: doExport }, icon('download'), 'Скачать настройки'),
+        h('label', { for: 'export-secrets', class: 'flex items-center gap-2 text-sm' }, withSecrets, 'с ключами доступа S3'),
+        h('span', { class: 'flex-1' }),
+        h('label', { for: 'import-input', class: 'btn-ghost cursor-pointer border border-slate-200 dark:border-slate-700' }, icon('upload'), 'Загрузить из файла'),
+        fileInput),
+      h('p', { class: 'text-xs text-slate-500 dark:text-slate-400' },
+        'Без ключей: на новом сервере обновятся параметры уже подключённых хранилищ. С ключами — хранилища подключатся полностью; такой файл храните как пароль. Пользователи и пароли не переносятся (файл data/users.json).'),
+      status);
   }
 
   // ---------- Служебное ----------

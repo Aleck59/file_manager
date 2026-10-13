@@ -1,4 +1,10 @@
 const form = document.getElementById('login-form');
+
+// Название и логотип, заданные администратором.
+fetch('/api/branding').then((r) => r.json()).then((b) => {
+  if (b.name) { document.getElementById('brand-name').textContent = b.name; document.title = `Вход — ${b.name}`; }
+  if (b.logo) document.getElementById('brand-logo').src = b.logo;
+}).catch(() => {});
 const errorBox = document.getElementById('login-error');
 const button = form.querySelector('button[type=submit]');
 const toggle = document.getElementById('toggle-password');

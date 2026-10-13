@@ -83,6 +83,18 @@ function showClockSkew(list) {
   $('#storage-banner').after(banner);
 }
 
+// ---------- название и логотип ----------
+let appName = 'Файлообменник';
+function applyBranding(b) {
+  if (b?.name) {
+    appName = b.name;
+    $('#brand-name').textContent = b.name;
+    document.title = document.title.replace(/ — .*$/, ` — ${b.name}`);
+  }
+  $('#brand-logo').src = b?.logo ?? '/favicon.svg';
+}
+window.addEventListener('fm-branding', (e) => applyBranding(e.detail));
+
 // ---------- левая панель ----------
 function initSidebar() {
   const navIcons = { home: ['home', 'Главная'], users: ['users', 'Пользователи'], audit: ['clock', 'Журнал'], settings: ['settings', 'Настройки'] };
@@ -207,7 +219,7 @@ function route() {
   else if (r.name === 'settings') current = mountSettings(view, ctx);
   else current = mountHome(view, ctx);
   const titles = { home: 'Главная', disk: 'Диск', users: 'Пользователи', audit: 'Журнал', settings: 'Настройки' };
-  document.title = `${titles[r.name]} — Файлообменник`;
+  document.title = `${titles[r.name]} — ${appName}`;
 }
 
 // ---------- загрузки ----------
@@ -511,6 +523,7 @@ async function start() {
   } catch {
     return; // при 401 api сам перенаправит на /login
   }
+  api.branding().then(applyBranding).catch(() => {});
   initLibrary(ctx.user.username);
   showClockSkew(ctx.clockSkew);
   initSidebar();
