@@ -44,6 +44,7 @@ const ctx = {
   enqueue,
   importFromUrl,
   enqueueFiles: (files, folder) => enqueue(files, folder),
+  trackJob: (job, opts) => trackJob(job, opts),
   transferFile,
   refreshStats,
   selectAfterNavigate: null,
@@ -391,10 +392,10 @@ function trackJob(job, { folder = '', kind = 'url', oldKey, label } = {}) {
   const status = h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400' }, 'подключение…');
   const bar = h('div');
   const title = h('p', { class: 'truncate text-sm font-medium' }, label ?? job.name);
-  const what = kind === 'transfer' ? 'перенос в другое хранилище' : 'загрузку по ссылке';
+  const what = kind === 'transfer' ? 'перенос в другое хранилище' : kind === 'backup' ? 'резервное копирование' : 'загрузку по ссылке';
   const cancel = h('button', { type: 'button', class: 'icon-btn h-7 w-7', title: 'Отменить', 'aria-label': `Отменить ${what}`, onclick: () => api.jobCancel(job.id).catch(() => {}) }, icon('close'));
   const row = h('li', { class: 'upload-row flex items-center gap-3 px-4 py-3' },
-    h('span', { class: 'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-600 dark:bg-sky-950/60 dark:text-sky-400', title: kind === 'transfer' ? 'Перенос между хранилищами' : 'Загрузка по ссылке' }, icon(kind === 'transfer' ? 'server' : 'globe')),
+    h('span', { class: 'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-600 dark:bg-sky-950/60 dark:text-sky-400', title: { transfer: 'Перенос между хранилищами', backup: 'Резервное копирование' }[kind] ?? 'Загрузка по ссылке' }, icon(kind === 'url' ? 'globe' : 'server')),
     h('div', { class: 'min-w-0 flex-1' },
       h('div', { class: 'flex items-baseline justify-between gap-3' }, title, status),
       h('div', { class: 'progress mt-2' }, bar)),
@@ -432,7 +433,7 @@ function trackJob(job, { folder = '', kind = 'url', oldKey, label } = {}) {
       finish(true);
       status.textContent = 'Готово';
       if (kind === 'transfer') current?.onTransferred?.(oldKey, j.file);
-      else current?.onUploaded?.(j.file, j.folder ?? folder);
+      else if (kind === 'url') current?.onUploaded?.(j.file, j.folder ?? folder);
       refreshStats();
     } else {
       if (j.status === 'cancelled') { finish(false); row.remove(); settle(j); return; }

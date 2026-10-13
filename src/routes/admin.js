@@ -1,7 +1,9 @@
-// Разделы только для администратора: журнал действий, права на папки.
+// Разделы только для администратора: журнал действий, права на папки, резервные копии.
 import * as auditLog from '../audit-log.js';
 import { Router } from '../http.js';
 import * as acl from '../acl.js';
+import * as backup from '../backup.js';
+import * as storages from '../storages.js';
 import { isValidFolder } from '../keys.js';
 import { audit, HttpError } from '../middleware/security.js';
 import { getUser, listUsers } from '../users.js';
@@ -43,4 +45,49 @@ adminRouter.put('/acl', (req, res) => {
   acl.setRule(folder, rule);
   audit(req, 'acl.set', { folder, rule });
   res.json({ ok: true, ...acl.getRule(folder) });
+});
+
+// ---------- резервное копирование между хранилищами ----------
+const wrap = (fn) => {
+  try {
+    return fn();
+  } catch (err) {
+    throw err instanceof HttpError || !err.status ? err : new HttpError(err.status, err.message);
+  }
+};
+
+adminRouter.get('/backup', (req, res) => {
+  res.json({ plans: backup.list(), storages: storages.all().map((s) => ({ id: s.id, name: s.name })) });
+});
+
+adminRouter.post('/backup', (req, res) => {
+  const plan = wrap(() => backup.save(req.body ?? {}));
+  audit(req, 'backup.plan', { ...plan });
+  res.status(201).json({ plan });
+});
+
+adminRouter.put('/backup/:id', (req, res) => {
+  if (!backup.list().some((p) => p.id === req.params.id)) throw new HttpError(404, 'Резервная копия не найдена');
+  const plan = wrap(() => backup.save(req.body ?? {}, req.params.id));
+  audit(req, 'backup.plan', { ...plan });
+  res.json({ plan });
+});
+
+adminRouter.delete('/backup/:id', (req, res) => {
+  if (!backup.remove(req.params.id)) throw new HttpError(404, 'Резервная копия не найдена');
+  audit(req, 'backup.plan', { id: req.params.id, removed: true });
+  res.json({ ok: true });
+});
+
+// POST /api/admin/backup/:id/run | /restore → 202 {job}; статус — GET /api/jobs/:id
+adminRouter.post('/backup/:id/run', (req, res) => {
+  const job = wrap(() => backup.start(req.params.id, { user: req.user.username }));
+  audit(req, 'backup.run', { id: req.params.id });
+  res.status(202).json({ job });
+});
+
+adminRouter.post('/backup/:id/restore', (req, res) => {
+  const job = wrap(() => backup.start(req.params.id, { user: req.user.username, restore: true }));
+  audit(req, 'backup.restore', { id: req.params.id });
+  res.status(202).json({ job });
 });

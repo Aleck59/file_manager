@@ -10,7 +10,7 @@
 //   получает предупреждение.
 import { config, onConfigChange } from './config.js';
 import { recordUsage } from './usage-history.js';
-import { categoryOf, compareKeys, folderFromKey, formatRef, isValidFolder, isValidKey, nameFromKey, parseRef } from './keys.js';
+import { categoryOf, compareKeys, folderFromKey, formatRef, isReservedFolder, isValidFolder, isValidKey, nameFromKey, parseRef } from './keys.js';
 import { describeS3Error, Storage } from './s3.js';
 
 const GB = 1024 ** 3;
@@ -230,7 +230,7 @@ export async function search({ q = '', category, match, limit = 200 }) {
       const down = skipWhileDown(st);
       if (down) throw down;
       const done = await st.forEachObject('', async (o) => {
-        if (o.rel.startsWith('.trash/')) return;
+        if (isReservedFolder(o.rel)) return;
         // Папки — по маркерам и по путям файлов.
         let f = folderFromKey(o.rel);
         while (f) {
@@ -309,7 +309,7 @@ async function computeStats() {
   for (const st of all()) {
     // files/size — файлы файлообменника; bucketObjects/bucketSize — ВЕСЬ бакет, включая
     // объекты, загруженные другими программами: это реально занятое место у провайдера.
-    const item = { id: st.id, name: st.name, files: 0, size: 0, bucketObjects: 0, bucketSize: 0, trashSize: 0,
+    const item = { id: st.id, name: st.name, files: 0, size: 0, bucketObjects: 0, bucketSize: 0, trashSize: 0, backupSize: 0,
       quota: (st.def.quotaGb || 0) * GB, acceptUploads: st.def.acceptUploads, storageClass: st.def.storageClass || null,
       complete: true, error: null };
     try {
@@ -322,6 +322,10 @@ async function computeStats() {
         const rel = st.rel(key);
         if (rel.startsWith('.trash/')) { // корзина — отдельной строкой
           item.trashSize += size;
+          return;
+        }
+        if (rel.startsWith('.backup/')) { // резервные копии других хранилищ — тоже
+          item.backupSize += size;
           return;
         }
         if (rel.endsWith('/')) {

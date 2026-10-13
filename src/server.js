@@ -14,6 +14,8 @@ import { filesRouter } from './routes/files.js';
 import { settingsRouter } from './routes/settings.js';
 import { trashRouter } from './routes/trash.js';
 import * as trash from './trash.js';
+import { webdav } from './webdav.js';
+import * as backup from './backup.js';
 import * as labelsStore from './labels.js';
 import { usersRouter } from './routes/users.js';
 import { initUsers } from './users.js';
@@ -81,6 +83,9 @@ app.get('/index.html', (req, res) => (currentUser(req) ? indexPage(req, res) : r
 app.get('/login', (req, res) => (currentUser(req) ? res.redirect(302, '/') : loginPage(req, res)));
 app.get('/login.html', (req, res) => (currentUser(req) ? res.redirect(302, '/') : loginPage(req, res)));
 
+// WebDAV: диск как сетевая папка (своя Basic-авторизация, см. webdav.js).
+app.use('/dav', webdav);
+
 // PWA: service worker — без долгого кеша (иначе обновления приходили бы с опозданием).
 app.get('/sw.js', page('sw.js'));
 // «Поделиться» без service worker (старый браузер, первый запуск) — просто открыть приложение.
@@ -96,6 +101,7 @@ app.use(errorHandler);
 const server = app.listen(config.port, config.host, () => {
   console.log(`File manager запущен: http://${config.host}:${config.port} (публичный адрес ${config.appOrigin})`);
   trash.startAutoPurge();
+  backup.startScheduler();
   if (!config.s3Configured) console.log('Хранилище S3 не настроено — укажите его в интерфейсе: Настройки → Хранилище S3.');
 });
 

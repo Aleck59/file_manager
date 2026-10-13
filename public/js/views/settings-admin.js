@@ -3,7 +3,7 @@
 // в data/settings.json. Секреты в браузер не передаются — их можно только заменить.
 import { api } from '../api.js';
 import { detectPreset, S3_PRESETS, STORAGE_CLASS_LABELS, storageClassesFor } from '../s3-presets.js';
-import { confirmDialog, FILES, formatSize, h, icon, openDialog, pluralize, toast } from '../ui.js';
+import { confirmDialog, FILES, formatDateShort, formatSize, h, icon, openDialog, pluralize, toast } from '../ui.js';
 
 const OBJECTS = { one: 'объект', few: 'объекта', many: 'объектов', other: 'объекта' };
 
@@ -117,7 +117,7 @@ export function adminSettings(ctx) {
 
   function render() {
     const f = Object.fromEntries(data.fields.map((x) => [x.key, x]));
-    root.replaceChildren(storagesCard(), limitsCard(f), usersCard(f), appCard(f), brandCard(f), transferCard(), infoCard());
+    root.replaceChildren(storagesCard(), limitsCard(f), usersCard(f), appCard(f), brandCard(f), backupCard(), transferCard(), infoCard());
   }
 
   // ---------- Хранилища (единый диск) ----------
@@ -481,6 +481,7 @@ export function adminSettings(ctx) {
     const origin = f.APP_ORIGIN.value || location.origin;
     const cb = (id) => `${origin}/api/auth/oauth/${id}/callback`;
     const fields = [
+      settingField(f.WEBDAV_ENABLED, { label: 'WebDAV', hint: `Диск как сетевая папка: ${origin}/dav/ — логин и пароль (с 2FA — API-токен вместо пароля)`, onReset: reset, wide: true }),
       settingField(f.PERSONAL_FOLDERS, { label: 'Личные папки', hint: 'У каждого пользователя своя папка, которую видит только он (и администраторы)', onReset: reset }),
       settingField(f.PERSONAL_ROOT, { label: 'Где лежат личные папки', hint: 'Папка в корне диска: «Личные/<логин>/»', onReset: reset }),
       settingField(f.OAUTH_YANDEX_ID, { label: 'Яндекс ID: ClientID', hint: `oauth.yandex.ru → создать приложение, доступ «login:email». Redirect URI: ${cb('yandex')}`, onReset: reset, wide: true }),
@@ -679,6 +680,89 @@ export function adminSettings(ctx) {
       h('p', { class: 'text-xs text-slate-500 dark:text-slate-400' },
         'Без ключей: на новом сервере обновятся параметры уже подключённых хранилищ. С ключами — хранилища подключатся полностью; такой файл храните как пароль. Пользователи и пароли не переносятся (файл data/users.json).'),
       status);
+  }
+
+  // ---------- Резервное копирование ----------
+  function backupCard() {
+    const body = h('div', { class: 'space-y-4' }, h('div', { class: 'h-16 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800' }));
+    const SCHEDULE = { off: 'вручную', daily: 'каждый день', weekly: 'по воскресеньям' };
+    const selectCls = 'select w-full';
+
+    async function load() {
+      let data;
+      try {
+        data = await api.backups();
+      } catch (err) {
+        return body.replaceChildren(h('p', { class: 'text-sm text-rose-600' }, err.message));
+      }
+      const name = (id) => data.storages.find((s) => s.id === id)?.name ?? id;
+      if (data.storages.length < 2) {
+        return body.replaceChildren(h('p', { class: 'text-sm text-slate-500 dark:text-slate-400' },
+          'Нужно хотя бы два хранилища: копия делается в другое (лучше — у другого провайдера). Подключите второе в карточке «Хранилища».'));
+      }
+      const row = (p) => {
+        const last = p.last;
+        const lastText = !last ? 'ещё не запускалась'
+          : last.status === 'done'
+            ? (last.kind === 'restore'
+              ? `восстановлено ${last.restored} (${formatSize(last.bytes)})${last.failed ? `, ошибок ${last.failed}` : ''}`
+              : `скопировано ${last.copied} (${formatSize(last.bytes)}), без изменений ${last.skipped}${last.deleted ? `, удалено ${last.deleted}` : ''}${last.failed ? `, ошибок ${last.failed}` : ''}`)
+            : `${last.status === 'cancelled' ? 'отменено' : 'ошибка'}: ${last.error ?? ''}`;
+        const run = async (restore) => {
+          if (restore && !(await confirmDialog('Восстановить из копии?', `В «${name(p.source)}» вернутся файлы, которых там нет, но есть в копии. Существующие файлы не меняются.`, 'Восстановить'))) return;
+          try {
+            const { job } = restore ? await api.restoreBackup(p.id) : await api.runBackup(p.id);
+            ctx.trackJob(job, { kind: 'backup', label: job.name }).then(load);
+            load();
+          } catch (err) {
+            toast(err.message, 'error');
+          }
+        };
+        return h('li', { class: 'flex flex-wrap items-center gap-3 py-3' },
+          h('span', { class: 'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' }, icon('server')),
+          h('div', { class: 'min-w-0 flex-1' },
+            h('p', { class: 'text-sm font-medium' }, `${name(p.source)} → ${name(p.target)}`),
+            h('p', { class: 'text-xs text-slate-500 dark:text-slate-400' },
+              [SCHEDULE[p.schedule] + (p.schedule !== 'off' ? ` в ${p.hour}:00` : ''), p.mirror ? 'зеркало (удалённое удаляется и из копии)' : 'удалённое остаётся в копии',
+                p.running ? 'идёт сейчас' : last && `последний раз ${formatDateShort(last.at)}: ${lastText}`].filter(Boolean).join(' · '))),
+          h('div', { class: 'flex gap-1' },
+            h('button', { type: 'button', class: 'btn-ghost border border-slate-200 dark:border-slate-700', disabled: p.running, onclick: () => run(false) }, icon('refresh'), 'Копировать сейчас'),
+            h('button', { type: 'button', class: 'btn-ghost', disabled: p.running, onclick: () => run(true) }, 'Восстановить…'),
+            h('button', { type: 'button', class: 'icon-btn-danger', title: 'Удалить настройку', 'aria-label': 'Удалить настройку резервной копии',
+              onclick: async () => {
+                if (!(await confirmDialog('Удалить настройку?', 'Сама копия в хранилище останется — её можно удалить вручную (папка .backup).', 'Удалить'))) return;
+                await api.deleteBackup(p.id).catch((err) => toast(err.message, 'error'));
+                load();
+              } }, icon('trash'))));
+      };
+      const options = (sel) => data.storages.map((s) => h('option', { value: s.id, selected: s.id === sel }, s.name));
+      const source = h('select', { class: selectCls, 'aria-label': 'Что копировать' }, options(data.storages[0].id));
+      const target = h('select', { class: selectCls, 'aria-label': 'Куда копировать' }, options(data.storages[1].id));
+      const schedule = h('select', { class: selectCls, 'aria-label': 'Расписание' }, Object.entries(SCHEDULE).map(([v, l]) => h('option', { value: v, selected: v === 'daily' }, l)));
+      const hour = h('select', { class: selectCls, 'aria-label': 'Час' }, Array.from({ length: 24 }, (_, i) => h('option', { value: i, selected: i === 3 }, `${i}:00`)));
+      const mirror = h('input', { type: 'checkbox', class: 'check', id: 'backup-mirror' });
+      const status = statusLine();
+      const add = h('button', { type: 'button', class: 'btn-primary', onclick: async () => {
+        try {
+          await api.createBackup({ source: source.value, target: target.value, schedule: schedule.value, hour: Number(hour.value), mirror: mirror.checked });
+          load();
+        } catch (err) {
+          setStatus(status, 'error', err.message);
+        }
+      } }, icon('plus'), 'Добавить');
+      body.replaceChildren(
+        data.plans.length ? h('ul', { class: 'divide-y divide-slate-100 dark:divide-slate-800' }, data.plans.map(row)) : h('p', { class: 'text-sm text-slate-500' }, 'Резервных копий пока нет.'),
+        h('div', { class: 'grid gap-3 rounded-xl border border-dashed border-slate-300 p-4 sm:grid-cols-4 dark:border-slate-700' },
+          h('label', { class: 'text-sm' }, h('span', { class: 'mb-1 block font-medium' }, 'Что'), source),
+          h('label', { class: 'text-sm' }, h('span', { class: 'mb-1 block font-medium' }, 'Куда'), target),
+          h('label', { class: 'text-sm' }, h('span', { class: 'mb-1 block font-medium' }, 'Когда'), schedule),
+          h('label', { class: 'text-sm' }, h('span', { class: 'mb-1 block font-medium' }, 'Во сколько'), hour),
+          h('label', { for: 'backup-mirror', class: 'flex items-center gap-2 text-sm sm:col-span-3' }, mirror, 'Зеркало: удалённое в источнике удалять и из копии'),
+          h('div', { class: 'flex justify-end' }, add),
+          h('div', { class: 'sm:col-span-4' }, status)));
+    }
+    load();
+    return card('Резервное копирование', 'Копия хранилища в другое: новые и изменённые файлы, по расписанию или вручную. Лежит в служебной папке .backup — на диске не видна.', 'server', body);
   }
 
   // ---------- Служебное ----------

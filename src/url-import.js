@@ -180,8 +180,8 @@ export function finishJob(job) {
 export const activeJobs = () => [...jobs.values()].filter((j) => j.status === 'running');
 
 function publicJob(job) {
-  const { id, type, name, folder, size, loaded, status, error, file, startedAt, target } = job;
-  return { id, type, name, folder, size, loaded, status, error, file, startedAt, target };
+  const { id, type, name, folder, size, loaded, status, error, file, startedAt, target, result } = job;
+  return { id, type, name, folder, size, loaded, status, error, file, startedAt, target, result };
 }
 
 export function getJob(id, user) {

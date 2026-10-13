@@ -41,6 +41,7 @@ export const FIELDS = {
   UPLOAD_URL_TTL_MIN: { section: 'limits', type: 'int', default: 60, min: 1, max: 7 * 24 * 60, apply: 'live' },
   TRASH_DAYS: { section: 'limits', type: 'int', default: 30, min: 0, max: 365, apply: 'live' },
 
+  WEBDAV_ENABLED: { section: 'users', type: 'bool', default: false, apply: 'live' },
   PERSONAL_FOLDERS: { section: 'users', type: 'bool', default: false, apply: 'live' },
   PERSONAL_ROOT: { section: 'users', type: 'string', default: 'Личные', maxLength: 60, apply: 'live' },
   OAUTH_YANDEX_ID: { section: 'users', type: 'string', default: '', maxLength: 200, apply: 'live' },
@@ -263,6 +264,7 @@ function apply(v) {
   config.storages = storages;
   config.placement = placement;
   config.s3Configured = storages.length > 0;
+  config.webdav = v.WEBDAV_ENABLED;
   // Личные папки: «<корень>/<логин>/» — видна только владельцу (и администраторам).
   config.personal = { enabled: v.PERSONAL_FOLDERS, root: String(v.PERSONAL_ROOT || 'Личные').replace(/[/\\]/g, '').trim() || 'Личные' };
   // Вход через Яндекс/Google: включён, если заданы и id, и секрет приложения.

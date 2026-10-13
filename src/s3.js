@@ -243,8 +243,8 @@ export class Storage {
       MaxKeys: limit,
       StartAfter: startAfter ? this.abs(startAfter) : undefined,
     }));
-    // Корзина (.trash/) в списке папок не показывается.
-    const folders = (out.CommonPrefixes ?? []).map((p) => this.rel(p.Prefix)).filter((f) => isValidFolder(f) && !f.startsWith('.trash/'));
+    // Служебные папки (.trash/, .backup/) не видны: isValidFolder их отклоняет.
+    const folders = (out.CommonPrefixes ?? []).map((p) => this.rel(p.Prefix)).filter((f) => isValidFolder(f));
     // Маркер самой папки и посторонние объекты (не нашего формата) не показываем.
     const files = (out.Contents ?? [])
       .map((o) => ({ rel: this.rel(o.Key), size: o.Size ?? 0, lastModified: o.LastModified?.toISOString() ?? null }))

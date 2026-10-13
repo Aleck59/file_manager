@@ -27,6 +27,23 @@ location / {
     client_max_body_size 64k;
 }
 
+# WebDAV (если включён в настройках): файлы идут через сервер, поэтому здесь большое тело
+# запроса и без буферизации — загрузка сразу потоком уходит в S3.
+location /dav/ {
+    proxy_pass         http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header   Host              $host;
+    proxy_set_header   X-Real-IP         $remote_addr;
+    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_set_header   Connection        "";
+    proxy_request_buffering off;
+    proxy_buffering         off;
+    client_max_body_size    0;      # предел задаёт приложение (MAX_FILE_SIZE_MB)
+    proxy_read_timeout      3600s;
+    proxy_send_timeout      3600s;
+}
+
 # location = /api/auth/login {
 #     limit_req zone=fm_login burst=5 nodelay;
 #     proxy_pass         http://127.0.0.1:3000;
