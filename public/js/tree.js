@@ -1,7 +1,7 @@
 // Дерево папок в левой панели. Подпапки подгружаются лениво при раскрытии;
 // при переходе в глубокую папку автоматически раскрываются все её предки.
 import { api } from './api.js';
-import { h, icon, makeDropTarget, toast } from './ui.js';
+import { h, homeFolder, icon, makeDropTarget, toast } from './ui.js';
 
 const nodes = new Map(); // path -> { children: [{path,name}] | null, expanded, loading }
 let container;
@@ -33,7 +33,8 @@ export function setChildren(path, folders) {
 
 export async function reload(path) {
   node(path).children = null;
-  if (node(path).expanded || path === '') await loadChildren(path);
+  if (path === '') path = homeFolder;
+  if (node(path).expanded || path === homeFolder) await loadChildren(path);
   render();
 }
 
@@ -43,14 +44,17 @@ export function forget(path) {
 
 export async function reveal(path) {
   activePath = path;
-  const chain = [''];
-  for (let i = path.indexOf('/'); i !== -1; i = path.indexOf('/', i + 1)) chain.push(path.slice(0, i + 1));
+  // Цепочка от корня диска пользователя (личной папки или всего диска) до папки.
+  const chain = [homeFolder];
+  if (path.startsWith(homeFolder)) {
+    for (let i = path.indexOf('/', homeFolder.length); i !== -1; i = path.indexOf('/', i + 1)) chain.push(path.slice(0, i + 1));
+  }
   // Раскрываем папку и всех её предков, чтобы были видны соседи и подпапки.
   for (const p of chain) {
     node(p).expanded = true;
     if (!node(p).children) await loadChildren(p);
   }
-  node('').expanded = true;
+  node(homeFolder).expanded = true;
   render();
 }
 
@@ -94,7 +98,7 @@ function renderNode(path, name, depth) {
     },
   },
   chevron,
-  icon(path === '' ? 'drive' : 'folder', `h-4 w-4 ${path === activePath ? '' : 'text-slate-400'}`),
+  icon(path === homeFolder ? 'drive' : 'folder', `h-4 w-4 ${path === activePath ? '' : 'text-slate-400'}`),
   h('span', { class: 'ml-1.5 truncate' }, name));
   // Отступ уровня через CSSOM (inline style-атрибуты запрещены CSP).
   row.style.paddingLeft = `${depth * 14 + 2}px`;
@@ -117,7 +121,7 @@ function renderNode(path, name, depth) {
 
 export function render() {
   if (!container) return;
-  container.replaceChildren(...renderNode('', 'Мой диск', 0));
+  container.replaceChildren(...renderNode(homeFolder, 'Мой диск', 0));
 }
 
 export function setDropHandler(fn) {
@@ -128,9 +132,9 @@ export function setDropHandler(fn) {
 export function initTree(el, navigate, { load = true } = {}) {
   container = el;
   onNavigate = navigate;
-  node('').expanded = true;
-  if (load) loadChildren('').then(render);
-  else node('').children = [];
+  node(homeFolder).expanded = true;
+  if (load) loadChildren(homeFolder).then(render);
+  else node(homeFolder).children = [];
   render();
 }
 

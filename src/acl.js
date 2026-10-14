@@ -1,5 +1,8 @@
 // Права на папки и личные папки.
 //
+// Пользователь с личной папкой (не администратор) видит только её и папки, открытые ему
+// правилом; корень его диска — личная папка.
+//
 // Без правил всё как раньше: доступ определяет роль (viewer — чтение, editor — запись,
 // admin — всё). Правило на папку действует на неё и всё внутри (пока ниже нет своего):
 //   users   — {логин: 'none' | 'read' | 'write'} — доступ отдельных пользователей;
@@ -49,7 +52,9 @@ export function access(user, folder) {
   if (isAdmin(user)) return 'write';
   const max = roleLevel(user);
   const rule = ruleFor(folder);
-  if (!rule) return max;
+  // У кого личная папка, тот работает только в ней: остальной диск ему закрыт,
+  // кроме папок, которые администратор открыл ему (или всем) правилом.
+  if (!rule) return !hasPersonal(user) || folder.startsWith(personalPath(user.username)) ? max : 'none';
   const own = rule.users?.[user.username];
   if (own) return min(own, max);
   return rule.others === 'role' ? max : rule.others === 'read' ? min('read', max) : 'none';
@@ -124,6 +129,9 @@ export function forgetUser(username) {
 
 // ---------- личные папки ----------
 export const personalPath = (username) => `${config.personal.root}/${username}/`;
+
+/** Корень диска для пользователя: личная папка (если есть), иначе весь диск. */
+export const homeOf = (user) => (!isAdmin(user) && hasPersonal(user) ? personalPath(user.username) : '');
 
 /** Есть ли у пользователя личная папка: для всех (настройка) или только для него (в профиле). */
 export const hasPersonal = (user) => Boolean(user && (config.personal.enabled || user.personal));

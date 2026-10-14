@@ -14,7 +14,7 @@ import { openAclDialog } from '../acl-dialog.js';
 import { forgetThumb, thumbnail } from '../thumbs.js';
 import * as tree from '../tree.js';
 import {
-  categoryOf, confirmDialog, copyToClipboard, DRAG_TYPE, FILES, folderLabel, FOLDERS, formatDate, formatDateShort, formatSize, h, icon,
+  categoryOf, confirmDialog, copyToClipboard, DRAG_TYPE, FILES, folderLabel, FOLDERS, formatDate, formatDateShort, formatSize, h, homeFolder, icon,
   makeDropTarget, openDialog, openMenu, pluralize, prefs, toast, toned,
 } from '../ui.js';
 
@@ -139,9 +139,10 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
   ctx.onPreviewMissing = () => load();
 
   // ---------- заголовок: хлебные крошки + действия ----------
-  const crumbs = [['Мой диск', '']];
-  let acc = '';
-  for (const seg of folder.split('/').filter(Boolean)) { acc += `${seg}/`; crumbs.push([seg, acc]); }
+  // Крошки начинаются с корня диска пользователя (у кого личная папка — с неё).
+  const crumbs = [['Мой диск', homeFolder]];
+  let acc = homeFolder;
+  for (const seg of folder.slice(homeFolder.length).split('/').filter(Boolean)) { acc += `${seg}/`; crumbs.push([seg, acc]); }
   const breadcrumb = h('nav', { 'aria-label': 'Путь', class: 'flex min-w-0 items-center gap-1 text-sm' },
     crumbs.flatMap(([label, path], i) => {
       const last = i === crumbs.length - 1;

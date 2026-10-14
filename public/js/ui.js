@@ -215,8 +215,13 @@ export function fileBadge(name, size = 'h-9 w-9 rounded-lg', iconSize = 'h-4 w-4
 }
 
 // Человекочитаемая папка: "" → «Мой диск», "a/b/" → «Мой диск / a / b»
+// Корень диска пользователя: у кого личная папка — она, у остальных весь диск ('').
+export let homeFolder = '';
+export function setHomeFolder(path) { homeFolder = path || ''; }
+
 export function folderLabel(folder) {
-  return ['Мой диск', ...folder.split('/').filter(Boolean)].join(' / ');
+  const rest = folder.startsWith(homeFolder) ? folder.slice(homeFolder.length) : folder;
+  return ['Мой диск', ...rest.split('/').filter(Boolean)].join(' / ');
 }
 
 // «Chrome · Windows» из User-Agent — для журнала и списка сессий.

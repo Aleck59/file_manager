@@ -7,7 +7,9 @@ import { forgetUpload, initPending, pendingUploads, rememberUpload } from './pen
 import { initPreview } from './preview.js';
 import { ProgressView } from './progress.js';
 import * as tree from './tree.js';
-import { $, applyTheme, confirmDialog, FILES, folderLabel, formatSize, h, icon, openDialog, pluralize, prefs, toast, toned } from './ui.js';
+import {
+  $, applyTheme, confirmDialog, FILES, folderLabel, formatSize, h, homeFolder, icon, openDialog, pluralize, prefs, setHomeFolder, toast, toned,
+} from './ui.js';
 import { speedLimit, UploadCancelled, UploadControl, uploadFile } from './uploader.js';
 import { diskHash, mountDisk, pathForId, rememberFolderId } from './views/disk.js';
 import { mountAudit } from './views/audit.js';
@@ -73,7 +75,7 @@ function setStorageConfigured(value) {
     ctx.can('admin') && h('a', { href: '#/settings', class: 'font-medium underline' }, 'Настроить'));
   }
   if (value && !was) {
-    tree.reload('');
+    tree.reload(homeFolder);
     refreshStats();
   }
 }
@@ -251,6 +253,11 @@ function route() {
       ctx.navigate('#/disk/');
     });
     return;
+  }
+  // Вне своего корня (у кого личная папка) — в корень.
+  if (r.name === 'disk' && !r.folder.startsWith(homeFolder)) {
+    r.folder = homeFolder;
+    history.replaceState(null, '', diskHash(homeFolder));
   }
   if ((r.name === 'users' || r.name === 'audit') && !ctx.can('admin')) r = { name: 'home' };
   if ((r.name === 'shares' || r.name === 'trash') && !ctx.can('editor')) r = { name: 'home' };
@@ -685,6 +692,7 @@ async function start() {
     ctx.clockSkew = me.clockSkew;
     ctx.trashDays = me.trashDays ?? 0;
     ctx.personal = me.personal;
+    setHomeFolder(me.home);
   } catch {
     return; // при 401 api сам перенаправит на /login
   }

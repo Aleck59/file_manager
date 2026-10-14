@@ -207,6 +207,8 @@ authRouter.get('/me', requireAuth, async (req, res) => {
   res.json({
     user: publicUser(req.user),
     personal: acl.hasPersonal(req.user) ? { path: acl.personalPath(req.user.username), quotaMb: req.user.quotaMb ?? 0 } : null,
+    // Корень диска в интерфейсе: личная папка или весь диск.
+    home: acl.homeOf(req.user),
     storageConfigured: config.s3Configured,
     // Названия хранилищ единого диска (без параметров подключения).
     storages: config.storages.map((s) => ({ id: s.id, name: s.name })),
