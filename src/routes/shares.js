@@ -8,6 +8,7 @@ import { audit, HttpError, rateLimit } from '../middleware/security.js';
 import * as shares from '../shares.js';
 import * as storages from '../storages.js';
 import * as uploadFlow from '../upload-flow.js';
+import { getUser } from '../users.js';
 
 const MB = 1024 * 1024;
 const DOWNLOAD_TTL = 10 * 60;
@@ -98,11 +99,29 @@ function readCookie(req, name) {
   return undefined;
 }
 
+// Ссылка не даёт больше, чем может её автор прямо сейчас: автор удалён или потерял
+// доступ к папке (файлу) — ссылка перестаёт действовать.
+function ownerAllows(s) {
+  const owner = getUser(s.createdBy);
+  if (!owner) return null;
+  if (s.type === 'file') {
+    const ref = parseRef(s.key);
+    return ref && acl.canRead(owner, folderFromKey(ref.rel)) ? owner : null;
+  }
+  if (s.type === 'upload') return acl.canWrite(owner, s.folder) ? owner : null;
+  return acl.canRead(owner, s.folder) ? owner : null;
+}
+
+function stateOf(s) {
+  const state = shares.stateOf(s);
+  return state === 'active' && !ownerAllows(s) ? 'revoked' : state;
+}
+
 /** Ссылка, доступная прямо сейчас (иначе — понятная ошибка). */
 function activeShare(req, { needUnlock = true, type } = {}) {
   const s = shares.get(req.params.id);
   if (!s) throw new HttpError(404, 'Ссылка не найдена');
-  const state = shares.stateOf(s);
+  const state = stateOf(s);
   if (state !== 'active') throw new HttpError(410, STATE_TEXT[state]);
   if (type && !type.includes(s.type)) throw new HttpError(400, 'Это действие недоступно по этой ссылке');
   if (needUnlock && !shares.isUnlocked(s, readCookie(req, shares.unlockCookieName(s.id)))) throw new HttpError(401, 'Нужен пароль');
@@ -122,7 +141,7 @@ function keyInside(s, key, { exact = false } = {}) {
 publicSharesRouter.get('/:id', async (req, res) => {
   const s = shares.get(req.params.id);
   if (!s) throw new HttpError(404, 'Ссылка не найдена');
-  const state = shares.stateOf(s);
+  const state = stateOf(s);
   const base = { id: s.id, type: s.type, state, message: STATE_TEXT[state] ?? null, owner: s.createdBy, expiresAt: s.expiresAt };
   if (state !== 'active') return res.status(410).json(base);
   const unlocked = shares.isUnlocked(s, readCookie(req, shares.unlockCookieName(s.id)));
@@ -156,12 +175,16 @@ publicSharesRouter.get('/:id/list', async (req, res) => {
   const s = activeShare(req, { type: ['folder'] });
   const sub = req.query.folder ?? '';
   if (!isValidFolder(sub) || !isValidFolder(s.folder + sub)) throw new HttpError(400, 'Некорректный путь папки');
+  // Вложенные папки со своими правилами — по правам автора ссылки, как он сам видит их на сайте.
+  const owner = ownerAllows(s);
+  if (!acl.canSee(owner, s.folder + sub)) throw new HttpError(404, 'Папка не найдена');
   const result = await storages.listFolder(s.folder + sub, { cursor: req.query.cursor || undefined });
   const strip = (p) => p.slice(s.folder.length);
+  const filesVisible = acl.canRead(owner, s.folder + sub);
   res.json({
     folder: sub,
-    folders: result.folders.map((f) => ({ path: strip(f.path), name: f.name })),
-    files: result.files.map(({ key, name, size, lastModified }) => ({ key, name, size, lastModified })),
+    folders: result.folders.filter((f) => acl.canSee(owner, f.path)).map((f) => ({ path: strip(f.path), name: f.name })),
+    files: filesVisible ? result.files.map(({ key, name, size, lastModified }) => ({ key, name, size, lastModified })) : [],
     nextCursor: result.nextCursor,
   });
 });
@@ -171,6 +194,7 @@ publicSharesRouter.post('/:id/download', async (req, res) => {
   const s = activeShare(req, { type: ['file', 'folder'] });
   const key = s.type === 'file' ? s.key : req.body?.key;
   const ref = s.type === 'file' ? parseRef(key) : keyInside(s, key);
+  if (s.type === 'folder' && !acl.canRead(ownerAllows(s), folderFromKey(ref.rel))) throw new HttpError(404, 'Файл не найден');
   const st = storages.get(ref.storageId);
   if (!(await st.headObject(ref.rel))) {
     if (s.type === 'file') shares.fileGone(s.key);

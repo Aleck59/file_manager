@@ -16,7 +16,7 @@ import { authenticate, hasRole } from './auth.js';
 import * as auditLog from './audit-log.js';
 import { config } from './config.js';
 import {
-  formatRef, generateKey, isValidFolder, isValidKey, rebuildKey, sanitizeFileName, sanitizeFolderName,
+  folderFromKey, formatRef, generateKey, isValidFolder, isValidKey, rebuildKey, sanitizeFileName, sanitizeFolderName,
 } from './keys.js';
 import * as labels from './labels.js';
 import * as sharesStore from './shares.js';
@@ -24,7 +24,7 @@ import * as storages from './storages.js';
 import * as trash from './trash.js';
 import { streamInto } from './url-import.js';
 import { getUser } from './users.js';
-import { personalUsage } from './routes/files.js';
+import { personalUsage, reserveQuota, treeSize } from './routes/files.js';
 
 const PREFIX = '/dav';
 const MAX_LIST = 10_000;
@@ -52,10 +52,14 @@ async function authenticateDav(req) {
   const m = /^Basic\s+([A-Za-z0-9+/=]+)$/i.exec(header);
   if (!m) return null;
   const id = crypto.createHash('sha256').update(header).digest('base64url');
+  // Кеш только для паролей и только пока пароль тот же: после смены или сброса пароля,
+  // включения 2FA старый заголовок больше не пускает. API-токены проверяются каждый раз
+  // (это быстро), так что отзыв токена действует сразу.
   const cached = authCache.get(id);
   if (cached && cached.until > Date.now()) {
     const user = getUser(cached.username);
-    return user ? { user, readOnly: cached.readOnly } : null;
+    if (user && user.passwordHash === cached.passwordHash && !user.totp) return { user, readOnly: false };
+    authCache.delete(id);
   }
   const decoded = Buffer.from(m[1], 'base64').toString('utf8');
   const i = decoded.indexOf(':');
@@ -70,11 +74,11 @@ async function authenticateDav(req) {
   } else if (secret.length <= 256) {
     const user = await authenticate(username, secret);
     // С 2FA пароля мало: нужен API-токен (код из приложения WebDAV-клиент спросить не может).
-    if (user && !user.totp) result = { user, readOnly: false };
-  }
-  if (result) {
-    if (authCache.size > 200) authCache.clear();
-    authCache.set(id, { username: result.user.username, readOnly: result.readOnly, until: Date.now() + 5 * 60_000 });
+    if (user && !user.totp) {
+      result = { user, readOnly: false };
+      if (authCache.size > 200) authCache.clear();
+      authCache.set(id, { username: user.username, passwordHash: user.passwordHash, until: Date.now() + 5 * 60_000 });
+    }
   }
   return result;
 }
@@ -359,6 +363,9 @@ async function moveOrCopy(req, res, ctx, segs, copy) {
     if (!head) throw fail(404, 'Не найдено');
     const dst = copy ? generateKey(name, destFolder) : rebuildKey(rel, { folder: destFolder, name });
     if (!isValidKey(dst)) throw fail(400, 'Слишком длинный путь или имя');
+    if (copy || !acl.inPersonal(ctx.user, target.folder)) {
+      await reserveQuota(ctx.user, destFolder, head.ContentLength ?? 0).catch((err) => { throw fail(err.status ?? 507, err.message); });
+    }
     if (dst !== rel) {
       await st.copyObject(rel, dst, head.ContentLength ?? 0, head.ContentType, head.StorageClass ?? st.storageClass);
       if (!copy) {
@@ -377,12 +384,20 @@ async function moveOrCopy(req, res, ctx, segs, copy) {
     if (!copy && (!acl.canWriteTree(ctx.user, target.path) || acl.isPersonalRoot(target.path))) throw fail(403, 'Нет прав на эту папку');
     if (existing) throw fail(existing.type === 'folder' ? 412 : 409, 'На этом месте уже что-то есть');
     if (copy) {
+      // Вложенные папки со своими правилами, закрытые для пользователя, не копируются.
+      const filter = acl.hasRules() && !acl.isAdmin(ctx.user);
+      const size = await treeSize(target.path, ctx.user);
+      await reserveQuota(ctx.user, destPath, size).catch((err) => { throw fail(err.status ?? 507, err.message); });
       await storages.everywhere(async (st) => {
         await st.forEachObject(target.path, async (o) => {
+          if (filter && !acl.canRead(ctx.user, folderFromKey(o.rel))) return;
           await st.copyObject(o.rel, destPath + o.rel.slice(target.path.length), o.size, undefined, o.storageClass ?? st.storageClass);
         });
       });
     } else {
+      if (ctx.user.quotaMb && acl.inPersonal(ctx.user, destPath) && !acl.inPersonal(ctx.user, target.path)) {
+        await reserveQuota(ctx.user, destPath, await treeSize(target.path)).catch((err) => { throw fail(err.status ?? 507, err.message); });
+      }
       await storages.moveFolder(target.path, destPath);
       sharesStore.refolder(target.path, destPath);
       labels.refolder(target.path, destPath);

@@ -11,6 +11,7 @@
 | `make-interfaces-feel-better` | Детали: анимации только transform/opacity, нажатие, зоны клика, переносы, tabular-nums |
 | `accessibility` | WCAG 2.2: фокус, контраст, размеры целей, aria-live |
 | `design-system` | Аудит визуальной согласованности, токены |
+| `security-audit` | Аудит безопасности по методике Cloudflare ([cloudflare/security-audit-skill](https://github.com/cloudflare/security-audit-skill), коммит `c1c8a8c`, MIT — `security-audit/LICENSE`): разведка, покрытие, поиск, проверка находок, отчёт |
 | `humanize-ui` | Тексты интерфейса: без лишних подзаголовков, пояснений очевидного и «машинных» оборотов (по мотивам humanizer, MIT) |
 
 Не подключены (написаны под React/Next.js и `motion/react`, а интерфейс здесь — Vanilla JS):

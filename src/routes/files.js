@@ -126,6 +126,27 @@ function noteQuotaUse(user, size) {
 }
 export { personalUsage };
 
+/** Сколько байт во всех хранилищах под префиксом (только то, что пользователь может читать). */
+export async function treeSize(prefix, user) {
+  const filter = user && acl.hasRules() && !acl.isAdmin(user);
+  const { values } = await storages.everywhere(async (st) => {
+    let sum = 0;
+    await st.forEachObject(prefix, (o) => { if (!filter || acl.canRead(user, folderFromKey(o.rel))) sum += o.size; });
+    return sum;
+  });
+  return values.reduce((a, b) => a + b, 0);
+}
+
+/**
+ * Копирование и перемещение в личную папку тоже расходуют квоту, как загрузка.
+ * Бросает 507, если места не хватает; иначе учитывает размер в кеше занятого места.
+ */
+export async function reserveQuota(user, folder, size) {
+  if (!user.quotaMb || !acl.inPersonal(user, folder)) return;
+  await quotaLimit(user, folder, size);
+  noteQuotaUse(user, size);
+}
+
 /** Сколько ещё можно положить в папку с учётом квоты (undefined — квоты нет). */
 async function quotaLimit(user, folder, size) {
   if (!user.quotaMb || !acl.inPersonal(user, folder)) return undefined;
@@ -257,6 +278,9 @@ filesRouter.post('/folders/move', canEdit, async (req, res) => {
   if (!isValidFolder(target)) throw new HttpError(400, 'Слишком глубокая вложенность или длинный путь');
   if (target === path) return res.json({ ok: true, folder: { path, name }, moved: 0 });
   if (target.startsWith(path)) throw new HttpError(400, 'Нельзя переместить папку внутрь неё самой');
+  if (req.user.quotaMb && acl.inPersonal(req.user, target) && !acl.inPersonal(req.user, path)) {
+    await reserveQuota(req.user, target, await treeSize(path));
+  }
   const { moved, warnings } = await flow(() => storages.moveFolder(path, target));
   storages.invalidateStats();
   sharesStore.refolder(path, target);
@@ -517,6 +541,7 @@ filesRouter.post('/files/move', canEdit, async (req, res) => {
   if (!head) throw new HttpError(404, 'Файл не найден');
   const size = head.ContentLength ?? 0;
   if (target === rel) return res.json({ file: fileInfo(st, rel, size, head.LastModified), folder });
+  if (!acl.inPersonal(req.user, folderFromKey(rel))) await reserveQuota(req.user, folder, size);
 
   // Класс хранения файла сохраняется (HeadObject не возвращает его для STANDARD).
   await st.copyObject(rel, target, size, head.ContentType, head.StorageClass ?? st.storageClass);
@@ -553,6 +578,7 @@ filesRouter.post('/files/copy', canEdit, async (req, res) => {
     const used = stats.storages.find((x) => x.id === st.id)?.bucketSize ?? 0;
     if (used + size > st.def.quotaGb * 1024 ** 3) throw new HttpError(507, `Нет места в хранилище «${st.name}»: квота исчерпана`);
   }
+  await reserveQuota(req.user, folder, size);
   await st.copyObject(rel, target, size, head.ContentType, head.StorageClass ?? st.storageClass);
   storages.noteUploaded(st.id, size);
   storages.invalidateStats();
