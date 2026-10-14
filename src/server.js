@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
 import { currentUser, requireAuth, requireRole } from './auth.js';
@@ -98,7 +99,16 @@ app.get('/s/:id', (req, res) => sharePage(req, res));
 app.use(serveStatic(publicDir, { maxAge: 3600 }));
 // Портал загрузки по короткому адресу: files.example.com/<адрес> (задаётся у ссылки).
 app.get('/:slug', (req, res, next) => (sharesStore.get(req.params.slug)?.slug ? sharePage(req, res) : next()));
-app.use((req, res) => res.status(404).type('text/plain; charset=utf-8').send('Not found'));
+// Неизвестный адрес: браузеру — страница 404 с монстром, остальным — короткий текст.
+const notFoundPage = fs.readFileSync(path.join(publicDir, '404.html'));
+app.use((req, res) => {
+  res.status(404);
+  if ((req.method === 'GET' || req.method === 'HEAD') && (req.headers.accept ?? '').includes('text/html')) {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.type('text/html; charset=utf-8').send(notFoundPage);
+  }
+  res.type('text/plain; charset=utf-8').send('Not found');
+});
 app.use(errorHandler);
 
 const server = app.listen(config.port, config.host, () => {

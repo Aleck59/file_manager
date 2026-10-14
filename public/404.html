@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Страница не найдена</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <script src="/js/theme.js"></script>
+  <link rel="stylesheet" href="/css/not-found.css">
+</head>
+<body>
+  <main class="nf">
+    <svg id="scene" class="scene" viewBox="0 0 400 340" role="img" aria-label="Из папки выглядывает монстр">
+      <defs>
+        <linearGradient id="g-body" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#8b5cf6"/>
+          <stop offset="1" stop-color="#4c1d95"/>
+        </linearGradient>
+        <linearGradient id="g-tent" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#7c3aed"/>
+          <stop offset="1" stop-color="#a855f7"/>
+        </linearGradient>
+        <linearGradient id="g-back" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#d97706"/>
+          <stop offset="1" stop-color="#b45309"/>
+        </linearGradient>
+        <linearGradient id="g-front" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#fcd34d"/>
+          <stop offset="1" stop-color="#f59e0b"/>
+        </linearGradient>
+        <radialGradient id="g-iris" cx="0.5" cy="0.5" r="0.5">
+          <stop offset="0" stop-color="#fef08a"/>
+          <stop offset="0.7" stop-color="#a3e635"/>
+          <stop offset="1" stop-color="#4d7c0f"/>
+        </radialGradient>
+      </defs>
+
+      <ellipse class="shadow" cx="200" cy="330" rx="150" ry="8"/>
+
+      <!-- задняя стенка папки -->
+      <path d="M78 160 h82 l16 16 h146 a8 8 0 0 1 8 8 v136 h-260 v-152 a8 8 0 0 1 8 -8 z" fill="url(#g-back)"/>
+
+      <!-- монстр (сдвигается и «кусает») -->
+      <g id="monster">
+        <g class="tentacle sway-a" data-origin="150 150">
+          <path class="tent" d="M152 156 C 120 136, 106 104, 122 80 C 132 66, 150 72, 146 86"/>
+        </g>
+        <g id="reach" data-origin="248 150">
+          <path class="tent" d="M248 156 C 280 136, 294 104, 278 80 C 268 66, 250 72, 254 86"/>
+        </g>
+
+        <path class="body" d="M136 300 L 138 210 C 130 160, 146 106, 200 102 C 254 106, 270 160, 262 210 L 264 300 Z" fill="url(#g-body)"/>
+        <path class="spots" d="M160 176 a5 5 0 1 0 0.1 0 M244 182 a4 4 0 1 0 0.1 0 M226 108 a3 3 0 1 0 0.1 0 M152 140 a3 3 0 1 0 0.1 0"/>
+
+        <g class="eye" data-r="9">
+          <circle cx="164" cy="132" r="11" class="sclera"/>
+          <g class="pupil-g"><circle cx="164" cy="132" r="5.5" fill="url(#g-iris)"/><ellipse cx="164" cy="132" rx="1.6" ry="4" class="pupil"/></g>
+        </g>
+        <g class="eye" data-r="10">
+          <circle cx="238" cy="128" r="13" class="sclera"/>
+          <g class="pupil-g"><circle cx="238" cy="128" r="6.5" fill="url(#g-iris)"/><ellipse cx="238" cy="128" rx="1.8" ry="4.6" class="pupil"/></g>
+        </g>
+        <g class="eye" data-r="13">
+          <circle cx="200" cy="150" r="24" class="sclera"/>
+          <g class="pupil-g"><circle cx="200" cy="150" r="12" fill="url(#g-iris)"/><ellipse cx="200" cy="150" rx="3.2" ry="8.5" class="pupil"/><circle cx="196" cy="145" r="2.4" class="glint"/></g>
+        </g>
+
+        <g id="mouth">
+          <ellipse id="cavity" cx="200" cy="196" rx="34" ry="3" class="cavity"/>
+          <g id="jaw-top"></g>
+          <g id="jaw-bottom"></g>
+        </g>
+        <text id="chomp" x="268" y="98" class="chomp">Ам!</text>
+      </g>
+
+      <!-- передняя стенка папки -->
+      <path d="M66 212 h268 a6 6 0 0 1 6 7 l-12 103 a8 8 0 0 1 -8 7 h-226 a8 8 0 0 1 -8 -7 l-12 -103 a6 6 0 0 1 6 -7 z" fill="url(#g-front)"/>
+      <path d="M90 236 h220" class="crease"/>
+
+      <!-- щупальца поверх папки -->
+      <g class="tentacle sway-b" data-origin="150 220">
+        <path class="tent" d="M150 222 C 120 200, 80 200, 66 236 C 58 258, 72 276, 90 268 C 100 263, 98 250, 88 252"/>
+      </g>
+      <g class="tentacle sway-c" data-origin="172 224">
+        <path class="tent thin" d="M172 224 C 162 250, 150 280, 160 304 C 166 318, 182 316, 180 302"/>
+      </g>
+      <g class="tentacle sway-d" data-origin="230 224">
+        <path class="tent thin" d="M230 224 C 240 250, 252 278, 244 300 C 240 312, 226 312, 228 300"/>
+      </g>
+      <g class="tentacle sway-e" data-origin="250 220">
+        <path class="tent" d="M250 222 C 280 200, 320 200, 334 236 C 342 258, 328 276, 310 268 C 300 263, 302 250, 312 252"/>
+      </g>
+    </svg>
+
+    <h1 class="code">404</h1>
+    <p class="text">Такой страницы нет. Зато кое-кто есть.</p>
+    <a class="btn" href="/">На главную</a>
+  </main>
+  <script src="/js/not-found.js"></script>
+</body>
+</html>
