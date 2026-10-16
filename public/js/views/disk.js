@@ -557,9 +557,10 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     history.replaceState(null, '', diskHash(folder, file.key));
     // Галерея листает изображения папки в текущем порядке сортировки.
     const gallery = () => visible().files.filter((f) => categoryOf(f.name) === 'image');
+    const siblings = () => state.files;
     showPreview(file, canEdit
-      ? { folder, gallery, onDelete: deleteFile, onRename: renameFile, onMove: moveFile }
-      : { folder, gallery });
+      ? { folder, gallery, siblings, onDelete: deleteFile, onRename: renameFile, onMove: moveFile }
+      : { folder, gallery, siblings });
   }
 
   // ---------- вид и сортировка ----------
