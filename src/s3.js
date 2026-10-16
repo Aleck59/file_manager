@@ -277,7 +277,7 @@ export class Storage {
       }));
       for (const o of out.Contents ?? []) {
         if (seen++ >= max) return false;
-        await fn({ rel: this.rel(o.Key), size: o.Size ?? 0, lastModified: o.LastModified?.toISOString() ?? null, storageClass: o.StorageClass });
+        await fn({ rel: this.rel(o.Key), size: o.Size ?? 0, lastModified: o.LastModified?.toISOString() ?? null, storageClass: o.StorageClass, etag: o.ETag });
       }
       cursor = out.IsTruncated ? out.NextContinuationToken : undefined;
     } while (cursor);

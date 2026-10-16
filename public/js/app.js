@@ -15,6 +15,7 @@ import { diskHash, mountDisk, pathForId, rememberFolderId } from './views/disk.j
 import { mountAudit } from './views/audit.js';
 import { mountShares } from './views/shares.js';
 import { mountTrash } from './views/trash.js';
+import { mountDuplicates } from './views/duplicates.js';
 import { mountSearch, parseSearchHash } from './views/search.js';
 import { inboxItems, mountInbox } from './views/inbox.js';
 import { mountHome } from './views/home.js';
@@ -107,7 +108,7 @@ window.addEventListener('fm-branding', (e) => applyBranding(e.detail));
 
 // ---------- левая панель ----------
 function initSidebar() {
-  const navIcons = { home: ['home', 'Главная'], users: ['users', 'Пользователи'], audit: ['clock', 'Журнал'], shares: ['link', 'Ссылки'], search: ['search', 'Поиск'], trash: ['trash', 'Корзина'], settings: ['settings', 'Настройки'] };
+  const navIcons = { home: ['home', 'Главная'], users: ['users', 'Пользователи'], audit: ['clock', 'Журнал'], shares: ['link', 'Ссылки'], search: ['search', 'Поиск'], trash: ['trash', 'Корзина'], duplicates: ['copy', 'Дубликаты'], settings: ['settings', 'Настройки'] };
   for (const a of document.querySelectorAll('[data-nav]')) {
     const [ic, label] = navIcons[a.dataset.nav];
     a.replaceChildren(toned(ic), label);
@@ -236,7 +237,7 @@ function parseHash() {
     return { name: 'disk', folder };
   }
   if (raw === 'search' || raw.startsWith('search?')) return { name: 'search', params: parseSearchHash(raw), raw };
-  return { name: ['users', 'settings', 'audit', 'shares', 'trash', 'inbox'].includes(raw) ? raw : 'home' };
+  return { name: ['users', 'settings', 'audit', 'shares', 'trash', 'inbox', 'duplicates'].includes(raw) ? raw : 'home' };
 }
 
 function route() {
@@ -281,11 +282,12 @@ function route() {
   else if (r.name === 'audit') current = mountAudit(view, ctx);
   else if (r.name === 'shares') current = mountShares(view, ctx);
   else if (r.name === 'trash') current = mountTrash(view, ctx);
+  else if (r.name === 'duplicates') current = mountDuplicates(view, ctx);
   else if (r.name === 'search') current = mountSearch(view, ctx, r.params);
   else if (r.name === 'inbox') current = mountInbox(view, ctx);
   else if (r.name === 'settings') current = mountSettings(view, ctx);
   else current = mountHome(view, ctx);
-  const titles = { home: 'Главная', disk: 'Диск', users: 'Пользователи', audit: 'Журнал', shares: 'Ссылки', trash: 'Корзина', search: 'Поиск', inbox: 'Входящие', settings: 'Настройки' };
+  const titles = { home: 'Главная', disk: 'Диск', users: 'Пользователи', audit: 'Журнал', shares: 'Ссылки', trash: 'Корзина', duplicates: 'Дубликаты', search: 'Поиск', inbox: 'Входящие', settings: 'Настройки' };
   document.title = `${titles[r.name]} — ${appName}`;
 }
 

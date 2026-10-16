@@ -13,6 +13,7 @@ import { entryStream, listZip } from '../zip.js';
 import { writeZip } from '../zip-writer.js';
 import crypto from 'node:crypto';
 import * as acl from '../acl.js';
+import * as duplicates from '../duplicates.js';
 import * as folderIds from '../folder-ids.js';
 import * as labels from '../labels.js';
 import * as sharesStore from '../shares.js';
@@ -526,6 +527,24 @@ filesRouter.post('/files/office', async (req, res) => {
   if (!OFFICE_EXT.has(ext)) throw new HttpError(400, 'Это не документ Office (docx, xlsx, pptx)');
   if (size > 100 * 1024 * 1024) throw new HttpError(413, 'Документ слишком большой для просмотра');
   res.json(await flow(() => renderOffice(st, rel, size, ext)));
+});
+
+// ---------- дубликаты ----------
+// GET /api/duplicates[?refresh=1] → {groups: [{size, files}], reclaimable, scannedAt}
+// Только файлы, которые пользователь может читать; группа — от двух таких файлов.
+filesRouter.get('/duplicates', async (req, res) => {
+  const result = await duplicates.find({ refresh: req.query.refresh === '1' });
+  const filter = filterAcl(req);
+  const groups = [];
+  let reclaimable = 0;
+  for (const g of result.groups) {
+    const files = (filter ? g.filter((f) => acl.canRead(req.user, folderFromKey(f.rel))) : g)
+      .map((f) => ({ key: f.key, name: nameFromKey(f.rel), folder: folderFromKey(f.rel), size: f.size, lastModified: f.lastModified }));
+    if (files.length < 2) continue;
+    groups.push({ size: files[0].size, files });
+    reclaimable += (files.length - 1) * files[0].size;
+  }
+  res.json({ groups, reclaimable, scannedAt: new Date(result.at).toISOString(), warnings: publicWarnings(req, result.warnings) });
 });
 
 // ---------- скачать папку или выбранные файлы одним ZIP ----------
