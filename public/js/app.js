@@ -13,7 +13,7 @@ import {
 import { speedLimit, UploadCancelled, UploadControl, uploadFile } from './uploader.js';
 import { diskHash, mountDisk, pathForId, rememberFolderId } from './views/disk.js';
 import { mountAudit } from './views/audit.js';
-import { mountShares } from './views/shares.js';
+import { mountShares, requestReminder } from './views/shares.js';
 import { mountTrash } from './views/trash.js';
 import { mountDuplicates } from './views/duplicates.js';
 import { mountSearch, parseSearchHash } from './views/search.js';
@@ -238,6 +238,23 @@ function parseHash() {
   }
   if (raw === 'search' || raw.startsWith('search?')) return { name: 'search', params: parseSearchHash(raw), raw };
   return { name: ['users', 'settings', 'audit', 'shares', 'trash', 'inbox', 'duplicates'].includes(raw) ? raw : 'home' };
+}
+
+// Запросы файлов со сроком на исходе (или прошедшим), по которым ничего не пришло, —
+// напоминание при входе, один раз за сеанс браузера.
+async function remindRequests() {
+  let shown = [];
+  try { shown = JSON.parse(sessionStorage.getItem('fm-reminded') ?? '[]'); } catch { /* приватный режим */ }
+  try {
+    const { shares } = await api.shares(false);
+    for (const s of shares) {
+      const text = requestReminder(s);
+      if (!text || shown.includes(s.id)) continue;
+      shown.push(s.id);
+      toast(`Запрос «${s.caption || s.name}»: ${text}`, 'info', { action: { label: 'Ссылки', onClick: () => ctx.navigate('#/shares') } });
+    }
+    sessionStorage.setItem('fm-reminded', JSON.stringify(shown.slice(-200)));
+  } catch { /* не критично */ }
 }
 
 function route() {
@@ -708,6 +725,7 @@ async function start() {
   setStorageConfigured(ctx.storageConfigured);
   if (ctx.storageConfigured) showPendingUploads();
   initPwa();
+  if (ctx.storageConfigured && ctx.can('editor')) remindRequests();
 
   $('#folder-input').addEventListener('change', (e) => {
     const items = [...e.target.files]

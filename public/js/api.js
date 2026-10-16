@@ -71,6 +71,7 @@ export const api = {
   comments: (key) => request('GET', `/api/comments${q({ key })}`),
   addComment: (key, text) => request('POST', '/api/comments', { key, text }),
   deleteComment: (key, id) => request('DELETE', `/api/comments${q({ key, id })}`),
+  shareStats: (id) => request('GET', `/api/shares/${encodeURIComponent(id)}/stats`),
   duplicates: (refresh) => request('GET', `/api/duplicates${refresh ? '?refresh=1' : ''}`),
 
   startUpload: (file, folder, subfolders) => request('POST', '/api/uploads', { name: file.name, size: file.size, type: file.type, folder, subfolders }),

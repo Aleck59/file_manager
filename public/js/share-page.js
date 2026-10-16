@@ -229,10 +229,30 @@ function uploadView(info) {
   const client = {
     startUpload: (file) => call('POST', '/upload', { name: file.name, size: file.size, type: file.type }),
     partUrls: (key, uploadId, partNumbers) => call('POST', '/upload/parts', { key, uploadId, partNumbers }),
-    completeUpload: (key, uploadId) => call('POST', '/upload/complete', { key, uploadId }),
+    completeUpload: (key, uploadId) => call('POST', '/upload/complete', { key, uploadId, from: sender.value.trim() }),
     abortUpload: (key, uploadId) => call('POST', '/upload/abort', { key, uploadId }),
   };
   const input = h('input', { type: 'file', multiple: true, class: 'sr-only', id: 'share-files' });
+  // «От кого» — необязательно; владелец увидит имя в статистике портала.
+  let saved = '';
+  try { saved = localStorage.getItem('fm-sender') ?? ''; } catch { /* приватный режим */ }
+  const sender = h('input', { id: 'share-sender', type: 'text', class: 'input', maxlength: 100, autocomplete: 'name', placeholder: 'необязательно', value: saved });
+  sender.addEventListener('change', () => { try { localStorage.setItem('fm-sender', sender.value.trim()); } catch { /* не критично */ } });
+  // Запрос файла: срок и кнопка «Готово» (после неё ссылка закрывается).
+  const daysLeft = info.expiresAt ? Math.ceil((Date.parse(info.expiresAt) - Date.now()) / 86_400_000) : null;
+  const due = info.request && info.expiresAt && h('p', { class: `rounded-xl px-4 py-2.5 text-center text-sm ${daysLeft <= 1 ? 'bg-amber-50 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200' : 'bg-slate-50 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300'}` },
+    `Нужно прислать до ${formatDate(info.expiresAt)}`, daysLeft > 0 ? ` · осталось ${daysLeft} дн.` : '');
+  const finish = h('button', { type: 'button', class: 'btn-primary hidden w-full py-3 text-base', onclick: finishRequest }, icon('check', 'h-5 w-5'), 'Готово — отправить');
+  async function finishRequest() {
+    finish.disabled = true;
+    try {
+      await call('POST', '/finish');
+      message('check', 'Спасибо! Файлы отправлены', 'Ссылка закрыта — больше ничего делать не нужно.', 'bg-brand-50 text-brand-600 dark:bg-brand-950/60 dark:text-brand-400');
+    } catch (err) {
+      toast(err.message, 'error');
+      finish.disabled = false;
+    }
+  }
   const list = h('ul', { class: 'space-y-2' });
   const limits = [`до ${formatSize(info.maxFileSize)} на файл`, info.uploadsLeft != null && `ещё ${info.uploadsLeft} файлов`].filter(Boolean).join(' · ');
   // Портал: большая кнопка-зона и подпись владельца ссылки.
@@ -241,7 +261,9 @@ function uploadView(info) {
     h('span', { class: 'text-lg font-semibold' }, info.caption || 'Загрузить файлы'),
     h('span', { class: 'text-sm text-slate-500 dark:text-slate-400' }, 'Нажмите или перетащите файлы'),
     h('span', { class: 'text-xs text-slate-400' }, limits));
-  box.replaceChildren(h('div', { class: 'space-y-5' }, zone, input, list));
+  box.replaceChildren(h('div', { class: 'space-y-5' }, due, zone, input,
+    h('div', {}, h('label', { for: 'share-sender', class: 'mb-1.5 block text-sm font-medium' }, 'Ваше имя'), sender),
+    list, info.request && finish));
 
   const queue = [];
   let running = false;
@@ -281,6 +303,7 @@ function uploadView(info) {
         await uploadFile(file, { client, signal: new AbortController().signal, onProgress: (n) => progress.update(n) });
         progress.finish(true);
         status.textContent = 'Загружено';
+        finish.classList.remove('hidden');
       } catch (err) {
         if (err instanceof UploadCancelled) continue;
         progress.finish(false);

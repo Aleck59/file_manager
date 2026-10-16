@@ -690,3 +690,22 @@ test('ZIP: потоковая сборка архива читается обр�
     } catch (err) { if (err.code !== 'ENOENT') throw err; }
   }
 });
+
+test('запрос файла: закрывается после «Готово» или через час; журнал портала', async () => {
+  const shares = await import('../src/shares.js');
+  await assert.rejects(shares.create({ type: 'upload', request: true, folder: 'Входящие/', name: 'x', user: 'admin' }), /срок/);
+  const s = await shares.create({ type: 'upload', request: true, folder: 'Входящие/', name: 'x', user: 'admin', expiresInDays: 3 });
+  assert.equal(shares.stateOf(s), 'active');
+  shares.noteUpload(s, { name: 'скан.pdf', size: 1000, ip: '203.0.113.5', from: 'Иван' });
+  shares.noteUpload(s, { name: 'фото.jpg', size: 500, ip: '203.0.113.5', from: '' });
+  assert.equal(shares.stateOf(s), 'active');
+  assert.equal(shares.stateOf(s, Date.now() + 61 * 60_000), 'fulfilled');
+  shares.fulfil(s);
+  assert.equal(shares.stateOf(s), 'fulfilled');
+  const st = shares.statsOf(s);
+  assert.equal(st.uploads, 2);
+  assert.equal(st.bytes, 1500);
+  assert.equal(st.senders, 2); // «Иван» и безымянный с IP
+  assert.equal(st.log[0].name, 'фото.jpg'); // новые сверху
+  assert.equal(shares.ownerView(s).uploadLog, undefined); // журнал — только через statsOf
+});

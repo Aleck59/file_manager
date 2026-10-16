@@ -66,6 +66,13 @@ sharesRouter.post('/:id/revoke', (req, res) => {
   res.json({ ok: true });
 });
 
+// GET /api/shares/:id/stats — статистика портала загрузки (кто, когда, откуда, что)
+sharesRouter.get('/:id/stats', (req, res) => {
+  const s = shares.get(req.params.id);
+  if (!s || (s.createdBy !== req.user.username && !hasRole(req.user, 'admin'))) throw new HttpError(404, 'Ссылка не найдена');
+  res.json(shares.statsOf(s));
+});
+
 // PATCH /api/shares/:id {slug?, caption?} — короткий адрес и подпись
 sharesRouter.patch('/:id', (req, res) => {
   const s = wrapSync(() => shares.update(req.params.id, req.user.username, hasRole(req.user, 'admin'), { slug: req.body?.slug, caption: req.body?.caption }));
@@ -88,6 +95,7 @@ const STATE_TEXT = {
   expired: 'Срок действия ссылки истёк',
   exhausted: 'Лимит по этой ссылке исчерпан',
   revoked: 'Ссылка отозвана владельцем',
+  fulfilled: 'Файлы уже отправлены — ссылка закрыта',
   missing: 'Файл или папка по ссылке удалены',
 };
 
@@ -145,7 +153,7 @@ publicSharesRouter.get('/:id', async (req, res) => {
   const base = { id: s.id, type: s.type, state, message: STATE_TEXT[state] ?? null, owner: s.createdBy, expiresAt: s.expiresAt };
   if (state !== 'active') return res.status(410).json(base);
   const unlocked = shares.isUnlocked(s, readCookie(req, shares.unlockCookieName(s.id)));
-  const info = { ...base, needsPassword: Boolean(s.passwordHash), unlocked, name: unlocked ? s.name : null, caption: s.caption ?? null };
+  const info = { ...base, needsPassword: Boolean(s.passwordHash), unlocked, name: unlocked ? s.name : null, caption: s.caption ?? null, request: Boolean(s.request) };
   if (unlocked && s.type === 'file') {
     const { st, rel } = storages.resolveRef(s.key);
     const head = await st.headObject(rel);
@@ -247,9 +255,22 @@ publicSharesRouter.post('/:id/upload/complete', async (req, res) => {
   const maxSize = Math.min(config.limits.maxFileSize, (s.maxFileSizeMb ?? Infinity) * MB);
   const uploadId = req.body?.uploadId === undefined ? undefined : String(req.body.uploadId);
   const { file, st, rel, size } = await wrap(() => uploadFlow.completeUpload(req.body?.key, uploadId, { maxSize }));
-  shares.touch(s, 'uploads');
-  audit(req, 'share.upload', { id: s.id, storage: st.id, key: rel, size });
+  // «Кто» — имя, которое гость сам указал на странице (необязательно).
+  // eslint-disable-next-line no-control-regex
+  const from = typeof req.body?.from === 'string' ? req.body.from.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 100) : '';
+  shares.noteUpload(s, { name: file.name, size, ip: req.ip, from });
+  audit(req, 'share.upload', { id: s.id, storage: st.id, key: rel, size, from: from || undefined });
   res.json({ file: { name: file.name, size: file.size } });
+});
+
+// POST /api/public/s/:id/finish — «Готово» на запросе файла: ссылка закрывается.
+publicSharesRouter.post('/:id/finish', (req, res) => {
+  const s = activeShare(req, { type: ['upload'] });
+  if (!s.request) throw new HttpError(400, 'Это действие только для запроса файла');
+  if (!s.uploads) throw new HttpError(400, 'Сначала загрузите файлы');
+  shares.fulfil(s);
+  audit(req, 'share.fulfil', { id: s.id });
+  res.json({ ok: true });
 });
 
 publicSharesRouter.post('/:id/upload/abort', async (req, res) => {
