@@ -13,6 +13,7 @@ import { entryStream, listZip } from '../zip.js';
 import { writeZip } from '../zip-writer.js';
 import crypto from 'node:crypto';
 import * as acl from '../acl.js';
+import * as comments from '../comments.js';
 import * as duplicates from '../duplicates.js';
 import * as folderIds from '../folder-ids.js';
 import * as labels from '../labels.js';
@@ -209,6 +210,7 @@ filesRouter.get('/files', async (req, res) => {
   for (const f of result.files) {
     f.label = labels.get(f.key) ?? undefined;
     f.public = publicOf(f.key, folder) ?? undefined; // {downloads, active} — счётчик скачиваний по ссылкам
+    f.comments = comments.count(f.key) || undefined;
   }
   for (const f of result.folders) f.label = labels.get(labels.folderId(f.path)) ?? undefined;
   res.json({ folder, access, ...result, warnings: publicWarnings(req, result.warnings) });
@@ -527,6 +529,31 @@ filesRouter.post('/files/office', async (req, res) => {
   if (!OFFICE_EXT.has(ext)) throw new HttpError(400, 'Это не документ Office (docx, xlsx, pptx)');
   if (size > 100 * 1024 * 1024) throw new HttpError(413, 'Документ слишком большой для просмотра');
   res.json(await flow(() => renderOffice(st, rel, size, ext)));
+});
+
+// ---------- комментарии ----------
+// Видят и пишут все, кто может читать файл; удалить — автор или администратор.
+filesRouter.get('/comments', (req, res) => {
+  const { st, rel } = readRef(req, req.query.key);
+  res.json({ comments: comments.list(formatRef(st.id, rel)) });
+});
+filesRouter.post('/comments', (req, res) => {
+  const { st, rel } = readRef(req, req.body?.key);
+  let c;
+  try {
+    c = comments.add(formatRef(st.id, rel), req.user.username, req.body?.text);
+  } catch (err) {
+    throw new HttpError(err.status ?? 400, err.message);
+  }
+  audit(req, 'comment.add', { key: rel });
+  res.status(201).json({ comment: c });
+});
+filesRouter.delete('/comments', (req, res) => {
+  const { st, rel } = readRef(req, req.query.key);
+  const r = comments.remove(formatRef(st.id, rel), String(req.query.id ?? ''), req.user.username, acl.isAdmin(req.user));
+  if (r === null) throw new HttpError(404, 'Комментарий не найден');
+  if (!r) throw new HttpError(403, 'Удалить можно только свой комментарий');
+  res.json({ ok: true });
 });
 
 // ---------- дубликаты ----------

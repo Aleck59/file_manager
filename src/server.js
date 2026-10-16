@@ -19,6 +19,7 @@ import { webdav } from './webdav.js';
 import * as backup from './backup.js';
 import * as folderIds from './folder-ids.js';
 import * as labelsStore from './labels.js';
+import * as commentsStore from './comments.js';
 import { usersRouter } from './routes/users.js';
 import { initUsers } from './users.js';
 
@@ -123,6 +124,7 @@ export function shutdown(code = 0) {
   sharesStore.flush();
   apiTokens.flush();
   labelsStore.flush();
+  commentsStore.flush();
   folderIds.flush();
   server.close(() => process.exit(code));
   server.closeAllConnections?.();

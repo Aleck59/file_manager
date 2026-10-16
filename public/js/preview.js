@@ -230,6 +230,58 @@ async function mediaFor(info, file, gallery, siblings = []) {
   return placeholder(file.name, 'Предпросмотр для этого типа файлов недоступен');
 }
 
+// ---------- комментарии ----------
+function commentsBlock(file) {
+  const list = h('ul', { class: 'space-y-3' });
+  const input = h('textarea', { class: 'input min-h-[4.5rem] resize-y text-sm', maxlength: 2000, placeholder: 'Заметка для всех, кто видит файл', 'aria-label': 'Новый комментарий' });
+  const send = h('button', { type: 'submit', class: 'btn-primary' }, 'Отправить');
+  const form = h('form', { class: 'space-y-2' }, input, h('div', { class: 'flex justify-end' }, send));
+  const title = h('h4', { class: 'text-sm font-semibold' }, 'Комментарии');
+  let items = [];
+
+  function render() {
+    title.textContent = items.length ? `Комментарии · ${items.length}` : 'Комментарии';
+    list.replaceChildren(...items.map((c) => {
+      const mine = c.user === ctx.user.username || ctx.can('admin');
+      return h('li', { class: 'group rounded-xl bg-slate-50 px-3 py-2 dark:bg-slate-800/60' },
+        h('div', { class: 'flex items-baseline gap-2 text-xs text-slate-500 dark:text-slate-400' },
+          h('span', { class: 'font-semibold text-slate-700 dark:text-slate-200' }, c.user),
+          h('time', { datetime: c.at }, formatDate(c.at)),
+          mine && h('button', { type: 'button', class: 'ml-auto text-rose-600 opacity-0 transition-opacity hover:underline focus:opacity-100 group-hover:opacity-100 dark:text-rose-400', onclick: () => remove(c) }, 'Удалить')),
+        h('p', { class: 'mt-1 whitespace-pre-wrap break-words text-sm' }, c.text));
+    }));
+  }
+  async function remove(c) {
+    try {
+      await api.deleteComment(file.key, c.id);
+      items = items.filter((x) => x.id !== c.id);
+      render();
+      ctx.onCommentsChanged?.(file.key, items.length);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!input.value.trim()) return input.focus();
+    send.disabled = true;
+    try {
+      const { comment } = await api.addComment(file.key, input.value);
+      items.push(comment);
+      input.value = '';
+      render();
+      ctx.onCommentsChanged?.(file.key, items.length);
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      send.disabled = false;
+    }
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) form.requestSubmit(); });
+  const key = file.key;
+  api.comments(key).then((r) => { if (current === key) { items = r.comments; render(); } }).catch(() => {});
+  render();
+  return h('section', { class: 'space-y-3 border-t border-slate-200 pt-4 dark:border-slate-800' }, title, list, form);
+}
+
 function metaRow(label, value) {
   return h('div', { class: 'flex justify-between gap-4 py-2' },
     h('dt', { class: 'text-slate-500 dark:text-slate-400' }, label),
@@ -286,6 +338,7 @@ export async function showPreview(file, { folder, onDelete, onRename, onMove, ga
       metaRow('Изменён', formatDate(info.lastModified)),
       metaRow('Расположение', folderLabel(folder)),
       info.storage && metaRow('Хранилище', info.storage.name)),
+    commentsBlock(file),
   );
 
   async function download() {

@@ -154,6 +154,10 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     if (!unmounted) history.replaceState(null, '', diskHash(folder));
   };
   ctx.onPreviewMissing = () => load();
+  ctx.onCommentsChanged = (key, n) => {
+    const f = state.files.find((x) => x.key === key);
+    if (f) { f.comments = n || undefined; renderList(); }
+  };
 
   // ---------- заголовок: хлебные крошки + действия ----------
   // Крошки начинаются с корня диска пользователя (у кого личная папка — с неё).
@@ -313,6 +317,10 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     canEdit && { label: 'Удалить папку', icon: 'trash', danger: true, onSelect: () => deleteFolder(f) },
   ]);
 
+  const commentChip = (file) => file.comments && h('span', {
+    class: 'inline-flex shrink-0 items-center gap-0.5 text-[11px] tabular-nums text-slate-400', title: `Комментарии: ${file.comments}`, 'aria-label': `Комментарии: ${file.comments}`,
+  }, icon('message', 'h-3 w-3'), String(file.comments));
+
   // Файл в публичном доступе (своя ссылка или ссылка на папку): значок и сколько раз скачали.
   function publicChip(file) {
     const p = file.public;
@@ -401,6 +409,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
             h('p', { class: 'truncate text-sm font-medium', title: file.name }, file.name),
             labelDot(file.label),
             publicChip(file),
+            commentChip(file),
             storageChip(file)),
           h('p', { class: 'truncate text-xs tabular-nums text-slate-500 md:hidden dark:text-slate-400' }, `${formatSize(file.size)} · ${formatDateShort(file.lastModified)}`))),
       h('span', { class: 'hidden text-right text-sm tabular-nums text-slate-500 md:block dark:text-slate-400' }, formatSize(file.size)),
@@ -1257,6 +1266,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
       tree.setDropHandler(null);
       tree.setMenuHandler(null);
       ctx.onPreviewClosed = null;
+      ctx.onCommentsChanged = null;
       setPreviewEnabled(false);
       tree.clearActive();
     },
