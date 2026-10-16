@@ -67,6 +67,12 @@ export const api = {
   }),
   createFolder: (parent, name) => request('POST', '/api/folders', { parent, name }),
   deleteFolder: (path) => request('POST', '/api/folders/delete', { path }),
+  archive: (what) => request('POST', '/api/files/archive', what),
+  comments: (key) => request('GET', `/api/comments${q({ key })}`),
+  addComment: (key, text) => request('POST', '/api/comments', { key, text }),
+  deleteComment: (key, id) => request('DELETE', `/api/comments${q({ key, id })}`),
+  shareStats: (id) => request('GET', `/api/shares/${encodeURIComponent(id)}/stats`),
+  duplicates: (refresh) => request('GET', `/api/duplicates${refresh ? '?refresh=1' : ''}`),
 
   startUpload: (file, folder, subfolders) => request('POST', '/api/uploads', { name: file.name, size: file.size, type: file.type, folder, subfolders }),
   partUrls: (key, uploadId, partNumbers) => request('POST', '/api/uploads/parts', { key, uploadId, partNumbers }),

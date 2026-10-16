@@ -1,6 +1,6 @@
 // Модальное окно выбора папки (для перемещения файлов): своё дерево с ленивой подгрузкой.
 import { api } from './api.js';
-import { folderLabel, h, icon } from './ui.js';
+import { folderLabel, h, homeFolder, icon } from './ui.js';
 
 /**
  * @param {{ title: string, current: string, confirmLabel?: string, allowCurrent?: boolean }} opts
@@ -76,7 +76,7 @@ export function pickFolder({ title, current, confirmLabel = 'Перемести�
         'aria-label': n.expanded ? 'Свернуть' : 'Развернуть',
         onclick: (e) => { e.stopPropagation(); expand(path); },
       }, icon('chevronRight', `h-3.5 w-3.5 transition-transform ${n.expanded ? 'rotate-90' : ''}`)),
-      icon(path === '' ? 'drive' : 'folder', 'h-4 w-4'),
+      icon(path === homeFolder ? 'drive' : 'folder', 'h-4 w-4'),
       h('span', { class: 'ml-1.5 truncate' }, name),
       isCurrent && h('span', { class: 'ml-auto shrink-0 text-xs' }, 'сейчас здесь'));
       el.style.paddingLeft = `${depth * 16 + 2}px`;
@@ -96,7 +96,7 @@ export function pickFolder({ title, current, confirmLabel = 'Перемести�
 
     function render() {
       const focusedPath = list.contains(document.activeElement) ? document.activeElement.dataset.path : null;
-      list.replaceChildren(...row('', 'Мой диск', 0));
+      list.replaceChildren(...row(homeFolder, 'Мой диск', 0));
       for (const el of list.querySelectorAll('[role=treeitem]')) {
         if (focusedPath !== null && el.dataset.path === focusedPath) el.focus();
       }
@@ -107,8 +107,10 @@ export function pickFolder({ title, current, confirmLabel = 'Перемести�
     dialog.showModal();
     // Сразу раскрываем путь до текущей папки, чтобы было видно соседние.
     (async () => {
-      const chain = [''];
-      for (let i = current.indexOf('/'); i !== -1; i = current.indexOf('/', i + 1)) chain.push(current.slice(0, i + 1));
+      const chain = [homeFolder];
+      if (current.startsWith(homeFolder)) {
+        for (let i = current.indexOf('/', homeFolder.length); i !== -1; i = current.indexOf('/', i + 1)) chain.push(current.slice(0, i + 1));
+      }
       for (const p of chain) {
         if (!node(p).expanded) await expand(p);
       }

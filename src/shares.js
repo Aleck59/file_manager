@@ -58,10 +58,16 @@ const checkCaption = (c) => (c === null || c === undefined ? null : String(c).tr
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 
-/** Состояние ссылки: active | expired | exhausted | revoked | missing */
+// «Запросить файл»: одноразовый портал. Закрывается, когда гость нажал «Готово»,
+// или через час после последнего загруженного файла (если просто закрыл страницу).
+const REQUEST_GRACE = 60 * 60_000;
+const LOG_MAX = 1000;
+
+/** Состояние ссылки: active | expired | exhausted | revoked | missing | fulfilled */
 export function stateOf(s, now = Date.now()) {
   if (s.revoked) return 'revoked';
   if (s.missing) return 'missing';
+  if (s.request && (s.fulfilledAt || (s.lastUploadAt && now - Date.parse(s.lastUploadAt) > REQUEST_GRACE))) return 'fulfilled';
   if (s.expiresAt && Date.parse(s.expiresAt) <= now) return 'expired';
   if (s.type !== 'upload' && s.maxDownloads && s.downloads >= s.maxDownloads) return 'exhausted';
   if (s.type === 'upload' && s.maxUploads && s.uploads >= s.maxUploads) return 'exhausted';
@@ -70,7 +76,7 @@ export function stateOf(s, now = Date.now()) {
 
 /** Описание для владельца (без хеша пароля). */
 export function ownerView(s) {
-  const { passwordHash, ...rest } = s;
+  const { passwordHash, uploadLog, fileDownloads, ...rest } = s; // журнал загрузок — отдельно (statsOf)
   return { ...rest, hasPassword: Boolean(passwordHash), state: stateOf(s) };
 }
 
@@ -91,6 +97,8 @@ export async function create(input) {
   };
   const password = typeof input.password === 'string' ? input.password : '';
   if (password && (password.length < 4 || password.length > 128)) throw fail(400, 'Пароль ссылки — от 4 до 128 символов');
+  const request = input.type === 'upload' && input.request === true;
+  if (request && !days) throw fail(400, 'У запроса файла нужен срок');
   const share = {
     id: newId(),
     type: input.type,
@@ -99,6 +107,7 @@ export async function create(input) {
     name: String(input.name ?? '').slice(0, 200),
     slug: checkSlug(input.slug),
     caption: checkCaption(input.caption),
+    request: request || undefined,
     createdBy: input.user,
     createdAt: new Date().toISOString(),
     expiresAt: days ? new Date(Date.now() + days * 86_400_000).toISOString() : null,
@@ -156,16 +165,84 @@ export function remove(id, user, isAdmin) {
   return true;
 }
 
+/** Гость загрузил файл через портал: журнал (когда, кто, откуда, что) и итоги. */
+export function noteUpload(s, { name, size, ip, from }) {
+  s.uploadLog ??= [];
+  s.uploadLog.push({ at: new Date().toISOString(), name, size, ip: ip ?? null, from: from || null });
+  if (s.uploadLog.length > LOG_MAX) s.uploadLog.splice(0, s.uploadLog.length - LOG_MAX);
+  s.uploadedBytes = (s.uploadedBytes ?? 0) + (size ?? 0);
+  s.lastUploadAt = new Date().toISOString();
+  touch(s, 'uploads');
+}
+
+/** Гость нажал «Готово» на запросе файла — ссылка закрывается. */
+export function fulfil(s) {
+  s.fulfilledAt = new Date().toISOString();
+  persist();
+}
+
+/** Статистика портала для владельца. */
+export function statsOf(s) {
+  const log = s.uploadLog ?? [];
+  return {
+    uploads: s.uploads ?? 0,
+    bytes: s.uploadedBytes ?? 0,
+    senders: new Set(log.map((e) => e.from || e.ip).filter(Boolean)).size,
+    lastUploadAt: s.lastUploadAt ?? null,
+    log: [...log].reverse(),
+  };
+}
+
 export function touch(s, field) {
   s.lastAccess = new Date().toISOString();
   if (field) s[field] = (s[field] ?? 0) + 1;
   if (field) persist(); else persistSoon();
 }
 
+/** Скачивание одного файла по ссылке на папку: счётчик по файлу (и общий счётчик ссылки). */
+export function touchFile(s, key) {
+  s.fileDownloads ??= {};
+  s.fileDownloads[key] = (s.fileDownloads[key] ?? 0) + 1;
+  touch(s, 'downloads');
+}
+
+/**
+ * Публичность файлов для списка папки: сколько раз файл скачали по ссылкам
+ * и есть ли у него сейчас действующая ссылка (своя или на папку, где он лежит).
+ * @returns {(key: string, folder: string) => {downloads: number, active: boolean} | null}
+ */
+export function publicIndex() {
+  const downloads = new Map();
+  const activeKeys = new Set();
+  const activeFolders = [];
+  for (const s of shares) {
+    const active = stateOf(s) === 'active';
+    if (s.type === 'file') {
+      downloads.set(s.key, (downloads.get(s.key) ?? 0) + (s.downloads ?? 0));
+      if (active) activeKeys.add(s.key);
+    } else if (s.type === 'folder') {
+      for (const [k, n] of Object.entries(s.fileDownloads ?? {})) downloads.set(k, (downloads.get(k) ?? 0) + n);
+      if (active) activeFolders.push(s.folder);
+    }
+  }
+  return (key, folder) => {
+    const active = activeKeys.has(key) || activeFolders.some((p) => folder.startsWith(p));
+    const n = downloads.get(key) ?? 0;
+    return active || n ? { downloads: n, active } : null;
+  };
+}
+
 // ---------- согласование с изменениями файлов и папок ----------
 export function rekeyFile(oldKey, newKey) {
   let changed = false;
-  for (const s of shares) if (s.type === 'file' && s.key === oldKey) { s.key = newKey; changed = true; }
+  for (const s of shares) {
+    if (s.type === 'file' && s.key === oldKey) { s.key = newKey; changed = true; }
+    if (s.fileDownloads?.[oldKey] !== undefined) {
+      s.fileDownloads[newKey] = (s.fileDownloads[newKey] ?? 0) + s.fileDownloads[oldKey];
+      delete s.fileDownloads[oldKey];
+      changed = true;
+    }
+  }
   if (changed) persist();
 }
 export function fileGone(key) {

@@ -7,12 +7,15 @@ import { forgetUpload, initPending, pendingUploads, rememberUpload } from './pen
 import { initPreview } from './preview.js';
 import { ProgressView } from './progress.js';
 import * as tree from './tree.js';
-import { $, applyTheme, confirmDialog, FILES, folderLabel, formatSize, h, icon, openDialog, pluralize, prefs, toast, toned } from './ui.js';
+import {
+  $, applyTheme, confirmDialog, FILES, folderLabel, formatSize, h, homeFolder, icon, openDialog, pluralize, prefs, setHomeFolder, toast, toned,
+} from './ui.js';
 import { speedLimit, UploadCancelled, UploadControl, uploadFile } from './uploader.js';
 import { diskHash, mountDisk, pathForId, rememberFolderId } from './views/disk.js';
 import { mountAudit } from './views/audit.js';
-import { mountShares } from './views/shares.js';
+import { mountShares, requestReminder } from './views/shares.js';
 import { mountTrash } from './views/trash.js';
+import { mountDuplicates } from './views/duplicates.js';
 import { mountSearch, parseSearchHash } from './views/search.js';
 import { inboxItems, mountInbox } from './views/inbox.js';
 import { mountHome } from './views/home.js';
@@ -73,7 +76,7 @@ function setStorageConfigured(value) {
     ctx.can('admin') && h('a', { href: '#/settings', class: 'font-medium underline' }, 'Настроить'));
   }
   if (value && !was) {
-    tree.reload('');
+    tree.reload(homeFolder);
     refreshStats();
   }
 }
@@ -105,7 +108,7 @@ window.addEventListener('fm-branding', (e) => applyBranding(e.detail));
 
 // ---------- левая панель ----------
 function initSidebar() {
-  const navIcons = { home: ['home', 'Главная'], users: ['users', 'Пользователи'], audit: ['clock', 'Журнал'], shares: ['link', 'Ссылки'], search: ['search', 'Поиск'], trash: ['trash', 'Корзина'], settings: ['settings', 'Настройки'] };
+  const navIcons = { home: ['home', 'Главная'], users: ['users', 'Пользователи'], audit: ['clock', 'Журнал'], shares: ['link', 'Ссылки'], search: ['search', 'Поиск'], trash: ['trash', 'Корзина'], duplicates: ['copy', 'Дубликаты'], settings: ['settings', 'Настройки'] };
   for (const a of document.querySelectorAll('[data-nav]')) {
     const [ic, label] = navIcons[a.dataset.nav];
     a.replaceChildren(toned(ic), label);
@@ -234,7 +237,24 @@ function parseHash() {
     return { name: 'disk', folder };
   }
   if (raw === 'search' || raw.startsWith('search?')) return { name: 'search', params: parseSearchHash(raw), raw };
-  return { name: ['users', 'settings', 'audit', 'shares', 'trash', 'inbox'].includes(raw) ? raw : 'home' };
+  return { name: ['users', 'settings', 'audit', 'shares', 'trash', 'inbox', 'duplicates'].includes(raw) ? raw : 'home' };
+}
+
+// Запросы файлов со сроком на исходе (или прошедшим), по которым ничего не пришло, —
+// напоминание при входе, один раз за сеанс браузера.
+async function remindRequests() {
+  let shown = [];
+  try { shown = JSON.parse(sessionStorage.getItem('fm-reminded') ?? '[]'); } catch { /* приватный режим */ }
+  try {
+    const { shares } = await api.shares(false);
+    for (const s of shares) {
+      const text = requestReminder(s);
+      if (!text || shown.includes(s.id)) continue;
+      shown.push(s.id);
+      toast(`Запрос «${s.caption || s.name}»: ${text}`, 'info', { action: { label: 'Ссылки', onClick: () => ctx.navigate('#/shares') } });
+    }
+    sessionStorage.setItem('fm-reminded', JSON.stringify(shown.slice(-200)));
+  } catch { /* не критично */ }
 }
 
 function route() {
@@ -251,6 +271,11 @@ function route() {
       ctx.navigate('#/disk/');
     });
     return;
+  }
+  // Вне своего корня (у кого личная папка) — в корень.
+  if (r.name === 'disk' && !r.folder.startsWith(homeFolder)) {
+    r.folder = homeFolder;
+    history.replaceState(null, '', diskHash(homeFolder));
   }
   if ((r.name === 'users' || r.name === 'audit') && !ctx.can('admin')) r = { name: 'home' };
   if ((r.name === 'shares' || r.name === 'trash') && !ctx.can('editor')) r = { name: 'home' };
@@ -274,11 +299,12 @@ function route() {
   else if (r.name === 'audit') current = mountAudit(view, ctx);
   else if (r.name === 'shares') current = mountShares(view, ctx);
   else if (r.name === 'trash') current = mountTrash(view, ctx);
+  else if (r.name === 'duplicates') current = mountDuplicates(view, ctx);
   else if (r.name === 'search') current = mountSearch(view, ctx, r.params);
   else if (r.name === 'inbox') current = mountInbox(view, ctx);
   else if (r.name === 'settings') current = mountSettings(view, ctx);
   else current = mountHome(view, ctx);
-  const titles = { home: 'Главная', disk: 'Диск', users: 'Пользователи', audit: 'Журнал', shares: 'Ссылки', trash: 'Корзина', search: 'Поиск', inbox: 'Входящие', settings: 'Настройки' };
+  const titles = { home: 'Главная', disk: 'Диск', users: 'Пользователи', audit: 'Журнал', shares: 'Ссылки', trash: 'Корзина', duplicates: 'Дубликаты', search: 'Поиск', inbox: 'Входящие', settings: 'Настройки' };
   document.title = `${titles[r.name]} — ${appName}`;
 }
 
@@ -685,6 +711,7 @@ async function start() {
     ctx.clockSkew = me.clockSkew;
     ctx.trashDays = me.trashDays ?? 0;
     ctx.personal = me.personal;
+    setHomeFolder(me.home);
   } catch {
     return; // при 401 api сам перенаправит на /login
   }
@@ -698,6 +725,7 @@ async function start() {
   setStorageConfigured(ctx.storageConfigured);
   if (ctx.storageConfigured) showPendingUploads();
   initPwa();
+  if (ctx.storageConfigured && ctx.can('editor')) remindRequests();
 
   $('#folder-input').addEventListener('change', (e) => {
     const items = [...e.target.files]

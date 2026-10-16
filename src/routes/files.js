@@ -10,7 +10,11 @@ import { audit, HttpError } from '../middleware/security.js';
 import { pipeline } from 'node:stream/promises';
 import { OFFICE_EXT, renderOffice } from '../office.js';
 import { entryStream, listZip } from '../zip.js';
+import { writeZip } from '../zip-writer.js';
+import crypto from 'node:crypto';
 import * as acl from '../acl.js';
+import * as comments from '../comments.js';
+import * as duplicates from '../duplicates.js';
 import * as folderIds from '../folder-ids.js';
 import * as labels from '../labels.js';
 import * as sharesStore from '../shares.js';
@@ -126,6 +130,27 @@ function noteQuotaUse(user, size) {
 }
 export { personalUsage };
 
+/** Сколько байт во всех хранилищах под префиксом (только то, что пользователь может читать). */
+export async function treeSize(prefix, user) {
+  const filter = user && acl.hasRules() && !acl.isAdmin(user);
+  const { values } = await storages.everywhere(async (st) => {
+    let sum = 0;
+    await st.forEachObject(prefix, (o) => { if (!filter || acl.canRead(user, folderFromKey(o.rel))) sum += o.size; });
+    return sum;
+  });
+  return values.reduce((a, b) => a + b, 0);
+}
+
+/**
+ * Копирование и перемещение в личную папку тоже расходуют квоту, как загрузка.
+ * Бросает 507, если места не хватает; иначе учитывает размер в кеше занятого места.
+ */
+export async function reserveQuota(user, folder, size) {
+  if (!user.quotaMb || !acl.inPersonal(user, folder)) return;
+  await quotaLimit(user, folder, size);
+  noteQuotaUse(user, size);
+}
+
 /** Сколько ещё можно положить в папку с учётом квоты (undefined — квоты нет). */
 async function quotaLimit(user, folder, size) {
   if (!user.quotaMb || !acl.inPersonal(user, folder)) return undefined;
@@ -181,7 +206,12 @@ filesRouter.get('/files', async (req, res) => {
     if (rule?.personal) f.personal = rule.personal;
     else if (rule && acl.isAdmin(req.user)) f.restricted = true;
   }
-  for (const f of result.files) f.label = labels.get(f.key) ?? undefined;
+  const publicOf = sharesStore.publicIndex();
+  for (const f of result.files) {
+    f.label = labels.get(f.key) ?? undefined;
+    f.public = publicOf(f.key, folder) ?? undefined; // {downloads, active} — счётчик скачиваний по ссылкам
+    f.comments = comments.count(f.key) || undefined;
+  }
   for (const f of result.folders) f.label = labels.get(labels.folderId(f.path)) ?? undefined;
   res.json({ folder, access, ...result, warnings: publicWarnings(req, result.warnings) });
 });
@@ -257,6 +287,9 @@ filesRouter.post('/folders/move', canEdit, async (req, res) => {
   if (!isValidFolder(target)) throw new HttpError(400, 'Слишком глубокая вложенность или длинный путь');
   if (target === path) return res.json({ ok: true, folder: { path, name }, moved: 0 });
   if (target.startsWith(path)) throw new HttpError(400, 'Нельзя переместить папку внутрь неё самой');
+  if (req.user.quotaMb && acl.inPersonal(req.user, target) && !acl.inPersonal(req.user, path)) {
+    await reserveQuota(req.user, target, await treeSize(path));
+  }
   const { moved, warnings } = await flow(() => storages.moveFolder(path, target));
   storages.invalidateStats();
   sharesStore.refolder(path, target);
@@ -498,6 +531,138 @@ filesRouter.post('/files/office', async (req, res) => {
   res.json(await flow(() => renderOffice(st, rel, size, ext)));
 });
 
+// ---------- комментарии ----------
+// Видят и пишут все, кто может читать файл; удалить — автор или администратор.
+filesRouter.get('/comments', (req, res) => {
+  const { st, rel } = readRef(req, req.query.key);
+  res.json({ comments: comments.list(formatRef(st.id, rel)) });
+});
+filesRouter.post('/comments', (req, res) => {
+  const { st, rel } = readRef(req, req.body?.key);
+  let c;
+  try {
+    c = comments.add(formatRef(st.id, rel), req.user.username, req.body?.text);
+  } catch (err) {
+    throw new HttpError(err.status ?? 400, err.message);
+  }
+  audit(req, 'comment.add', { key: rel });
+  res.status(201).json({ comment: c });
+});
+filesRouter.delete('/comments', (req, res) => {
+  const { st, rel } = readRef(req, req.query.key);
+  const r = comments.remove(formatRef(st.id, rel), String(req.query.id ?? ''), req.user.username, acl.isAdmin(req.user));
+  if (r === null) throw new HttpError(404, 'Комментарий не найден');
+  if (!r) throw new HttpError(403, 'Удалить можно только свой комментарий');
+  res.json({ ok: true });
+});
+
+// ---------- дубликаты ----------
+// GET /api/duplicates[?refresh=1] → {groups: [{size, files}], reclaimable, scannedAt}
+// Только файлы, которые пользователь может читать; группа — от двух таких файлов.
+filesRouter.get('/duplicates', async (req, res) => {
+  const result = await duplicates.find({ refresh: req.query.refresh === '1' });
+  const filter = filterAcl(req);
+  const groups = [];
+  let reclaimable = 0;
+  for (const g of result.groups) {
+    const files = (filter ? g.filter((f) => acl.canRead(req.user, folderFromKey(f.rel))) : g)
+      .map((f) => ({ key: f.key, name: nameFromKey(f.rel), folder: folderFromKey(f.rel), size: f.size, lastModified: f.lastModified }));
+    if (files.length < 2) continue;
+    groups.push({ size: files[0].size, files });
+    reclaimable += (files.length - 1) * files[0].size;
+  }
+  res.json({ groups, reclaimable, scannedAt: new Date(result.at).toISOString(), warnings: publicWarnings(req, result.warnings) });
+});
+
+// ---------- скачать папку или выбранные файлы одним ZIP ----------
+// POST /api/files/archive {folder} | {keys} → {url} — одноразовая ссылка на минуту;
+// GET по ней собирает архив потоком: файлы идут из S3 в ответ по очереди, без сжатия.
+const ARCHIVE_MAX_FILES = 10_000;
+const archives = new Map(); // токен → {user, name, entries, exp}
+
+function uniqueName(name, used) {
+  if (!used.has(name)) { used.add(name); return name; }
+  const dot = name.lastIndexOf('.');
+  const slash = name.lastIndexOf('/');
+  const [base, ext] = dot > slash + 1 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+  for (let i = 2; ; i++) {
+    const next = `${base} (${i})${ext}`;
+    if (!used.has(next)) { used.add(next); return next; }
+  }
+}
+
+filesRouter.post('/files/archive', async (req, res) => {
+  const items = []; // {st, rel, size, lastModified, path}
+  let name;
+  if (Array.isArray(req.body?.keys)) {
+    if (!req.body.keys.length || req.body.keys.length > 1000) throw new HttpError(400, 'Выберите от 1 до 1000 файлов');
+    for (const key of req.body.keys) {
+      const { st, rel } = readRef(req, key);
+      items.push({ st, rel, path: nameFromKey(rel) });
+    }
+    name = items.length === 1 ? nameFromKey(items[0].rel).replace(/\.[^.]*$/, '') : `Файлы (${items.length})`;
+  } else {
+    const folder = readFolder(req, req.body?.folder);
+    const filter = filterAcl(req);
+    let tooMany = false;
+    const { warnings } = await storages.everywhere(async (st) => {
+      await st.forEachObject(folder, (o) => {
+        if (!isValidKey(o.rel) || isReservedFolder(o.rel)) return; // маркеры папок, корзина, копии
+        const f = folderFromKey(o.rel);
+        if (filter && !acl.canRead(req.user, f)) return;
+        if (items.length >= ARCHIVE_MAX_FILES) { tooMany = true; return; }
+        items.push({ st, rel: o.rel, size: o.size, lastModified: o.lastModified, path: f.slice(folder.length) + nameFromKey(o.rel) });
+      });
+    });
+    if (tooMany) throw new HttpError(413, `В папке больше ${ARCHIVE_MAX_FILES} файлов — скачайте её частями`);
+    if (warnings.length) throw new HttpError(502, 'Часть хранилищ недоступна — архив был бы неполным');
+    if (!items.length) throw new HttpError(404, 'В папке нет файлов');
+    name = folder ? folder.slice(0, -1).split('/').pop() : 'Мой диск';
+  }
+  const used = new Set();
+  const entries = items.map((it) => ({ ...it, path: uniqueName(it.path, used) }));
+  const token = crypto.randomBytes(18).toString('base64url');
+  for (const [t, a] of archives) if (a.exp < Date.now()) archives.delete(t);
+  archives.set(token, { user: req.user.username, name, entries, exp: Date.now() + 60_000 });
+  res.json({ url: `/api/files/archive/${token}`, count: entries.length });
+});
+
+filesRouter.get('/files/archive/:token', async (req, res) => {
+  const a = archives.get(req.params.token);
+  archives.delete(req.params.token);
+  if (!a || a.exp < Date.now() || a.user !== req.user.username) throw new HttpError(410, 'Ссылка на архив устарела — нажмите «Скачать» ещё раз');
+  // Права проверены при создании ссылки; размеры файлов из выбора — уточняем перед отправкой.
+  for (const e of a.entries) {
+    if (e.size === undefined) {
+      const head = await e.st.headObject(e.rel);
+      if (!head) throw new HttpError(404, `Файл «${nameFromKey(e.rel)}» не найден`);
+      e.size = head.ContentLength ?? 0;
+      e.lastModified = head.LastModified?.toISOString?.() ?? null;
+    }
+  }
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', contentDisposition(`${a.name}.zip`));
+  res.setHeader('Cache-Control', 'no-store');
+  audit(req, 'files.archive', { name: a.name, count: a.entries.length });
+  let aborted = false;
+  res.on('close', () => { if (!res.writableFinished) aborted = true; });
+  async function* stream() {
+    for (const e of a.entries) {
+      yield {
+        name: e.path, size: e.size, mtime: e.lastModified ? new Date(e.lastModified) : undefined,
+        open: async () => (await e.st.getStream(e.rel)).body,
+      };
+    }
+  }
+  try {
+    await writeZip(res, stream(), { isAborted: () => aborted });
+    res.end();
+  } catch (err) {
+    if (!err.aborted) console.error('[archive] сборка прервана:', err?.name, err?.message);
+    res.destroy();
+  }
+});
+
 // POST /api/files/move {key, folder?, name?} — переименование и/или перемещение файла.
 // В S3 нет операции rename: объект копируется под новым ключом внутри своего бакета,
 // затем исходный удаляется. Ссылки, выданные на старый ключ, перестают работать.
@@ -517,6 +682,7 @@ filesRouter.post('/files/move', canEdit, async (req, res) => {
   if (!head) throw new HttpError(404, 'Файл не найден');
   const size = head.ContentLength ?? 0;
   if (target === rel) return res.json({ file: fileInfo(st, rel, size, head.LastModified), folder });
+  if (!acl.inPersonal(req.user, folderFromKey(rel))) await reserveQuota(req.user, folder, size);
 
   // Класс хранения файла сохраняется (HeadObject не возвращает его для STANDARD).
   await st.copyObject(rel, target, size, head.ContentType, head.StorageClass ?? st.storageClass);
@@ -553,6 +719,7 @@ filesRouter.post('/files/copy', canEdit, async (req, res) => {
     const used = stats.storages.find((x) => x.id === st.id)?.bucketSize ?? 0;
     if (used + size > st.def.quotaGb * 1024 ** 3) throw new HttpError(507, `Нет места в хранилище «${st.name}»: квота исчерпана`);
   }
+  await reserveQuota(req.user, folder, size);
   await st.copyObject(rel, target, size, head.ContentType, head.StorageClass ?? st.storageClass);
   storages.noteUploaded(st.id, size);
   storages.invalidateStats();

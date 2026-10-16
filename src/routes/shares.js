@@ -3,11 +3,12 @@ import * as acl from '../acl.js';
 import { hasRole, requireRole } from '../auth.js';
 import { config } from '../config.js';
 import { Router } from '../http.js';
-import { folderFromKey, isReservedFolder, isValidFolder, nameFromKey, parseRef } from '../keys.js';
+import { folderFromKey, formatRef, isReservedFolder, isValidFolder, nameFromKey, parseRef, previewKind } from '../keys.js';
 import { audit, HttpError, rateLimit } from '../middleware/security.js';
 import * as shares from '../shares.js';
 import * as storages from '../storages.js';
 import * as uploadFlow from '../upload-flow.js';
+import { getUser } from '../users.js';
 
 const MB = 1024 * 1024;
 const DOWNLOAD_TTL = 10 * 60;
@@ -65,6 +66,13 @@ sharesRouter.post('/:id/revoke', (req, res) => {
   res.json({ ok: true });
 });
 
+// GET /api/shares/:id/stats — статистика портала загрузки (кто, когда, откуда, что)
+sharesRouter.get('/:id/stats', (req, res) => {
+  const s = shares.get(req.params.id);
+  if (!s || (s.createdBy !== req.user.username && !hasRole(req.user, 'admin'))) throw new HttpError(404, 'Ссылка не найдена');
+  res.json(shares.statsOf(s));
+});
+
 // PATCH /api/shares/:id {slug?, caption?} — короткий адрес и подпись
 sharesRouter.patch('/:id', (req, res) => {
   const s = wrapSync(() => shares.update(req.params.id, req.user.username, hasRole(req.user, 'admin'), { slug: req.body?.slug, caption: req.body?.caption }));
@@ -87,6 +95,7 @@ const STATE_TEXT = {
   expired: 'Срок действия ссылки истёк',
   exhausted: 'Лимит по этой ссылке исчерпан',
   revoked: 'Ссылка отозвана владельцем',
+  fulfilled: 'Файлы уже отправлены — ссылка закрыта',
   missing: 'Файл или папка по ссылке удалены',
 };
 
@@ -98,11 +107,29 @@ function readCookie(req, name) {
   return undefined;
 }
 
+// Ссылка не даёт больше, чем может её автор прямо сейчас: автор удалён или потерял
+// доступ к папке (файлу) — ссылка перестаёт действовать.
+function ownerAllows(s) {
+  const owner = getUser(s.createdBy);
+  if (!owner) return null;
+  if (s.type === 'file') {
+    const ref = parseRef(s.key);
+    return ref && acl.canRead(owner, folderFromKey(ref.rel)) ? owner : null;
+  }
+  if (s.type === 'upload') return acl.canWrite(owner, s.folder) ? owner : null;
+  return acl.canRead(owner, s.folder) ? owner : null;
+}
+
+function stateOf(s) {
+  const state = shares.stateOf(s);
+  return state === 'active' && !ownerAllows(s) ? 'revoked' : state;
+}
+
 /** Ссылка, доступная прямо сейчас (иначе — понятная ошибка). */
 function activeShare(req, { needUnlock = true, type } = {}) {
   const s = shares.get(req.params.id);
   if (!s) throw new HttpError(404, 'Ссылка не найдена');
-  const state = shares.stateOf(s);
+  const state = stateOf(s);
   if (state !== 'active') throw new HttpError(410, STATE_TEXT[state]);
   if (type && !type.includes(s.type)) throw new HttpError(400, 'Это действие недоступно по этой ссылке');
   if (needUnlock && !shares.isUnlocked(s, readCookie(req, shares.unlockCookieName(s.id)))) throw new HttpError(401, 'Нужен пароль');
@@ -122,11 +149,11 @@ function keyInside(s, key, { exact = false } = {}) {
 publicSharesRouter.get('/:id', async (req, res) => {
   const s = shares.get(req.params.id);
   if (!s) throw new HttpError(404, 'Ссылка не найдена');
-  const state = shares.stateOf(s);
+  const state = stateOf(s);
   const base = { id: s.id, type: s.type, state, message: STATE_TEXT[state] ?? null, owner: s.createdBy, expiresAt: s.expiresAt };
   if (state !== 'active') return res.status(410).json(base);
   const unlocked = shares.isUnlocked(s, readCookie(req, shares.unlockCookieName(s.id)));
-  const info = { ...base, needsPassword: Boolean(s.passwordHash), unlocked, name: unlocked ? s.name : null, caption: s.caption ?? null };
+  const info = { ...base, needsPassword: Boolean(s.passwordHash), unlocked, name: unlocked ? s.name : null, caption: s.caption ?? null, request: Boolean(s.request) };
   if (unlocked && s.type === 'file') {
     const { st, rel } = storages.resolveRef(s.key);
     const head = await st.headObject(rel);
@@ -138,6 +165,7 @@ publicSharesRouter.get('/:id', async (req, res) => {
     info.maxFileSize = Math.min(config.limits.maxFileSize, (s.maxFileSizeMb ?? Infinity) * MB);
     info.uploadsLeft = s.maxUploads ? s.maxUploads - s.uploads : null;
   }
+  if (unlocked) info.hasDownloadLimit = Boolean(s.maxDownloads); // тогда без предпросмотра
   if (unlocked) shares.touch(s);
   res.json(info);
 });
@@ -156,12 +184,16 @@ publicSharesRouter.get('/:id/list', async (req, res) => {
   const s = activeShare(req, { type: ['folder'] });
   const sub = req.query.folder ?? '';
   if (!isValidFolder(sub) || !isValidFolder(s.folder + sub)) throw new HttpError(400, 'Некорректный путь папки');
+  // Вложенные папки со своими правилами — по правам автора ссылки, как он сам видит их на сайте.
+  const owner = ownerAllows(s);
+  if (!acl.canSee(owner, s.folder + sub)) throw new HttpError(404, 'Папка не найдена');
   const result = await storages.listFolder(s.folder + sub, { cursor: req.query.cursor || undefined });
   const strip = (p) => p.slice(s.folder.length);
+  const filesVisible = acl.canRead(owner, s.folder + sub);
   res.json({
     folder: sub,
-    folders: result.folders.map((f) => ({ path: strip(f.path), name: f.name })),
-    files: result.files.map(({ key, name, size, lastModified }) => ({ key, name, size, lastModified })),
+    folders: result.folders.filter((f) => acl.canSee(owner, f.path)).map((f) => ({ path: strip(f.path), name: f.name })),
+    files: filesVisible ? result.files.map(({ key, name, size, lastModified }) => ({ key, name, size, lastModified })) : [],
     nextCursor: result.nextCursor,
   });
 });
@@ -171,14 +203,34 @@ publicSharesRouter.post('/:id/download', async (req, res) => {
   const s = activeShare(req, { type: ['file', 'folder'] });
   const key = s.type === 'file' ? s.key : req.body?.key;
   const ref = s.type === 'file' ? parseRef(key) : keyInside(s, key);
+  if (s.type === 'folder' && !acl.canRead(ownerAllows(s), folderFromKey(ref.rel))) throw new HttpError(404, 'Файл не найден');
   const st = storages.get(ref.storageId);
   if (!(await st.headObject(ref.rel))) {
     if (s.type === 'file') shares.fileGone(s.key);
     throw new HttpError(404, 'Файл не найден');
   }
-  shares.touch(s, 'downloads');
+  if (s.type === 'folder') shares.touchFile(s, formatRef(ref.storageId, ref.rel));
+  else shares.touch(s, 'downloads');
   audit(req, 'share.download', { id: s.id, name: nameFromKey(ref.rel) });
   res.json({ url: await st.presignGet(ref.rel, DOWNLOAD_TTL) });
+});
+
+// POST /api/public/s/:id/preview {key?} → {kind, url} — посмотреть файл в браузере, не скачивая.
+// Не считается скачиванием, поэтому у ссылки с лимитом скачиваний предпросмотра нет.
+const PREVIEW_MAX = { text: 1024 * 1024 };
+publicSharesRouter.post('/:id/preview', async (req, res) => {
+  const s = activeShare(req, { type: ['file', 'folder'] });
+  if (s.maxDownloads) throw new HttpError(403, 'У этой ссылки ограничено число скачиваний — файл можно только скачать');
+  const ref = s.type === 'file' ? parseRef(s.key) : keyInside(s, req.body?.key);
+  if (s.type === 'folder' && !acl.canRead(ownerAllows(s), folderFromKey(ref.rel))) throw new HttpError(404, 'Файл не найден');
+  const pk = previewKind(nameFromKey(ref.rel));
+  if (!pk) throw new HttpError(415, 'Этот файл нельзя посмотреть в браузере');
+  const st = storages.get(ref.storageId);
+  const head = st && await st.headObject(ref.rel);
+  if (!head) throw new HttpError(404, 'Файл не найден');
+  if (PREVIEW_MAX[pk.kind] && (head.ContentLength ?? 0) > PREVIEW_MAX[pk.kind]) throw new HttpError(413, 'Файл слишком большой для просмотра');
+  shares.touch(s);
+  res.json({ kind: pk.kind, url: await st.presignGet(ref.rel, DOWNLOAD_TTL, { inline: true, contentType: pk.contentType }) });
 });
 
 // ---------- «загрузить мне» ----------
@@ -203,9 +255,22 @@ publicSharesRouter.post('/:id/upload/complete', async (req, res) => {
   const maxSize = Math.min(config.limits.maxFileSize, (s.maxFileSizeMb ?? Infinity) * MB);
   const uploadId = req.body?.uploadId === undefined ? undefined : String(req.body.uploadId);
   const { file, st, rel, size } = await wrap(() => uploadFlow.completeUpload(req.body?.key, uploadId, { maxSize }));
-  shares.touch(s, 'uploads');
-  audit(req, 'share.upload', { id: s.id, storage: st.id, key: rel, size });
+  // «Кто» — имя, которое гость сам указал на странице (необязательно).
+  // eslint-disable-next-line no-control-regex
+  const from = typeof req.body?.from === 'string' ? req.body.from.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 100) : '';
+  shares.noteUpload(s, { name: file.name, size, ip: req.ip, from });
+  audit(req, 'share.upload', { id: s.id, storage: st.id, key: rel, size, from: from || undefined });
   res.json({ file: { name: file.name, size: file.size } });
+});
+
+// POST /api/public/s/:id/finish — «Готово» на запросе файла: ссылка закрывается.
+publicSharesRouter.post('/:id/finish', (req, res) => {
+  const s = activeShare(req, { type: ['upload'] });
+  if (!s.request) throw new HttpError(400, 'Это действие только для запроса файла');
+  if (!s.uploads) throw new HttpError(400, 'Сначала загрузите файлы');
+  shares.fulfil(s);
+  audit(req, 'share.fulfil', { id: s.id });
+  res.json({ ok: true });
 });
 
 publicSharesRouter.post('/:id/upload/abort', async (req, res) => {

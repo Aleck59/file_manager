@@ -3,6 +3,7 @@ import * as acl from '../acl.js';
 import { hasRole, requireRole } from '../auth.js';
 import { config } from '../config.js';
 import { Router } from '../http.js';
+import { folderFromKey } from '../keys.js';
 import { audit, HttpError } from '../middleware/security.js';
 import * as sharesStore from '../shares.js';
 import * as storages from '../storages.js';
@@ -21,17 +22,26 @@ const wrap = async (fn) => {
 const publicWarnings = (req, warnings = []) => (hasRole(req.user, 'admin') ? warnings
   : warnings.map((w) => ({ storage: w.storage, error: 'нет связи с хранилищем' })));
 
+// Папки, из которых удалены файлы записи: у записи «N файлов» они могут быть разными,
+// и права проверяются по каждой, а не по папке первого файла.
+const foldersOf = (b) => (b.kind === 'folder' ? [b.folder]
+  : [...new Set((b.keys ?? [b.key]).map((k) => folderFromKey(k.slice(k.indexOf(':') + 1))))]);
+
 // GET /api/trash
 // Видно только удалённое из папок, к которым есть доступ.
 trashRouter.get('/', (req, res) => {
-  res.json({ days: config.limits.trashDays, items: trash.list().filter((b) => acl.canRead(req.user, b.folder)) });
+  res.json({ days: config.limits.trashDays, items: trash.list().filter((b) => foldersOf(b).every((f) => acl.canRead(req.user, f))) });
 });
 
-// Вернуть или стереть можно только то, что лежало в папке с правом записи.
+// Вернуть или стереть можно только то, что лежало в папке с правом записи
+// (один файл из записи — по его папке, всю запись — по всем её папкам).
 function allowed(req) {
   const b = trash.get(req.body?.id);
-  if (!b || !acl.canRead(req.user, b.folder)) throw new HttpError(404, 'В корзине такого нет');
-  if (!(b.kind === 'folder' ? acl.canWriteTree(req.user, b.folder) : acl.canWrite(req.user, b.folder))) {
+  if (!b) throw new HttpError(404, 'В корзине такого нет');
+  const one = req.body?.key !== undefined && (b.keys ?? []).includes(req.body.key);
+  const folders = one ? [folderFromKey(req.body.key.slice(req.body.key.indexOf(':') + 1))] : foldersOf(b);
+  if (!folders.every((f) => acl.canRead(req.user, f))) throw new HttpError(404, 'В корзине такого нет');
+  if (!folders.every((f) => (b.kind === 'folder' ? acl.canWriteTree(req.user, f) : acl.canWrite(req.user, f)))) {
     throw new HttpError(403, 'Нет прав на эту папку');
   }
 }

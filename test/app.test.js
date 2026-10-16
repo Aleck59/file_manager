@@ -657,3 +657,55 @@ test('2FA: TOTP по RFC 6238, без повтора кода, коды восс
   assert.equal(totp.readTicket(ticket, () => ({ ...user, passwordHash: 'h2' })), null, 'смена пароля обесценивает билет');
   assert.equal(totp.readTicket(ticket.replace('.password.', '.google.'), () => user), null);
 });
+
+test('ZIP: потоковая сборка архива читается обратно (имена UTF-8, CRC, вложенные папки)', async () => {
+  const { writeZip } = await import('../src/zip-writer.js');
+  const zip = await import('../src/zip.js');
+  const { PassThrough } = await import('node:stream');
+  const out = new PassThrough();
+  const chunks = [];
+  out.on('data', (c) => chunks.push(c));
+  const files = [['Отчёт.txt', 'привет'], ['Фото/кот.jpg', Buffer.alloc(70_000, 7)], ['пусто.txt', '']];
+  async function* entries() {
+    for (const [name, data] of files) {
+      const buf = Buffer.from(data);
+      yield { name, size: buf.length, mtime: new Date('2026-01-02T03:04:06'), open: async () => [buf.subarray(0, 100), buf.subarray(100)] };
+    }
+  }
+  const { count } = await writeZip(out, entries());
+  out.end();
+  assert.equal(count, 3);
+  const buf = Buffer.concat(chunks);
+  const st = memStorage(buf);
+  const { entries: list } = await zip.listZip(st, 'x', buf.length);
+  assert.deepEqual(list.map((e) => e.name), files.map(([n]) => n));
+  assert.equal((await zip.entryBuffer(st, 'x', list[0], 1024)).toString(), 'привет');
+  assert.equal((await zip.entryBuffer(st, 'x', list[1], 100_000)).length, 70_000);
+  if (process.platform !== 'win32') {
+    const { execFileSync } = await import('node:child_process');
+    const p = path.join(dataDir, 'w.zip');
+    fs.writeFileSync(p, buf);
+    try { // строгая проверка стандартным распаковщиком (CRC, дескрипторы), если он есть
+      execFileSync('python3', ['-c', 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None', p]);
+    } catch (err) { if (err.code !== 'ENOENT') throw err; }
+  }
+});
+
+test('запрос файла: закрывается после «Готово» или через час; журнал портала', async () => {
+  const shares = await import('../src/shares.js');
+  await assert.rejects(shares.create({ type: 'upload', request: true, folder: 'Входящие/', name: 'x', user: 'admin' }), /срок/);
+  const s = await shares.create({ type: 'upload', request: true, folder: 'Входящие/', name: 'x', user: 'admin', expiresInDays: 3 });
+  assert.equal(shares.stateOf(s), 'active');
+  shares.noteUpload(s, { name: 'скан.pdf', size: 1000, ip: '203.0.113.5', from: 'Иван' });
+  shares.noteUpload(s, { name: 'фото.jpg', size: 500, ip: '203.0.113.5', from: '' });
+  assert.equal(shares.stateOf(s), 'active');
+  assert.equal(shares.stateOf(s, Date.now() + 61 * 60_000), 'fulfilled');
+  shares.fulfil(s);
+  assert.equal(shares.stateOf(s), 'fulfilled');
+  const st = shares.statsOf(s);
+  assert.equal(st.uploads, 2);
+  assert.equal(st.bytes, 1500);
+  assert.equal(st.senders, 2); // «Иван» и безымянный с IP
+  assert.equal(st.log[0].name, 'фото.jpg'); // новые сверху
+  assert.equal(shares.ownerView(s).uploadLog, undefined); // журнал — только через statsOf
+});

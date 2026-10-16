@@ -54,6 +54,8 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
   alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>',
   server: '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01M6 18h.01"/>',
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
@@ -215,8 +217,13 @@ export function fileBadge(name, size = 'h-9 w-9 rounded-lg', iconSize = 'h-4 w-4
 }
 
 // Человекочитаемая папка: "" → «Мой диск», "a/b/" → «Мой диск / a / b»
+// Корень диска пользователя: у кого личная папка — она, у остальных весь диск ('').
+export let homeFolder = '';
+export function setHomeFolder(path) { homeFolder = path || ''; }
+
 export function folderLabel(folder) {
-  return ['Мой диск', ...folder.split('/').filter(Boolean)].join(' / ');
+  const rest = folder.startsWith(homeFolder) ? folder.slice(homeFolder.length) : folder;
+  return ['Мой диск', ...rest.split('/').filter(Boolean)].join(' / ');
 }
 
 // «Chrome · Windows» из User-Agent — для журнала и списка сессий.
@@ -324,8 +331,14 @@ export function openDialog({ title, text, fields = [], confirmLabel = 'OK', dang
 let closeOpenMenu = null;
 
 /** items: [{label, icon, onSelect, danger}] — меню у кнопки anchor, закрывается кликом вне/Esc. */
+// Пункт {more: [...]} — «Ещё»: открывает остальные действия на том же месте.
 export function openMenu(anchor, items) {
   closeOpenMenu?.();
+  items = items.filter(Boolean).map((item) => {
+    if (!item.more) return item;
+    const rest = item.more.filter(Boolean);
+    return rest.length ? { label: item.label ?? 'Ещё', icon: item.icon ?? 'more', onSelect: () => openMenu(anchor, rest) } : null;
+  });
   const menu = h('div', {
     class: 'fixed z-[55] min-w-[12rem] rounded-xl border border-slate-200 bg-white p-1 shadow-xl animate-toast-in dark:border-slate-700 dark:bg-slate-900',
     role: 'menu',

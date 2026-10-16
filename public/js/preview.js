@@ -105,7 +105,107 @@ async function textBlock(url, size, key, name) {
   return wrap;
 }
 
-async function mediaFor(info, file, gallery) {
+// ---------- видео и аудио ----------
+const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+// Варианты качества — файлы рядом с тем же именем и суффиксом «720p», «1080p»…
+// («Фильм.mp4», «Фильм.720p.mp4», «Фильм 480p.mp4»). Перекодирования на сервере нет.
+const QUALITY_RE = /^(.*?)(?:[ ._-](\d{3,4})p)?\.([^.]+)$/i;
+function renditions(file, siblings) {
+  const m = QUALITY_RE.exec(file.name);
+  if (!m) return [];
+  const base = m[1].toLowerCase();
+  const list = siblings.filter((f) => categoryOf(f.name) === 'video').map((f) => {
+    const x = QUALITY_RE.exec(f.name);
+    return x && x[1].toLowerCase() === base ? { file: f, height: x[2] ? Number(x[2]) : 0 } : null;
+  }).filter(Boolean);
+  return list.length > 1 ? list.sort((a, b) => (b.height || 1e9) - (a.height || 1e9)) : [];
+}
+
+function speedSelect(media) {
+  const sel = h('select', { class: 'select py-1 text-xs', 'aria-label': 'Скорость' },
+    SPEEDS.map((s) => h('option', { value: String(s), selected: s === Number(prefs.get('media-speed', '1')) }, `${s}×`)));
+  media.playbackRate = Number(sel.value);
+  media.addEventListener('loadedmetadata', () => { media.playbackRate = Number(sel.value); });
+  sel.addEventListener('change', () => { media.playbackRate = Number(sel.value); prefs.set('media-speed', sel.value); });
+  return sel;
+}
+
+function videoPlayer(url, file, siblings) {
+  const video = h('video', { src: url, controls: true, preload: 'metadata', playsinline: true, class: 'w-full rounded-xl bg-black' });
+  const bar = h('div', { class: 'flex flex-wrap items-center justify-end gap-2 text-xs text-slate-500 dark:text-slate-400' },
+    h('label', { class: 'flex items-center gap-1.5' }, 'Скорость', speedSelect(video)));
+  const variants = renditions(file, siblings);
+  if (variants.length) {
+    const sel = h('select', { class: 'select py-1 text-xs', 'aria-label': 'Качество' },
+      variants.map((v) => h('option', { value: v.file.key, selected: v.file.key === file.key }, v.height ? `${v.height}p` : 'Исходное')));
+    // Смена качества — с того же места, пауза сохраняется.
+    sel.addEventListener('change', async () => {
+      const at = video.currentTime;
+      const paused = video.paused;
+      try {
+        const { url: next } = await api.preview(sel.value);
+        video.src = next;
+        video.addEventListener('loadedmetadata', () => {
+          video.currentTime = at;
+          if (!paused) video.play().catch(() => {});
+        }, { once: true });
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+    bar.prepend(h('label', { class: 'flex items-center gap-1.5' }, 'Качество', sel));
+  }
+  return h('div', { class: 'space-y-2' }, video, bar);
+}
+
+// Аудио: плейлист из всех аудиофайлов папки, следующий трек включается сам.
+function audioPlayer(url, file, siblings) {
+  const tracks = siblings.filter((f) => categoryOf(f.name) === 'audio')
+    .sort((a, b) => a.name.localeCompare(b.name, 'ru', { numeric: true }));
+  if (!tracks.some((t) => t.key === file.key)) tracks.unshift(file);
+  let index = tracks.findIndex((t) => t.key === file.key);
+  const audio = h('audio', { src: url, controls: true, preload: 'metadata', class: 'w-full' });
+  const title = h('p', { class: 'truncate text-sm font-medium' }, file.name);
+  const list = h('ol', { class: 'max-h-56 overflow-y-auto rounded-xl border border-slate-200 text-sm dark:border-slate-800' });
+  const owner = current;
+
+  async function play(i, autoplay = true) {
+    if (i < 0 || i >= tracks.length) return;
+    index = i;
+    renderList();
+    title.textContent = tracks[i].name;
+    try {
+      const { url: next } = await api.preview(tracks[i].key);
+      if (current !== owner) return; // панель уже показывает другой файл
+      audio.src = next;
+      if (autoplay) audio.play().catch(() => {});
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+  function renderList() {
+    list.replaceChildren(...tracks.map((t, i) => h('li', {},
+      h('button', {
+        type: 'button', 'aria-current': i === index ? 'true' : undefined,
+        class: `flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60 ${i === index ? 'font-medium text-brand-700 dark:text-brand-300' : ''}`,
+        onclick: () => play(i),
+      }, h('span', { class: 'w-5 shrink-0 text-right text-xs tabular-nums text-slate-400' }, i === index ? '▶' : String(i + 1)), h('span', { class: 'truncate' }, t.name)))));
+  }
+  audio.addEventListener('ended', () => play(index + 1));
+  renderList();
+  const btn = (name, label, fn) => h('button', { type: 'button', class: 'icon-btn', title: label, 'aria-label': label, onclick: fn }, icon(name));
+  return h('div', { class: 'space-y-3' },
+    placeholder(file.name),
+    audio,
+    h('div', { class: 'flex items-center gap-2' },
+      btn('chevronLeft', 'Предыдущий трек', () => play(index - 1)),
+      btn('chevronRight', 'Следующий трек', () => play(index + 1)),
+      h('div', { class: 'min-w-0 flex-1' }, title),
+      speedSelect(audio)),
+    tracks.length > 1 && list);
+}
+
+async function mediaFor(info, file, gallery, siblings = []) {
   const { kind, url } = info;
   if (kind === 'image') {
     const img = h('img', { src: url, alt: file.name, class: 'max-h-[28rem] w-full rounded-xl object-contain checkerboard', decoding: 'async' });
@@ -119,10 +219,8 @@ async function mediaFor(info, file, gallery) {
       img,
       h('span', { class: 'absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900/60 text-white opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100' }, icon('expand')));
   }
-  if (kind === 'video') return h('video', { src: url, controls: true, preload: 'metadata', playsinline: true, class: 'w-full rounded-xl bg-black' });
-  if (kind === 'audio') {
-    return h('div', { class: 'space-y-4' }, placeholder(file.name), h('audio', { src: url, controls: true, preload: 'metadata', class: 'w-full' }));
-  }
+  if (kind === 'video') return videoPlayer(url, file, siblings);
+  if (kind === 'audio') return audioPlayer(url, file, siblings);
   if (kind === 'pdf') {
     return h('iframe', { src: url, title: `PDF: ${file.name}`, class: 'h-[28rem] w-full rounded-xl border border-slate-200 bg-white dark:border-slate-800', loading: 'lazy' });
   }
@@ -130,6 +228,58 @@ async function mediaFor(info, file, gallery) {
   if (kind === 'zip') return zipBlock(file);
   if (kind === 'office') return officeBlock(file);
   return placeholder(file.name, 'Предпросмотр для этого типа файлов недоступен');
+}
+
+// ---------- комментарии ----------
+function commentsBlock(file) {
+  const list = h('ul', { class: 'space-y-3' });
+  const input = h('textarea', { class: 'input min-h-[4.5rem] resize-y text-sm', maxlength: 2000, placeholder: 'Заметка для всех, кто видит файл', 'aria-label': 'Новый комментарий' });
+  const send = h('button', { type: 'submit', class: 'btn-primary' }, 'Отправить');
+  const form = h('form', { class: 'space-y-2' }, input, h('div', { class: 'flex justify-end' }, send));
+  const title = h('h4', { class: 'text-sm font-semibold' }, 'Комментарии');
+  let items = [];
+
+  function render() {
+    title.textContent = items.length ? `Комментарии · ${items.length}` : 'Комментарии';
+    list.replaceChildren(...items.map((c) => {
+      const mine = c.user === ctx.user.username || ctx.can('admin');
+      return h('li', { class: 'group rounded-xl bg-slate-50 px-3 py-2 dark:bg-slate-800/60' },
+        h('div', { class: 'flex items-baseline gap-2 text-xs text-slate-500 dark:text-slate-400' },
+          h('span', { class: 'font-semibold text-slate-700 dark:text-slate-200' }, c.user),
+          h('time', { datetime: c.at }, formatDate(c.at)),
+          mine && h('button', { type: 'button', class: 'ml-auto text-rose-600 opacity-0 transition-opacity hover:underline focus:opacity-100 group-hover:opacity-100 dark:text-rose-400', onclick: () => remove(c) }, 'Удалить')),
+        h('p', { class: 'mt-1 whitespace-pre-wrap break-words text-sm' }, c.text));
+    }));
+  }
+  async function remove(c) {
+    try {
+      await api.deleteComment(file.key, c.id);
+      items = items.filter((x) => x.id !== c.id);
+      render();
+      ctx.onCommentsChanged?.(file.key, items.length);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!input.value.trim()) return input.focus();
+    send.disabled = true;
+    try {
+      const { comment } = await api.addComment(file.key, input.value);
+      items.push(comment);
+      input.value = '';
+      render();
+      ctx.onCommentsChanged?.(file.key, items.length);
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      send.disabled = false;
+    }
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) form.requestSubmit(); });
+  const key = file.key;
+  api.comments(key).then((r) => { if (current === key) { items = r.comments; render(); } }).catch(() => {});
+  render();
+  return h('section', { class: 'space-y-3 border-t border-slate-200 pt-4 dark:border-slate-800' }, title, list, form);
 }
 
 function metaRow(label, value) {
@@ -143,7 +293,7 @@ function metaRow(label, value) {
  * @param {{ folder: string, onDelete?: Function, onRename?: Function, onMove?: Function }} opts
  *   onDelete/onRename/onMove передаются только при наличии прав редактора.
  */
-export async function showPreview(file, { folder, onDelete, onRename, onMove, gallery }) {
+export async function showPreview(file, { folder, onDelete, onRename, onMove, gallery, siblings }) {
   current = file.key;
   openDrawer(true);
   const body = h('div', { class: 'flex-1 space-y-5 overflow-y-auto p-4' },
@@ -177,7 +327,7 @@ export async function showPreview(file, { folder, onDelete, onRename, onMove, ga
     ...secondary);
 
   body.replaceChildren(
-    await mediaFor(info, file, gallery),
+    await mediaFor(info, file, gallery, siblings?.() ?? []),
     h('div', {},
       h('h3', { class: 'break-words text-base font-semibold leading-snug' }, file.name),
       h('p', { class: 'mt-0.5 text-xs text-slate-500 dark:text-slate-400' }, folderLabel(folder))),
@@ -188,6 +338,7 @@ export async function showPreview(file, { folder, onDelete, onRename, onMove, ga
       metaRow('Изменён', formatDate(info.lastModified)),
       metaRow('Расположение', folderLabel(folder)),
       info.storage && metaRow('Хранилище', info.storage.name)),
+    commentsBlock(file),
   );
 
   async function download() {

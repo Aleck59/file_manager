@@ -34,7 +34,8 @@ export function openShareDialog(target) {
   const typeBox = !isFile && h('fieldset', { class: 'space-y-2' },
     h('legend', { class: 'mb-1.5 text-sm font-medium' }, 'Что можно по ссылке'),
     radio('share-type', 'folder', 'Смотреть и скачивать', 'Файлы и подпапки — только чтение', true),
-    radio('share-type', 'upload', 'Загружать файлы мне', 'Гость ничего не видит, только отправляет файлы в эту папку', false));
+    radio('share-type', 'upload', 'Загружать файлы мне', 'Гость ничего не видит, только отправляет файлы в эту папку', false),
+    radio('share-type', 'request', 'Запросить файл', 'Одноразовая ссылка со сроком: гость отправляет файлы и нажимает «Готово»', false));
   const expiry = h('select', { id: 'share-exp', class: 'input' },
     [['1', '1 день'], ['7', '7 дней'], ['30', '30 дней'], ['90', '90 дней'], ['', 'Бессрочно']].map(([v, l]) => h('option', { value: v, selected: v === '7' }, l)));
   const password = h('input', { id: 'share-pass', type: 'text', class: 'input', placeholder: 'без пароля', autocomplete: 'off', maxlength: 128 });
@@ -45,11 +46,14 @@ export function openShareDialog(target) {
   // Портал загрузки: свой короткий адрес и подпись на странице.
   const slug = h('input', { id: 'share-slug', type: 'text', class: 'min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm outline-none', placeholder: 'a', autocomplete: 'off', spellcheck: 'false', maxlength: 40 });
   const caption = h('input', { id: 'share-caption', type: 'text', class: 'input', placeholder: 'Загрузить файлы', maxlength: 200 });
+  const captionLabel = h('label', { for: 'share-caption', class: 'mb-1.5 block text-sm font-medium' }, 'Подпись на странице');
+  const slugWrap = h('div', {});
+  slugWrap.append(h('label', { for: 'share-slug', class: 'mb-1.5 block text-sm font-medium' }, 'Свой адрес'),
+    h('div', { class: 'flex overflow-hidden rounded-xl border border-slate-300 bg-white focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/30 dark:border-slate-700 dark:bg-slate-900' },
+      h('span', { class: 'flex items-center border-r border-slate-200 bg-slate-50 px-3 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800' }, `${location.host}/`), slug));
   const portalWrap = h('div', { class: 'hidden grid gap-4 sm:col-span-2 sm:grid-cols-2' },
-    h('div', {}, h('label', { for: 'share-slug', class: 'mb-1.5 block text-sm font-medium' }, 'Свой адрес'),
-      h('div', { class: 'flex overflow-hidden rounded-xl border border-slate-300 bg-white focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/30 dark:border-slate-700 dark:bg-slate-900' },
-        h('span', { class: 'flex items-center border-r border-slate-200 bg-slate-50 px-3 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800' }, `${location.host}/`), slug)),
-    h('div', {}, h('label', { for: 'share-caption', class: 'mb-1.5 block text-sm font-medium' }, 'Подпись на странице'), caption));
+    slugWrap,
+    h('div', {}, captionLabel, caption));
   const error = h('p', { class: 'hidden rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/60 dark:text-rose-300', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'btn-primary' }, icon('link'), 'Создать ссылку');
   const form = h('form', { class: 'space-y-4 p-6' },
@@ -67,26 +71,35 @@ export function openShareDialog(target) {
       h('button', { type: 'button', class: 'btn-ghost', onclick: () => dialog.close() }, 'Отмена'), submit));
   const dialog = h('dialog', { class: 'w-[min(34rem,calc(100%-2rem))] rounded-2xl bg-white p-0 text-slate-800 shadow-xl dark:bg-slate-900 dark:text-slate-200' }, form);
   const type = () => (isFile ? 'file' : form.querySelector('input[name=share-type]:checked').value);
-  form.addEventListener('change', () => {
-    const upload = type() === 'upload';
+  const forever = expiry.querySelector('option[value=""]');
+  form.addEventListener('change', (e) => {
+    const t = type();
+    const upload = t === 'upload' || t === 'request';
     limitLabel.textContent = upload ? 'Лимит файлов' : 'Лимит скачиваний';
     maxSizeWrap.classList.toggle('hidden', !upload);
     portalWrap.classList.toggle('hidden', !upload);
+    // Запрос — всегда со сроком (по нему и напоминание), без своего адреса.
+    slugWrap.classList.toggle('hidden', t === 'request');
+    captionLabel.textContent = t === 'request' ? 'Что прислать' : 'Подпись на странице';
+    caption.placeholder = t === 'request' ? 'Например: скан паспорта' : 'Загрузить файлы';
+    forever.hidden = t === 'request';
+    if (e.target.name === 'share-type' && t === 'request') expiry.value = '7';
   });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     submit.disabled = true;
     error.classList.add('hidden');
-    const t = type();
+    const choice = type();
+    const t = choice === 'request' ? 'upload' : choice;
     try {
       const { share } = await api.createShare({
-        type: t, key: target.file?.key, folder: target.folder,
+        type: t, request: choice === 'request', key: target.file?.key, folder: target.folder,
         expiresInDays: expiry.value ? Number(expiry.value) : null,
         password: password.value,
         maxDownloads: t !== 'upload' && limit.value ? Number(limit.value) : null,
         maxUploads: t === 'upload' && limit.value ? Number(limit.value) : null,
         maxFileSizeMb: t === 'upload' && maxSize.value ? Number(maxSize.value) : null,
-        slug: t === 'upload' ? slug.value.trim().toLowerCase() || null : null,
+        slug: choice === 'upload' ? slug.value.trim().toLowerCase() || null : null,
         caption: t === 'upload' ? caption.value.trim() || null : null,
       });
       showResult(share);
