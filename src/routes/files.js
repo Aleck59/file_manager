@@ -10,6 +10,8 @@ import { audit, HttpError } from '../middleware/security.js';
 import { pipeline } from 'node:stream/promises';
 import { OFFICE_EXT, renderOffice } from '../office.js';
 import { entryStream, listZip } from '../zip.js';
+import { writeZip } from '../zip-writer.js';
+import crypto from 'node:crypto';
 import * as acl from '../acl.js';
 import * as folderIds from '../folder-ids.js';
 import * as labels from '../labels.js';
@@ -524,6 +526,95 @@ filesRouter.post('/files/office', async (req, res) => {
   if (!OFFICE_EXT.has(ext)) throw new HttpError(400, 'Это не документ Office (docx, xlsx, pptx)');
   if (size > 100 * 1024 * 1024) throw new HttpError(413, 'Документ слишком большой для просмотра');
   res.json(await flow(() => renderOffice(st, rel, size, ext)));
+});
+
+// ---------- скачать папку или выбранные файлы одним ZIP ----------
+// POST /api/files/archive {folder} | {keys} → {url} — одноразовая ссылка на минуту;
+// GET по ней собирает архив потоком: файлы идут из S3 в ответ по очереди, без сжатия.
+const ARCHIVE_MAX_FILES = 10_000;
+const archives = new Map(); // токен → {user, name, entries, exp}
+
+function uniqueName(name, used) {
+  if (!used.has(name)) { used.add(name); return name; }
+  const dot = name.lastIndexOf('.');
+  const slash = name.lastIndexOf('/');
+  const [base, ext] = dot > slash + 1 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+  for (let i = 2; ; i++) {
+    const next = `${base} (${i})${ext}`;
+    if (!used.has(next)) { used.add(next); return next; }
+  }
+}
+
+filesRouter.post('/files/archive', async (req, res) => {
+  const items = []; // {st, rel, size, lastModified, path}
+  let name;
+  if (Array.isArray(req.body?.keys)) {
+    if (!req.body.keys.length || req.body.keys.length > 1000) throw new HttpError(400, 'Выберите от 1 до 1000 файлов');
+    for (const key of req.body.keys) {
+      const { st, rel } = readRef(req, key);
+      items.push({ st, rel, path: nameFromKey(rel) });
+    }
+    name = items.length === 1 ? nameFromKey(items[0].rel).replace(/\.[^.]*$/, '') : `Файлы (${items.length})`;
+  } else {
+    const folder = readFolder(req, req.body?.folder);
+    const filter = filterAcl(req);
+    let tooMany = false;
+    const { warnings } = await storages.everywhere(async (st) => {
+      await st.forEachObject(folder, (o) => {
+        if (!isValidKey(o.rel) || isReservedFolder(o.rel)) return; // маркеры папок, корзина, копии
+        const f = folderFromKey(o.rel);
+        if (filter && !acl.canRead(req.user, f)) return;
+        if (items.length >= ARCHIVE_MAX_FILES) { tooMany = true; return; }
+        items.push({ st, rel: o.rel, size: o.size, lastModified: o.lastModified, path: f.slice(folder.length) + nameFromKey(o.rel) });
+      });
+    });
+    if (tooMany) throw new HttpError(413, `В папке больше ${ARCHIVE_MAX_FILES} файлов — скачайте её частями`);
+    if (warnings.length) throw new HttpError(502, 'Часть хранилищ недоступна — архив был бы неполным');
+    if (!items.length) throw new HttpError(404, 'В папке нет файлов');
+    name = folder ? folder.slice(0, -1).split('/').pop() : 'Мой диск';
+  }
+  const used = new Set();
+  const entries = items.map((it) => ({ ...it, path: uniqueName(it.path, used) }));
+  const token = crypto.randomBytes(18).toString('base64url');
+  for (const [t, a] of archives) if (a.exp < Date.now()) archives.delete(t);
+  archives.set(token, { user: req.user.username, name, entries, exp: Date.now() + 60_000 });
+  res.json({ url: `/api/files/archive/${token}`, count: entries.length });
+});
+
+filesRouter.get('/files/archive/:token', async (req, res) => {
+  const a = archives.get(req.params.token);
+  archives.delete(req.params.token);
+  if (!a || a.exp < Date.now() || a.user !== req.user.username) throw new HttpError(410, 'Ссылка на архив устарела — нажмите «Скачать» ещё раз');
+  // Права проверены при создании ссылки; размеры файлов из выбора — уточняем перед отправкой.
+  for (const e of a.entries) {
+    if (e.size === undefined) {
+      const head = await e.st.headObject(e.rel);
+      if (!head) throw new HttpError(404, `Файл «${nameFromKey(e.rel)}» не найден`);
+      e.size = head.ContentLength ?? 0;
+      e.lastModified = head.LastModified?.toISOString?.() ?? null;
+    }
+  }
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', contentDisposition(`${a.name}.zip`));
+  res.setHeader('Cache-Control', 'no-store');
+  audit(req, 'files.archive', { name: a.name, count: a.entries.length });
+  let aborted = false;
+  res.on('close', () => { if (!res.writableFinished) aborted = true; });
+  async function* stream() {
+    for (const e of a.entries) {
+      yield {
+        name: e.path, size: e.size, mtime: e.lastModified ? new Date(e.lastModified) : undefined,
+        open: async () => (await e.st.getStream(e.rel)).body,
+      };
+    }
+  }
+  try {
+    await writeZip(res, stream(), { isAborted: () => aborted });
+    res.end();
+  } catch (err) {
+    if (!err.aborted) console.error('[archive] сборка прервана:', err?.name, err?.message);
+    res.destroy();
+  }
 });
 
 // POST /api/files/move {key, folder?, name?} — переименование и/или перемещение файла.

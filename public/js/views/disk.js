@@ -190,6 +190,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     h('button', { type: 'button', class: 'icon-btn', title: 'Снять выбор (Esc)', 'aria-label': 'Снять выбор', onclick: () => clearChecked() }, icon('close')),
     bulkCount,
     h('span', { class: 'mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700' }),
+    h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', title: 'Скачать одним ZIP', onclick: () => downloadZip({ keys: [...state.checked] }) }, toned('download'), h('span', { class: 'hidden xl:inline' }, 'ZIP')),
     h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', onclick: () => bulkCopyLinks() }, toned('link'), h('span', { class: 'hidden xl:inline' }, 'Ссылки')),
     canEdit && h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', onclick: () => bulkMove() }, toned('move'), h('span', { class: 'hidden xl:inline' }, 'Переместить')),
     canEdit && h('button', { type: 'button', class: 'btn-ghost px-2.5 py-1.5', title: 'Копировать', 'aria-label': 'Копировать выбранные', onclick: () => copyFiles(checkedFiles()) }, toned('copy'), h('span', { class: 'hidden 2xl:inline' }, 'Копировать')),
@@ -285,6 +286,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
 
   const folderMenu = (f) => (btn) => openMenu(btn, [
     { label: 'Открыть', icon: 'folder', onSelect: () => ctx.navigate(diskHash(f.path)) },
+    { label: 'Скачать ZIP', icon: 'download', onSelect: () => downloadZip({ folder: f.path }) },
     canEdit && { label: 'Поделиться…', icon: 'globe', onSelect: () => openShareDialog({ folder: f.path }) },
     canEdit && { label: 'Переименовать', icon: 'pencil', onSelect: () => renameFolder(f) },
     canEdit && { label: 'Переместить…', icon: 'move', onSelect: () => moveFolder(f) },
@@ -618,6 +620,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
       // Правый клик по невыбранному файлу при наличии выбора — действует на него одного.
       if (state.checked.size > 1 && state.checked.has(file.key)) {
         return openMenu(atPointer(e), [
+          { label: `Скачать ZIP (${state.checked.size})`, icon: 'download', onSelect: () => downloadZip({ keys: [...state.checked] }) },
           { label: `Скопировать ссылки (${state.checked.size})`, icon: 'link', onSelect: bulkCopyLinks },
           canEdit && { label: 'Переместить…', icon: 'move', onSelect: bulkMove },
           canEdit && { label: 'Копировать…', icon: 'copy', onSelect: () => copyFiles(checkedFiles()) },
@@ -632,14 +635,16 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
       if (f) { e.preventDefault(); folderMenu(f)(atPointer(e)); }
       return;
     }
-    if (!canEdit) return;
+    if (!canEdit && !state.files.length && !state.folders.length) return;
     e.preventDefault();
+    if (!canEdit) return openMenu(atPointer(e), [{ label: 'Скачать папку ZIP', icon: 'download', onSelect: () => downloadZip({ folder }) }]);
     openMenu(atPointer(e), [
       { label: 'Загрузить файлы', icon: 'upload', onSelect: () => ctx.pickFiles(folder) },
       { label: 'Загрузить папку', icon: 'folderUp', onSelect: () => ctx.pickFolder(folder) },
       { label: 'Загрузить по ссылке…', icon: 'globe', onSelect: () => ctx.importFromUrl(folder) },
       { label: 'Новая папка', icon: 'folderPlus', onSelect: newFolder },
       state.files.length && { label: 'Выбрать все файлы', icon: 'check', onSelect: checkAllFiles },
+      { label: 'Скачать папку ZIP', icon: 'download', onSelect: () => downloadZip({ folder }) },
     ]);
   });
 
@@ -1006,6 +1011,17 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     ctx.refreshStats();
     if (done.length) toast(`${trashIds.length ? 'В корзине' : 'Удалено'}: ${pluralize(done.length, FILES)}`, 'success', undoAction(...trashIds));
     if (failed) { toast(`Не удалось удалить: ${pluralize(failed, FILES)}`, 'error'); load(); }
+  }
+
+  // Архив собирается на сервере потоком; браузер сразу начинает скачивание.
+  async function downloadZip(what) {
+    try {
+      const { url, count } = await api.archive(what);
+      toast(`Архив: ${count} ${pluralize(count, FILES)} — скачивание началось`, 'success');
+      window.location.assign(url);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
   }
 
   async function bulkCopyLinks() {

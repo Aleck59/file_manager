@@ -657,3 +657,36 @@ test('2FA: TOTP по RFC 6238, без повтора кода, коды восс
   assert.equal(totp.readTicket(ticket, () => ({ ...user, passwordHash: 'h2' })), null, 'смена пароля обесценивает билет');
   assert.equal(totp.readTicket(ticket.replace('.password.', '.google.'), () => user), null);
 });
+
+test('ZIP: потоковая сборка архива читается обратно (имена UTF-8, CRC, вложенные папки)', async () => {
+  const { writeZip } = await import('../src/zip-writer.js');
+  const zip = await import('../src/zip.js');
+  const { PassThrough } = await import('node:stream');
+  const out = new PassThrough();
+  const chunks = [];
+  out.on('data', (c) => chunks.push(c));
+  const files = [['Отчёт.txt', 'привет'], ['Фото/кот.jpg', Buffer.alloc(70_000, 7)], ['пусто.txt', '']];
+  async function* entries() {
+    for (const [name, data] of files) {
+      const buf = Buffer.from(data);
+      yield { name, size: buf.length, mtime: new Date('2026-01-02T03:04:06'), open: async () => [buf.subarray(0, 100), buf.subarray(100)] };
+    }
+  }
+  const { count } = await writeZip(out, entries());
+  out.end();
+  assert.equal(count, 3);
+  const buf = Buffer.concat(chunks);
+  const st = memStorage(buf);
+  const { entries: list } = await zip.listZip(st, 'x', buf.length);
+  assert.deepEqual(list.map((e) => e.name), files.map(([n]) => n));
+  assert.equal((await zip.entryBuffer(st, 'x', list[0], 1024)).toString(), 'привет');
+  assert.equal((await zip.entryBuffer(st, 'x', list[1], 100_000)).length, 70_000);
+  if (process.platform !== 'win32') {
+    const { execFileSync } = await import('node:child_process');
+    const p = path.join(dataDir, 'w.zip');
+    fs.writeFileSync(p, buf);
+    try { // строгая проверка стандартным распаковщиком (CRC, дескрипторы), если он есть
+      execFileSync('python3', ['-c', 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None', p]);
+    } catch (err) { if (err.code !== 'ENOENT') throw err; }
+  }
+});
