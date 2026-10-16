@@ -52,6 +52,19 @@ export function storageNotice(ctx) {
     ctx.can('admin') && h('a', { href: '#/settings', class: 'btn-primary mt-6' }, icon('settings'), 'Открыть настройки'));
 }
 
+// ---------- группы по дате ----------
+const startOfDay = (d = new Date()) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const DATE_GROUPS = [
+  { label: 'Сегодня', test: (iso) => iso && new Date(iso) >= startOfDay() },
+  { label: 'На этой неделе', test: (iso) => { // с понедельника
+    const d = startOfDay();
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    return iso && new Date(iso) >= d;
+  } },
+  { label: 'В этом месяце', test: (iso) => { const n = new Date(); return iso && new Date(iso) >= new Date(n.getFullYear(), n.getMonth(), 1); } },
+  { label: 'Раньше', test: () => true },
+];
+
 // ---------- сортировка ----------
 const SORTS = {
   date: { label: 'Дата изменения', cmp: (a, b) => String(a.lastModified).localeCompare(String(b.lastModified)) },
@@ -123,6 +136,8 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     anchor: null, // для выбора диапазона с Shift
     layout: prefs.get('layout', 'list') === 'grid' ? 'grid' : 'list',
     sort: SORTS[sortBy] ? { by: sortBy, dir: sortDir === 'asc' ? 'asc' : 'desc' } : { by: 'date', dir: 'desc' },
+    mixed: prefs.get('mixed', '0') === '1', // папки вперемешку с файлами
+    group: prefs.get('group-date', '0') === '1', // группы по дате: сегодня, на неделе, в месяце, раньше
   };
   const cleanup = [];
   let unmounted = false;
@@ -405,16 +420,45 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     const sign = dir === 'asc' ? 1 : -1;
     const folders = state.folders.filter((f) => match(f.name));
     if (by === 'name' && dir === 'desc') folders.reverse();
-    const files = state.files.filter((f) => match(f.name)).sort((a, b) => sign * SORTS[by].cmp(a, b));
+    let files = state.files.filter((f) => match(f.name)).sort((a, b) => sign * SORTS[by].cmp(a, b));
+    if (state.group) { // группы по дате; порядок групп — как у даты, внутри группы — выбранная сортировка
+      const rank = (f) => DATE_GROUPS.findIndex((g) => g.test(f.lastModified));
+      const gsign = by === 'date' ? sign : -1;
+      files = files.map((f, i) => [f, rank(f), i]).sort((a, b) => gsign * (b[1] - a[1]) || a[2] - b[2]).map(([f]) => f);
+    }
     return { folders, files };
   }
+
+  // Папки вперемешку с файлами: у папок нет даты и размера — по имени они встают на место,
+  // по дате и размеру считаются «самыми старыми/маленькими».
+  function mixedOrder(folders, files) {
+    const { by, dir } = state.sort;
+    const sign = dir === 'asc' ? 1 : -1;
+    const asItem = (f) => ({ name: f.name, size: 0, lastModified: '', folder: f });
+    return [...folders.map(asItem), ...files].sort((a, b) => sign * SORTS[by].cmp(a, b))
+      .map((x) => (x.folder ? folderItem(x.folder) : fileItem(x)));
+  }
+
+  function groupedNodes(folders, files) {
+    const out = folders.length ? [groupHead('Папки'), ...folders.map(folderItem)] : [];
+    let current = -1;
+    for (const f of files) {
+      const g = DATE_GROUPS.findIndex((x) => x.test(f.lastModified));
+      if (g !== current) { current = g; out.push(groupHead(DATE_GROUPS[g].label)); }
+      out.push(fileItem(f));
+    }
+    return out;
+  }
+  const groupHead = (label) => h('div', { class: 'list-group-head', role: 'presentation' }, label);
 
   function renderList() {
     const { folders, files } = visible();
     const focusedKey = document.activeElement?.closest?.('#view [role=option]')?.dataset;
     list.className = state.layout === 'grid' ? 'file-grid' : 'file-list';
     head.classList.toggle('md:grid', state.layout === 'list');
-    list.replaceChildren(...folders.map(folderItem), ...files.map(fileItem));
+    list.replaceChildren(...(state.group ? groupedNodes(folders, files)
+      : state.mixed ? mixedOrder(folders, files)
+        : [...folders.map(folderItem), ...files.map(fileItem)]));
     // Клавиатурный фокус переживает перерисовку (сортировку, выбор).
     const restore = focusedKey && list.querySelector(focusedKey.key ? `[data-key="${CSS.escape(focusedKey.key)}"]` : `[data-folder="${CSS.escape(focusedKey.folder ?? '')}"]`);
     setRoving(restore ?? list.firstElementChild);
@@ -545,7 +589,15 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
       { label: 'По имени, Я → А', icon: mark('name', 'desc'), onSelect: () => setSort('name', 'desc') },
       { label: 'Сначала большие', icon: mark('size', 'desc'), onSelect: () => setSort('size', 'desc') },
       { label: 'Сначала маленькие', icon: mark('size', 'asc'), onSelect: () => setSort('size', 'asc') },
+      { label: 'Папки вперемешку с файлами', icon: state.mixed ? 'check' : 'folder', onSelect: () => setView('mixed', !state.mixed) },
+      { label: 'Группировать по дате', icon: state.group ? 'check' : 'calendar', onSelect: () => setView('group', !state.group) },
     ]);
+  }
+
+  function setView(key, value) {
+    state[key] = value;
+    prefs.set(key === 'mixed' ? 'mixed' : 'group-date', value ? '1' : '0');
+    renderList();
   }
 
   // ---------- клавиатура ----------
