@@ -3,7 +3,7 @@ import * as acl from '../acl.js';
 import { hasRole, requireRole } from '../auth.js';
 import { config } from '../config.js';
 import { Router } from '../http.js';
-import { folderFromKey, isReservedFolder, isValidFolder, nameFromKey, parseRef } from '../keys.js';
+import { folderFromKey, formatRef, isReservedFolder, isValidFolder, nameFromKey, parseRef, previewKind } from '../keys.js';
 import { audit, HttpError, rateLimit } from '../middleware/security.js';
 import * as shares from '../shares.js';
 import * as storages from '../storages.js';
@@ -157,6 +157,7 @@ publicSharesRouter.get('/:id', async (req, res) => {
     info.maxFileSize = Math.min(config.limits.maxFileSize, (s.maxFileSizeMb ?? Infinity) * MB);
     info.uploadsLeft = s.maxUploads ? s.maxUploads - s.uploads : null;
   }
+  if (unlocked) info.hasDownloadLimit = Boolean(s.maxDownloads); // тогда без предпросмотра
   if (unlocked) shares.touch(s);
   res.json(info);
 });
@@ -200,9 +201,28 @@ publicSharesRouter.post('/:id/download', async (req, res) => {
     if (s.type === 'file') shares.fileGone(s.key);
     throw new HttpError(404, 'Файл не найден');
   }
-  shares.touch(s, 'downloads');
+  if (s.type === 'folder') shares.touchFile(s, formatRef(ref.storageId, ref.rel));
+  else shares.touch(s, 'downloads');
   audit(req, 'share.download', { id: s.id, name: nameFromKey(ref.rel) });
   res.json({ url: await st.presignGet(ref.rel, DOWNLOAD_TTL) });
+});
+
+// POST /api/public/s/:id/preview {key?} → {kind, url} — посмотреть файл в браузере, не скачивая.
+// Не считается скачиванием, поэтому у ссылки с лимитом скачиваний предпросмотра нет.
+const PREVIEW_MAX = { text: 1024 * 1024 };
+publicSharesRouter.post('/:id/preview', async (req, res) => {
+  const s = activeShare(req, { type: ['file', 'folder'] });
+  if (s.maxDownloads) throw new HttpError(403, 'У этой ссылки ограничено число скачиваний — файл можно только скачать');
+  const ref = s.type === 'file' ? parseRef(s.key) : keyInside(s, req.body?.key);
+  if (s.type === 'folder' && !acl.canRead(ownerAllows(s), folderFromKey(ref.rel))) throw new HttpError(404, 'Файл не найден');
+  const pk = previewKind(nameFromKey(ref.rel));
+  if (!pk) throw new HttpError(415, 'Этот файл нельзя посмотреть в браузере');
+  const st = storages.get(ref.storageId);
+  const head = st && await st.headObject(ref.rel);
+  if (!head) throw new HttpError(404, 'Файл не найден');
+  if (PREVIEW_MAX[pk.kind] && (head.ContentLength ?? 0) > PREVIEW_MAX[pk.kind]) throw new HttpError(413, 'Файл слишком большой для просмотра');
+  shares.touch(s);
+  res.json({ kind: pk.kind, url: await st.presignGet(ref.rel, DOWNLOAD_TTL, { inline: true, contentType: pk.contentType }) });
 });
 
 // ---------- «загрузить мне» ----------

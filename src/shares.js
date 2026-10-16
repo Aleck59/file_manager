@@ -162,10 +162,50 @@ export function touch(s, field) {
   if (field) persist(); else persistSoon();
 }
 
+/** Скачивание одного файла по ссылке на папку: счётчик по файлу (и общий счётчик ссылки). */
+export function touchFile(s, key) {
+  s.fileDownloads ??= {};
+  s.fileDownloads[key] = (s.fileDownloads[key] ?? 0) + 1;
+  touch(s, 'downloads');
+}
+
+/**
+ * Публичность файлов для списка папки: сколько раз файл скачали по ссылкам
+ * и есть ли у него сейчас действующая ссылка (своя или на папку, где он лежит).
+ * @returns {(key: string, folder: string) => {downloads: number, active: boolean} | null}
+ */
+export function publicIndex() {
+  const downloads = new Map();
+  const activeKeys = new Set();
+  const activeFolders = [];
+  for (const s of shares) {
+    const active = stateOf(s) === 'active';
+    if (s.type === 'file') {
+      downloads.set(s.key, (downloads.get(s.key) ?? 0) + (s.downloads ?? 0));
+      if (active) activeKeys.add(s.key);
+    } else if (s.type === 'folder') {
+      for (const [k, n] of Object.entries(s.fileDownloads ?? {})) downloads.set(k, (downloads.get(k) ?? 0) + n);
+      if (active) activeFolders.push(s.folder);
+    }
+  }
+  return (key, folder) => {
+    const active = activeKeys.has(key) || activeFolders.some((p) => folder.startsWith(p));
+    const n = downloads.get(key) ?? 0;
+    return active || n ? { downloads: n, active } : null;
+  };
+}
+
 // ---------- согласование с изменениями файлов и папок ----------
 export function rekeyFile(oldKey, newKey) {
   let changed = false;
-  for (const s of shares) if (s.type === 'file' && s.key === oldKey) { s.key = newKey; changed = true; }
+  for (const s of shares) {
+    if (s.type === 'file' && s.key === oldKey) { s.key = newKey; changed = true; }
+    if (s.fileDownloads?.[oldKey] !== undefined) {
+      s.fileDownloads[newKey] = (s.fileDownloads[newKey] ?? 0) + s.fileDownloads[oldKey];
+      delete s.fileDownloads[oldKey];
+      changed = true;
+    }
+  }
   if (changed) persist();
 }
 export function fileGone(key) {

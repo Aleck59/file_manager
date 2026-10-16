@@ -2,7 +2,7 @@
 // владельцу («загрузить мне»). Работает без входа; пароль ссылки — через /unlock.
 import { ProgressView } from './progress.js';
 import { UploadCancelled, uploadFile } from './uploader.js';
-import { $, fileBadge, formatDate, formatSize, h, icon, toast } from './ui.js';
+import { $, extOf, fileBadge, formatDate, formatSize, h, icon, toast } from './ui.js';
 
 // /s/<id> или короткий адрес портала /<адрес>
 const segs = location.pathname.split('/').filter(Boolean).map(decodeURIComponent);
@@ -107,11 +107,54 @@ async function download(key, button) {
   }
 }
 
+// ---------- предпросмотр ----------
+// Те же типы, что умеет сервер (keys.js previewKind); у ссылки с лимитом скачиваний — нет.
+const PREVIEW_EXT = new Set(('png jpg jpeg gif webp avif bmp ico svg mp4 m4v webm ogv mov mp3 wav ogg oga m4a aac ' +
+  'flac opus pdf txt md markdown csv tsv log json jsonl xml yml yaml toml ini conf cfg srt vtt').split(' '));
+let previewAllowed = true;
+const canPreview = (name) => previewAllowed && PREVIEW_EXT.has(extOf(name));
+
+async function loadPreview(key) {
+  const { kind, url } = await call('POST', '/preview', key ? { key } : {});
+  if (kind === 'image') return h('img', { src: url, alt: '', class: 'mx-auto max-h-[70vh] max-w-full rounded-xl object-contain' });
+  if (kind === 'video') return h('video', { src: url, controls: true, playsinline: true, preload: 'metadata', class: 'mx-auto max-h-[70vh] w-full rounded-xl bg-black' });
+  if (kind === 'audio') return h('audio', { src: url, controls: true, preload: 'metadata', class: 'w-full' });
+  if (kind === 'pdf') return h('iframe', { src: url, title: 'PDF', class: 'h-[70vh] w-full rounded-xl border border-slate-200 bg-white dark:border-slate-800' });
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Не удалось открыть файл');
+  return h('pre', { class: 'max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-4 text-left text-xs leading-relaxed dark:bg-slate-950' }, await res.text());
+}
+
+function previewDialog(file) {
+  const body = h('div', { class: 'flex min-h-[8rem] items-center justify-center' }, h('div', { class: 'h-24 w-full animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800' }));
+  const dl = h('button', { type: 'button', class: 'btn-primary', onclick: () => download(file.key, dl) }, icon('download'), 'Скачать');
+  const dialog = h('dialog', { class: 'w-[min(56rem,calc(100%-2rem))] rounded-2xl bg-white p-0 text-slate-800 shadow-xl backdrop:bg-slate-950/60 dark:bg-slate-900 dark:text-slate-200' },
+    h('div', { class: 'flex items-center gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-800' },
+      h('p', { class: 'min-w-0 flex-1 truncate font-medium' }, file.name), dl,
+      h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Закрыть', onclick: () => dialog.close() }, icon('close'))),
+    h('div', { class: 'p-4' }, body));
+  dialog.addEventListener('close', () => dialog.remove()); // и остановит видео
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
+  document.body.append(dialog);
+  dialog.showModal();
+  loadPreview(file.key).then((el) => body.replaceChildren(el)).catch((err) => {
+    body.replaceChildren(h('p', { class: 'py-10 text-center text-sm text-slate-500' }, err.message));
+  });
+}
+
 // ---------- файл ----------
 function fileView(info) {
+  previewAllowed = info.downloadsLeft == null;
   const btn = h('button', { type: 'button', class: 'btn-primary w-full py-3 text-base', onclick: () => download(null, btn) }, icon('download', 'h-5 w-5'), 'Скачать');
+  const shown = h('div', { class: 'hidden' });
+  if (canPreview(info.file.name)) {
+    shown.className = 'flex min-h-[8rem] items-center justify-center';
+    shown.append(h('div', { class: 'h-40 w-full animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800' }));
+    loadPreview(null).then((el) => shown.replaceChildren(el)).catch(() => shown.replaceChildren());
+  }
   box.replaceChildren(h('div', { class: 'space-y-6 text-center' },
-    h('div', { class: 'flex justify-center' }, fileBadge(info.file.name, 'h-16 w-16 rounded-2xl', 'h-7 w-7')),
+    shown,
+    !canPreview(info.file.name) && h('div', { class: 'flex justify-center' }, fileBadge(info.file.name, 'h-16 w-16 rounded-2xl', 'h-7 w-7')),
     h('div', {},
       h('h1', { class: 'break-words text-xl font-semibold' }, info.file.name),
       h('p', { class: 'mt-1 text-sm tabular-nums text-slate-500 dark:text-slate-400' },
@@ -121,6 +164,7 @@ function fileView(info) {
 
 // ---------- папка ----------
 function folderView(info) {
+  previewAllowed = !info.hasDownloadLimit;
   let sub = '';
   let cursor = null;
   const crumbs = h('nav', { class: 'flex min-w-0 flex-wrap items-center gap-1 text-sm', 'aria-label': 'Путь' });
@@ -158,12 +202,14 @@ function folderView(info) {
             icon('chevronRight', 'h-4 w-4 text-slate-400'))))),
         ...res.files.map((f) => {
           const btn = h('button', { type: 'button', class: 'icon-btn', title: 'Скачать', 'aria-label': `Скачать ${f.name}`, onclick: () => download(f.key, btn) }, icon('download'));
-          return h('li', { class: 'flex items-center gap-3 px-2 py-2.5' },
-            fileBadge(f.name),
-            h('span', { class: 'min-w-0 flex-1' },
-              h('span', { class: 'block truncate text-sm font-medium' }, f.name),
-              h('span', { class: 'block text-xs tabular-nums text-slate-500 dark:text-slate-400' }, `${formatSize(f.size)} · ${formatDate(f.lastModified)}`)),
-            btn);
+          // Файл, который можно посмотреть, открывается по клику на имя.
+          const name = h('span', { class: 'min-w-0 flex-1' },
+            h('span', { class: 'block truncate text-sm font-medium' }, f.name),
+            h('span', { class: 'block text-xs tabular-nums text-slate-500 dark:text-slate-400' }, `${formatSize(f.size)} · ${formatDate(f.lastModified)}`));
+          const main = canPreview(f.name)
+            ? h('button', { type: 'button', class: 'flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left hover:text-brand-700 dark:hover:text-brand-300', title: 'Посмотреть', onclick: () => previewDialog(f) }, fileBadge(f.name), name)
+            : h('span', { class: 'flex min-w-0 flex-1 items-center gap-3' }, fileBadge(f.name), name);
+          return h('li', { class: 'flex items-center gap-3 px-2 py-2.5' }, main, btn);
         }),
       ];
       if (append) list.append(...rows);
@@ -203,9 +249,18 @@ function uploadView(info) {
     for (const file of files) {
       const status = h('span', { class: 'shrink-0 text-xs tabular-nums text-slate-500' }, 'в очереди');
       const bar = h('div');
-      list.append(h('li', { class: 'upload-row rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800' },
-        h('div', { class: 'flex items-baseline justify-between gap-3' }, h('p', { class: 'truncate text-sm font-medium' }, file.name), status),
-        h('div', { class: 'progress mt-2' }, bar)));
+      // Миниатюра: картинка из самого файла (без загрузки на сервер), у остальных — значок типа.
+      const thumb = fileBadge(file.name);
+      if (file.type.startsWith('image/') && file.size <= 8 * 1024 * 1024) {
+        const reader = new FileReader();
+        reader.onload = () => thumb.replaceWith(h('img', { src: reader.result, alt: '', class: 'h-9 w-9 shrink-0 rounded-lg object-cover' }));
+        reader.readAsDataURL(file);
+      }
+      list.append(h('li', { class: 'upload-row flex items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800' },
+        thumb,
+        h('div', { class: 'min-w-0 flex-1' },
+          h('div', { class: 'flex items-baseline justify-between gap-3' }, h('p', { class: 'truncate text-sm font-medium' }, file.name), status),
+          h('div', { class: 'progress mt-2' }, bar))));
       if (file.size > info.maxFileSize) {
         status.textContent = 'слишком большой';
         status.classList.add('text-rose-600');

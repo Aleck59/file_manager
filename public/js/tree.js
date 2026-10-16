@@ -8,6 +8,7 @@ let container;
 let activePath = null;
 let onNavigate = () => {};
 let dropHandler = null; // (key, folderPath) => void — перетаскивание файла на папку дерева
+let menuHandler = null; // ({path, name}, anchor) => void — контекстное меню папки
 
 const node = (path) => {
   if (!nodes.has(path)) nodes.set(path, { children: null, expanded: false, loading: null });
@@ -91,6 +92,16 @@ function renderNode(path, name, depth) {
     tabindex: '0',
     title: name,
     onclick: () => onNavigate(path),
+    oncontextmenu: (e) => {
+      if (path === homeFolder) return; // корень: системное меню
+      e.preventDefault();
+      const at = {
+        getBoundingClientRect: () => ({ left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY }),
+        setAttribute() {}, focus() {},
+      };
+      if (menuHandler) menuHandler({ path, name }, at);
+      else onNavigate(path); // не на странице диска — просто открыть папку
+    },
     onkeydown: (e) => {
       if (e.key === 'Enter') onNavigate(path);
       if (e.key === 'ArrowRight' && !n.expanded) toggle(path);
@@ -122,6 +133,10 @@ function renderNode(path, name, depth) {
 export function render() {
   if (!container) return;
   container.replaceChildren(...renderNode(homeFolder, 'Мой диск', 0));
+}
+
+export function setMenuHandler(fn) {
+  menuHandler = fn;
 }
 
 export function setDropHandler(fn) {

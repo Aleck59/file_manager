@@ -329,8 +329,14 @@ export function openDialog({ title, text, fields = [], confirmLabel = 'OK', dang
 let closeOpenMenu = null;
 
 /** items: [{label, icon, onSelect, danger}] — меню у кнопки anchor, закрывается кликом вне/Esc. */
+// Пункт {more: [...]} — «Ещё»: открывает остальные действия на том же месте.
 export function openMenu(anchor, items) {
   closeOpenMenu?.();
+  items = items.filter(Boolean).map((item) => {
+    if (!item.more) return item;
+    const rest = item.more.filter(Boolean);
+    return rest.length ? { label: item.label ?? 'Ещё', icon: item.icon ?? 'more', onSelect: () => openMenu(anchor, rest) } : null;
+  });
   const menu = h('div', {
     class: 'fixed z-[55] min-w-[12rem] rounded-xl border border-slate-200 bg-white p-1 shadow-xl animate-toast-in dark:border-slate-700 dark:bg-slate-900',
     role: 'menu',

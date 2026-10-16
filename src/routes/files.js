@@ -202,7 +202,11 @@ filesRouter.get('/files', async (req, res) => {
     if (rule?.personal) f.personal = rule.personal;
     else if (rule && acl.isAdmin(req.user)) f.restricted = true;
   }
-  for (const f of result.files) f.label = labels.get(f.key) ?? undefined;
+  const publicOf = sharesStore.publicIndex();
+  for (const f of result.files) {
+    f.label = labels.get(f.key) ?? undefined;
+    f.public = publicOf(f.key, folder) ?? undefined; // {downloads, active} — счётчик скачиваний по ссылкам
+  }
   for (const f of result.folders) f.label = labels.get(labels.folderId(f.path)) ?? undefined;
   res.json({ folder, access, ...result, warnings: publicWarnings(req, result.warnings) });
 });
