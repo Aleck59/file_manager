@@ -40,6 +40,7 @@ export const FIELDS = {
   MULTIPART_PART_SIZE_MB: { section: 'limits', type: 'int', default: 16, min: 5, max: 5120, apply: 'live' },
   UPLOAD_URL_TTL_MIN: { section: 'limits', type: 'int', default: 60, min: 1, max: 7 * 24 * 60, apply: 'live' },
   TRASH_DAYS: { section: 'limits', type: 'int', default: 30, min: 0, max: 365, apply: 'live' },
+  DAILY_UPLOAD_MB: { section: 'limits', type: 'int', default: 0, min: 0, max: 100 * 1024 * 1024, apply: 'live' },
 
   WEBDAV_ENABLED: { section: 'users', type: 'bool', default: false, apply: 'live' },
   PERSONAL_FOLDERS: { section: 'users', type: 'bool', default: false, apply: 'live' },
@@ -279,6 +280,7 @@ function apply(v) {
     partSize: v.MULTIPART_PART_SIZE_MB * MB,
     uploadUrlTtlSec: v.UPLOAD_URL_TTL_MIN * 60,
     trashDays: v.TRASH_DAYS,
+    dailyUploadMb: v.DAILY_UPLOAD_MB, // лимит загрузки в день для «Редактора» (0 — без лимита)
     // SigV4 ограничивает срок жизни presigned-ссылки 7 днями.
     maxDownloadTtlSec: 7 * 24 * 3600,
   };

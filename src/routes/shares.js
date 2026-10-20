@@ -8,7 +8,7 @@ import { audit, HttpError, rateLimit } from '../middleware/security.js';
 import * as shares from '../shares.js';
 import * as storages from '../storages.js';
 import * as uploadFlow from '../upload-flow.js';
-import { getUser } from '../users.js';
+import { getUser, isExpired } from '../users.js';
 
 const MB = 1024 * 1024;
 const DOWNLOAD_TTL = 10 * 60;
@@ -111,7 +111,7 @@ function readCookie(req, name) {
 // доступ к папке (файлу) — ссылка перестаёт действовать.
 function ownerAllows(s) {
   const owner = getUser(s.createdBy);
-  if (!owner) return null;
+  if (!owner || isExpired(owner)) return null; // у временного аккаунта со сроком ссылки тоже заканчиваются
   if (s.type === 'file') {
     const ref = parseRef(s.key);
     return ref && acl.canRead(owner, folderFromKey(ref.rel)) ? owner : null;

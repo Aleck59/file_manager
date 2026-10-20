@@ -14,7 +14,10 @@ import { writeZip } from '../zip-writer.js';
 import crypto from 'node:crypto';
 import * as acl from '../acl.js';
 import * as comments from '../comments.js';
+import * as auditLog from '../audit-log.js';
 import * as duplicates from '../duplicates.js';
+import * as expiry from '../expiry.js';
+import * as uploadUsage from '../upload-usage.js';
 import * as folderIds from '../folder-ids.js';
 import * as labels from '../labels.js';
 import * as sharesStore from '../shares.js';
@@ -151,6 +154,15 @@ export async function reserveQuota(user, folder, size) {
   noteQuotaUse(user, size);
 }
 
+/** Дневной лимит загрузки: сколько ещё можно сегодня (null — без лимита), иначе 429. */
+function dailyLeft(user, size) {
+  try {
+    return uploadUsage.check(user, size);
+  } catch (err) {
+    throw new HttpError(err.status ?? 429, err.message);
+  }
+}
+
 /** Сколько ещё можно положить в папку с учётом квоты (undefined — квоты нет). */
 async function quotaLimit(user, folder, size) {
   if (!user.quotaMb || !acl.inPersonal(user, folder)) return undefined;
@@ -160,6 +172,11 @@ async function quotaLimit(user, folder, size) {
   }
   return Math.min(config.limits.maxFileSize, left);
 }
+
+// GET /api/upload-usage → {limit, used} — дневной лимит загрузки (байты; limit null — без лимита)
+filesRouter.get('/upload-usage', (req, res) => {
+  res.json({ limit: uploadUsage.limitFor(req.user), used: uploadUsage.usedToday(req.user) });
+});
 
 // GET /api/personal → {path, quotaMb, used} — личная папка и сколько в ней занято
 filesRouter.get('/personal', async (req, res) => {
@@ -211,6 +228,7 @@ filesRouter.get('/files', async (req, res) => {
     f.label = labels.get(f.key) ?? undefined;
     f.public = publicOf(f.key, folder) ?? undefined; // {downloads, active} — счётчик скачиваний по ссылкам
     f.comments = comments.count(f.key) || undefined;
+    f.expiresAt = expiry.get(f.key) ?? undefined; // срок хранения: потом — в корзину
   }
   for (const f of result.folders) f.label = labels.get(labels.folderId(f.path)) ?? undefined;
   res.json({ folder, access, ...result, warnings: publicWarnings(req, result.warnings) });
@@ -328,7 +346,9 @@ filesRouter.post('/uploads', canEdit, async (req, res) => {
   const folder = withSubfolders(writeFolder(req, req.body?.folder), req.body?.subfolders);
   if (!acl.canWrite(req.user, folder)) throw new HttpError(403, 'Нет прав на изменения в этой папке');
   const { name, size, type } = req.body ?? {};
-  const maxSize = await quotaLimit(req.user, folder, size);
+  const daily = dailyLeft(req.user, size);
+  const quota = await quotaLimit(req.user, folder, size);
+  const maxSize = daily === null ? quota : Math.min(quota ?? config.limits.maxFileSize, daily);
   res.json(await flow(() => uploadFlow.planUpload({ name, size, type, folder, maxSize })));
 });
 
@@ -338,9 +358,11 @@ filesRouter.post('/uploads/url', canEdit, async (req, res) => {
   const folder = writeFolder(req, req.body?.folder);
   if (acl.inPersonal(req.user, folder) && req.user.quotaMb) throw new HttpError(400, 'В личную папку с квотой загрузите файл с компьютера');
   const job = await urlImport.startImport({
-    url: req.body?.url, folder, user: req.user.username,
+    url: req.body?.url, folder, user: req.user.username, maxBytes: dailyLeft(req.user, 0) ?? undefined,
     onDone: (j) => {
-      if (j.status === 'done') audit(req, 'file.upload_url', { host: j.host, key: j.file.key, size: j.size });
+      if (j.status !== 'done') return;
+      uploadUsage.note(req.user, j.size ?? j.loaded);
+      audit(req, 'file.upload_url', { host: j.host, key: j.file.key, size: j.size });
     },
   });
   res.status(202).json({ job });
@@ -408,6 +430,7 @@ filesRouter.post('/uploads/complete', canEdit, async (req, res) => {
   const maxSize = uploadId ? await quotaLimit(req.user, folderFromKey(ref.rel), 0) : undefined;
   const { file, st, rel, size } = await flow(() => uploadFlow.completeUpload(req.body?.key, uploadId, maxSize ? { maxSize } : undefined));
   if (acl.inPersonal(req.user, folderFromKey(rel))) noteQuotaUse(req.user, size);
+  uploadUsage.note(req.user, size);
   audit(req, 'file.upload', { storage: st.id, key: rel, size });
   res.json({ file });
 });
@@ -530,6 +553,52 @@ filesRouter.post('/files/office', async (req, res) => {
   if (size > 100 * 1024 * 1024) throw new HttpError(413, 'Документ слишком большой для просмотра');
   res.json(await flow(() => renderOffice(st, rel, size, ext)));
 });
+
+// ---------- срок хранения файла ----------
+// POST /api/files/expiry {keys, days|null} — через N дней файл сам уйдёт в корзину; null — не удалять.
+filesRouter.post('/files/expiry', canEdit, (req, res) => {
+  const keys = req.body?.keys;
+  if (!Array.isArray(keys) || !keys.length || keys.length > 1000) throw new HttpError(400, 'Выберите от 1 до 1000 файлов');
+  const days = req.body?.days;
+  if (days !== null && !(Number.isInteger(days) && days >= 1 && days <= 3650)) throw new HttpError(400, 'Срок — от 1 до 3650 дней');
+  const at = days === null ? null : new Date(Date.now() + days * 86_400_000).toISOString();
+  for (const key of keys) {
+    const { st, rel } = writeRef(req, key);
+    if (!expiry.set(formatRef(st.id, rel), at)) throw new HttpError(507, 'Слишком много файлов со сроком хранения');
+  }
+  audit(req, 'file.expiry', { count: keys.length, days });
+  res.json({ ok: true, expiresAt: at });
+});
+
+/** Раз в 10 минут: файлы, срок которых наступил, — в корзину (или удалить, если корзины нет). */
+export function startExpirySweeper() {
+  let running = false;
+  const run = async () => {
+    if (running || !config.s3Configured) return;
+    running = true;
+    try {
+      for (const key of expiry.due()) {
+        let ref;
+        try { ref = resolveRef(key); } catch { expiry.forget(key); continue; } // хранилище убрали
+        try {
+          if (!(await ref.st.headObject(ref.rel))) { expiry.forget(key); continue; }
+          if (trash.enabled()) await trash.trashFiles([{ st: ref.st, rel: ref.rel }], 'срок хранения');
+          else { await ref.st.deleteObject(ref.rel); labels.forget(key); }
+          expiry.forget(key); // восстановленный из корзины файл больше не удаляется сам
+          sharesStore.fileGone(key);
+          auditLog.record({ user: 'система', action: trash.enabled() ? 'file.trash' : 'file.delete', details: { key: ref.rel, reason: 'срок хранения' } });
+        } catch (err) {
+          console.error('[срок хранения]', ref.rel, err?.name, err?.message); // попробуем в следующий раз
+        }
+      }
+      storages.invalidateStats();
+    } finally {
+      running = false;
+    }
+  };
+  setTimeout(run, 90_000).unref();
+  setInterval(run, 10 * 60_000).unref();
+}
 
 // ---------- комментарии ----------
 // Видят и пишут все, кто может читать файл; удалить — автор или администратор.

@@ -45,6 +45,23 @@ function checkQuota(q) {
   return n;
 }
 
+// Срок действия учётной записи (гостевой доступ): дата в будущем; null/'' — бессрочно.
+// Администратор бессрочный: иначе можно остаться без администратора.
+function checkExpiry(v, role) {
+  if (v === null || v === '' || v === undefined) return null;
+  const t = Date.parse(v);
+  if (Number.isNaN(t) || t <= Date.now() || t > Date.now() + 5 * 365 * 86_400_000) throw new HttpError(400, 'Срок действия — дата в будущем (не дальше 5 лет)');
+  if (role === 'admin') throw new HttpError(400, 'У администратора не может быть срока действия');
+  return new Date(t).toISOString();
+}
+// Лимит загрузки в день, МБ: null — как в настройках, 0 — без лимита.
+function checkDaily(v) {
+  if (v === null || v === '' || v === undefined) return null;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0 || n > 100 * 1024 * 1024) throw new HttpError(400, 'Лимит в день — целое число мегабайт (0 — без лимита)');
+  return n;
+}
+
 function unwrap(result) {
   if (result.error) throw new HttpError(result.status ?? 400, result.error);
   return result;
@@ -69,16 +86,19 @@ usersRouter.post('/', async (req, res) => {
   const email = req.body?.email ? checkEmail(req.body.email) : undefined;
   const quotaMb = req.body?.quotaMb ? checkQuota(req.body.quotaMb) : undefined;
   const personal = req.body?.personal === true;
-  const result = unwrap(createUser({ username, role, passwordHash, email, quotaMb, personal }));
+  const expiresAt = checkExpiry(req.body?.expiresAt, role) ?? undefined;
+  const dailyUploadMb = checkDaily(req.body?.dailyUploadMb) ?? undefined;
+  const result = unwrap(createUser({ username, role, passwordHash, email, quotaMb, personal, expiresAt, dailyUploadMb }));
   await makePersonal(username);
-  audit(req, 'user.create', { username, role, email, personal });
+  audit(req, 'user.create', { username, role, email, personal, expiresAt });
   res.status(201).json(result);
 });
 
 usersRouter.patch('/:username', async (req, res) => {
   const username = checkUsername(req.params.username);
-  const { role, password, email, quotaMb, personal } = req.body ?? {};
-  if (role === undefined && password === undefined && email === undefined && quotaMb === undefined && personal === undefined) throw new HttpError(400, 'Нечего изменять');
+  const { role, password, email, quotaMb, personal, expiresAt, dailyUploadMb } = req.body ?? {};
+  if ([role, password, email, quotaMb, personal, expiresAt, dailyUploadMb].every((v) => v === undefined)) throw new HttpError(400, 'Нечего изменять');
+  if (expiresAt && username === req.user.username) throw new HttpError(400, 'Нельзя ограничить срок собственной учётной записи');
   if (role !== undefined && username === req.user.username && role !== req.user.role) {
     throw new HttpError(400, 'Нельзя изменить собственную роль');
   }
@@ -88,10 +108,13 @@ usersRouter.patch('/:username', async (req, res) => {
     ...(email !== undefined && { email: checkEmail(email) }),
     ...(quotaMb !== undefined && { quotaMb: checkQuota(quotaMb) || null }),
     ...(personal !== undefined && { personal: personal === true || null }),
+    ...(expiresAt !== undefined && { expiresAt: checkExpiry(expiresAt, role ?? getUser(username)?.role) }),
+    ...(dailyUploadMb !== undefined && { dailyUploadMb: checkDaily(dailyUploadMb) }),
   };
+  if (changes.role === 'admin' && getUser(username)?.expiresAt && expiresAt === undefined) changes.expiresAt = null; // администратор — бессрочно
   const result = unwrap(updateUser(username, changes));
   if (personal === true) await makePersonal(username);
-  audit(req, 'user.update', { username, role: changes.role, password: changes.passwordHash ? 'изменён' : undefined, email: changes.email, quotaMb: changes.quotaMb });
+  audit(req, 'user.update', { username, role: changes.role, password: changes.passwordHash ? 'изменён' : undefined, email: changes.email, quotaMb: changes.quotaMb, expiresAt: changes.expiresAt, dailyUploadMb: changes.dailyUploadMb });
   res.json(result);
 });
 

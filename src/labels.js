@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as comments from './comments.js';
+import * as expiry from './expiry.js';
 import { config } from './config.js';
 
 export const COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'];
@@ -49,7 +50,8 @@ export function list(color) {
 }
 
 export function rekey(oldId, newId) {
-  comments.rekey(oldId, newId); // комментарии следуют за файлом так же, как метки
+  comments.rekey(oldId, newId); // комментарии и срок хранения следуют за файлом так же, как метки
+  expiry.rekey(oldId, newId);
   const c = labels.get(oldId);
   if (!c) return;
   labels.delete(oldId);
@@ -59,12 +61,14 @@ export function rekey(oldId, newId) {
 
 export function forget(id) {
   comments.forget(id);
+  expiry.forget(id);
   if (labels.delete(id)) persistSoon();
 }
 
 /** Папку перенесли: метки её самой, подпапок и файлов внутри — на новое место. */
 export function refolder(oldPath, newPath) {
   comments.refolder(oldPath, newPath);
+  expiry.refolder(oldPath, newPath);
   let changed = false;
   for (const [id, c] of [...labels]) {
     const i = id.indexOf(':');
@@ -80,6 +84,7 @@ export function refolder(oldPath, newPath) {
 /** Папку удалили навсегда — её метки больше не нужны. */
 export function forgetFolder(p) {
   comments.forgetFolder(p);
+  expiry.forgetFolder(p);
   let changed = false;
   for (const id of [...labels.keys()]) {
     if (id.slice(id.indexOf(':') + 1).startsWith(p)) { labels.delete(id); changed = true; }

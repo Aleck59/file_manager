@@ -10,7 +10,7 @@ import * as apiTokens from './api-tokens.js';
 import { config } from './config.js';
 import * as sessions from './sessions.js';
 import { verifyPassword } from './password.js';
-import { getUser, ROLES } from './users.js';
+import { getUser, isExpired, ROLES } from './users.js';
 
 // Секрет и срок сессии можно менять в настройках — читаем их при каждом обращении.
 // Имя cookie зависит от схемы APP_ORIGIN: префикс __Host- допустим только по HTTPS.
@@ -93,7 +93,7 @@ export function userFromToken(token) {
   if (!(Number(exp) > Date.now() / 1000)) return null;
   if (revoked.has(sigB64)) return null;
   const user = getUser(Buffer.from(nameB64, 'base64url').toString());
-  if (!user) return null;
+  if (!user || isExpired(user)) return null; // срок временного аккаунта истёк — сессия больше не действует
   const sig = Buffer.from(sigB64);
   const expected = Buffer.from(sign(parts.slice(0, 4).join('.'), user));
   return sig.length === expected.length && crypto.timingSafeEqual(sig, expected) ? user : null;
@@ -148,6 +148,7 @@ export function requireAuth(req, res, next) {
   if (!user && req.headers.authorization) {
     const token = apiTokens.verify(req.headers.authorization, req.ip);
     user = token && getUser(token.user);
+    if (isExpired(user)) user = null;
     if (user) {
       req.apiToken = token;
       if (token.readOnly && !['GET', 'HEAD'].includes(req.method)) {

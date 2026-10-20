@@ -52,6 +52,8 @@ export function storageNotice(ctx) {
     ctx.can('admin') && h('a', { href: '#/settings', class: 'btn-primary mt-6' }, icon('settings'), 'Открыть настройки'));
 }
 
+const dragUrls = new Map(); // ключ файла → {url, until} — для перетаскивания на рабочий стол
+
 // ---------- группы по дате ----------
 const startOfDay = (d = new Date()) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 const DATE_GROUPS = [
@@ -243,9 +245,65 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
   const sortHeader = (by, label, cls = '') => h('button', {
     type: 'button', class: `sort-head ${cls}`, dataset: { sort: by }, onclick: () => setSort(by),
   }, label, icon('arrowDown', 'sort-arrow h-3 w-3'));
+  // Ширина столбцов: границы в шапке тянутся мышью, двойной щелчок — как было. Запоминается.
+  const COLS = { size: [104, 56, 256], date: [144, 96, 256], actions: [120, 80, 200] }; // по умолчанию, мин, макс (px)
+  const widths = (() => {
+    const saved = prefs.get('columns', '').split(',').map(Number);
+    return Object.fromEntries(Object.keys(COLS).map((k, i) => [k, saved[i] > 0 ? saved[i] : COLS[k][0]]));
+  })();
+  const clampCol = (k, v) => Math.round(Math.min(COLS[k][2], Math.max(COLS[k][1], v)));
+  function applyWidths(save = true) {
+    for (const k of Object.keys(COLS)) card.style.setProperty(`--col-${k}`, `${widths[k]}px`);
+    if (save) prefs.set('columns', Object.keys(COLS).map((k) => widths[k]).join(','));
+  }
+  // Граница слева от столбца: «имя|размер» меняет размер, «размер|дата» — размер и дату, и т. д.
+  function resizer(left, right, label) {
+    const handle = h('span', { class: 'col-resizer', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': label, title: 'Потяните, чтобы изменить ширину · двойной щелчок — как было', tabindex: '0' });
+    const stop = (e) => { e.stopPropagation(); e.preventDefault(); };
+    handle.addEventListener('click', stop);
+    handle.addEventListener('dblclick', (e) => {
+      stop(e);
+      for (const k of [left, right]) if (k) widths[k] = COLS[k][0];
+      applyWidths();
+    });
+    handle.addEventListener('keydown', (e) => { // стрелки — для клавиатуры
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      stop(e);
+      move(e.key === 'ArrowRight' ? 16 : -16, { ...widths });
+      applyWidths();
+    });
+    function move(dx, start) {
+      if (left) widths[left] = clampCol(left, start[left] + dx);
+      if (right) widths[right] = clampCol(right, start[right] - (left ? widths[left] - start[left] : dx));
+    }
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      stop(e);
+      const x0 = e.clientX;
+      const start = { ...widths };
+      handle.setPointerCapture(e.pointerId);
+      handle.classList.add('is-dragging');
+      document.body.classList.add('is-col-resizing');
+      const onMove = (ev) => { move(ev.clientX - x0, start); applyWidths(false); };
+      const onUp = () => {
+        handle.removeEventListener('pointermove', onMove);
+        handle.classList.remove('is-dragging');
+        document.body.classList.remove('is-col-resizing');
+        applyWidths();
+      };
+      handle.addEventListener('pointermove', onMove);
+      handle.addEventListener('pointerup', onUp, { once: true });
+      handle.addEventListener('pointercancel', onUp, { once: true });
+    });
+    return handle;
+  }
+  const withResizer = (el, handle) => { el.prepend(handle); return el; };
   const head = h('div', { class: 'list-head hidden items-center gap-4 border-b border-slate-200 px-4 py-2 text-xs font-medium uppercase tracking-wide text-slate-400 md:grid dark:border-slate-800' },
     h('span', { class: 'flex items-center gap-3' }, h('span', { class: 'check-cell' }, checkAll), sortHeader('name', 'Имя')),
-    sortHeader('size', 'Размер', 'justify-end'), sortHeader('date', 'Изменён'), h('span', { class: 'text-right' }, 'Действия'));
+    // У столбца «Имя» нет своей ширины — он занимает остальное; граница справа от него сужает «Размер».
+    withResizer(h('span', { class: 'flex justify-end' }, sortHeader('size', 'Размер')), resizer(null, 'size', 'Граница столбцов «Имя» и «Размер»')),
+    withResizer(h('span', { class: 'flex' }, sortHeader('date', 'Изменён')), resizer('size', 'date', 'Граница столбцов «Размер» и «Изменён»')),
+    withResizer(h('span', { class: 'text-right' }, 'Действия'), resizer('date', 'actions', 'Граница столбцов «Изменён» и «Действия»')));
 
   const dropzone = canEdit && h('div', { class: 'dropzone group hidden items-center sm:flex gap-3 rounded-2xl border border-dashed border-slate-300 bg-white/60 px-4 py-3 text-sm dark:border-slate-700 dark:bg-slate-900/40' },
     h('span', { class: 'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600 dark:bg-brand-950 dark:text-brand-400' }, icon('upload')),
@@ -270,6 +328,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
       h('div', { class: 'flex min-h-9 min-w-0 items-center' }, summary, bulkBar),
       toolbar),
     warnBox, head, list, empty, skeleton, loadMoreWrap);
+  applyWidths(false);
 
   view.replaceChildren(h('div', { class: 'mx-auto max-w-6xl space-y-4 p-4 sm:p-6' }, dropzone, card), overlay);
 
@@ -292,6 +351,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
       canEdit && { label: 'Сделать копию', icon: 'copy', onSelect: () => copyFiles([file], folder) },
       canEdit && ctx.storages.length > 1 && { label: 'Перенести в хранилище…', icon: 'server', onSelect: () => transferFiles([file]) },
       canEdit && labelMenuItem(() => btn, { key: file.key }, file, () => renderList()),
+      canEdit && { label: file.expiresAt ? 'Срок хранения (задан)…' : 'Срок хранения…', icon: 'clock', onSelect: () => setExpiry([file]) },
     ] },
     canEdit && { label: 'Удалить', icon: 'trash', danger: true, onSelect: () => deleteFile(file) },
   ]);
@@ -316,6 +376,18 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     ] },
     canEdit && { label: 'Удалить папку', icon: 'trash', danger: true, onSelect: () => deleteFolder(f) },
   ]);
+
+  // Срок хранения: сколько дней осталось до автоматического удаления в корзину.
+  function expiryChip(file) {
+    if (!file.expiresAt) return null;
+    const days = Math.max(0, Math.ceil((Date.parse(file.expiresAt) - Date.now()) / 86_400_000));
+    const title = `Удалится в корзину ${formatDate(file.expiresAt)}`;
+    return h('span', {
+      class: `inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-px text-[11px] font-medium tabular-nums ${days <= 1
+        ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300' : 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'}`,
+      title, 'aria-label': title,
+    }, icon('clock', 'h-3 w-3'), days ? `${days} дн.` : 'сегодня');
+  }
 
   const commentChip = (file) => file.comments && h('span', {
     class: 'inline-flex shrink-0 items-center gap-0.5 text-[11px] tabular-nums text-slate-400', title: `Комментарии: ${file.comments}`, 'aria-label': `Комментарии: ${file.comments}`,
@@ -384,11 +456,17 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
         if (state.checked.size) return toggleChecked(file.key); // в режиме выбора клик выбирает
         select(file);
       },
+      // Наведение — заранее берём ссылку на скачивание: её нужно отдать браузеру
+      // сразу в начале перетаскивания (файл можно бросить на рабочий стол).
+      onpointerenter: (e) => { if (e.pointerType === 'mouse') prefetchDragUrl(file); },
       ondragstart: (e) => {
         // Перетаскиваем все выбранные файлы, если тянем один из них.
         const keys = state.checked.has(file.key) ? [...state.checked] : [file.key];
         e.dataTransfer.setData(DRAG_TYPE, keys.join('\n'));
-        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.effectAllowed = 'copyMove';
+        // Один файл — его можно вытащить из браузера на рабочий стол (Chrome, Edge, Яндекс Браузер).
+        const link = keys.length === 1 && dragUrls.get(file.key);
+        if (link && link.until > Date.now()) e.dataTransfer.setData('DownloadURL', `application/octet-stream:${file.name.replace(/:/g, '_')}:${link.url}`);
         li.classList.add('is-dragging');
       },
       ondragend: () => li.classList.remove('is-dragging'),
@@ -409,6 +487,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
             h('p', { class: 'truncate text-sm font-medium', title: file.name }, file.name),
             labelDot(file.label),
             publicChip(file),
+            expiryChip(file),
             commentChip(file),
             storageChip(file)),
           h('p', { class: 'truncate text-xs tabular-nums text-slate-500 md:hidden dark:text-slate-400' }, `${formatSize(file.size)} · ${formatDateShort(file.lastModified)}`))),
@@ -687,6 +766,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
           canEdit && { label: 'Переместить…', icon: 'move', onSelect: bulkMove },
           canEdit && { label: 'Копировать…', icon: 'copy', onSelect: () => copyFiles(checkedFiles()) },
           canEdit && ctx.storages.length > 1 && { label: 'Перенести в хранилище…', icon: 'server', onSelect: () => transferFiles(checkedFiles()) },
+          canEdit && { label: 'Срок хранения…', icon: 'clock', onSelect: () => setExpiry(checkedFiles()) },
           canEdit && { label: `Удалить (${state.checked.size})`, icon: 'trash', danger: true, onSelect: bulkDelete },
         ]);
       }
@@ -1073,6 +1153,39 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     ctx.refreshStats();
     if (done.length) toast(`${trashIds.length ? 'В корзине' : 'Удалено'}: ${pluralize(done.length, FILES)}`, 'success', undoAction(...trashIds));
     if (failed) { toast(`Не удалось удалить: ${pluralize(failed, FILES)}`, 'error'); load(); }
+  }
+
+  // Ссылки для перетаскивания на рабочий стол: берутся при наведении (с задержкой) и живут 50 минут.
+  let prefetchTimer;
+  function prefetchDragUrl(file) {
+    clearTimeout(prefetchTimer);
+    if (dragUrls.get(file.key)?.until > Date.now()) return;
+    prefetchTimer = setTimeout(async () => {
+      try {
+        const { url } = await api.downloadLink(file.key, 3600);
+        dragUrls.set(file.key, { url, until: Date.now() + 50 * 60_000 });
+        if (dragUrls.size > 300) dragUrls.delete(dragUrls.keys().next().value);
+      } catch { /* без ссылки файл просто не вытащить на рабочий стол */ }
+    }, 350);
+  }
+  cleanup.push(() => clearTimeout(prefetchTimer));
+
+  // Срок хранения: через N дней файлы сами уйдут в корзину.
+  async function setExpiry(files) {
+    const current = files.length === 1 && files[0].expiresAt;
+    const done = await openDialog({
+      title: files.length === 1 ? `Срок хранения «${files[0].name}»` : `Срок хранения: ${pluralize(files.length, FILES)}`,
+      text: current ? `Сейчас: удалится в корзину ${formatDate(current)}.` : 'По истечении срока файл сам уйдёт в корзину.',
+      confirmLabel: 'Сохранить',
+      fields: [{ name: 'days', label: 'Удалить через', type: 'select', value: current ? '' : '30', options: [
+        ['', 'Не удалять'], ['1', '1 день'], ['7', '7 дней'], ['30', '30 дней'], ['90', '90 дней'], ['365', '1 год'],
+      ] }],
+      onSubmit: ({ days }) => api.setExpiry(files.map((f) => f.key), days ? Number(days) : null),
+    });
+    if (!done) return;
+    for (const f of files) f.expiresAt = done.expiresAt ?? undefined;
+    renderList();
+    toast(done.expiresAt ? `Удалится в корзину ${formatDate(done.expiresAt)}` : 'Срок хранения снят', 'success');
   }
 
   // Архив собирается на сервере потоком; браузер сразу начинает скачивание.

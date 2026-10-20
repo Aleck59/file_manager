@@ -1,6 +1,6 @@
 // Раздел «Пользователи» (только для администратора).
 import { api } from '../api.js';
-import { confirmDialog, formatDate, formatSize, h, icon, openDialog, toast } from '../ui.js';
+import { confirmDialog, formatDate, formatDateShort, formatSize, h, icon, openDialog, toast } from '../ui.js';
 import { diskHash } from './disk.js';
 
 const ROLE_HINT = {
@@ -53,13 +53,25 @@ export function mountUsers(view, ctx) {
           u.email && h('span', { title: 'Вход через Яндекс/Google с этой почтой' }, `· ${u.email}`),
           u.quotaMb > 0 && h('span', {}, `· квота ${formatSize(u.quotaMb * 1024 * 1024)}`),
           u.personalPath && h('a', { href: diskHash(u.personalPath), class: 'badge bg-sky-50 text-sky-700 hover:underline dark:bg-sky-950/60 dark:text-sky-300', title: u.personalPath }, 'личная папка'),
-          u.twoFactor && h('span', { class: 'badge bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300', title: 'Двухфакторная аутентификация включена' }, '2FA'))),
+          u.twoFactor && h('span', { class: 'badge bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300', title: 'Двухфакторная аутентификация включена' }, '2FA'),
+          expiryBadge(u),
+          u.dailyUploadMb != null && h('span', { title: 'Лимит загрузки в день' }, `· ${u.dailyUploadMb ? `${formatSize(u.dailyUploadMb * 1024 * 1024)} в день` : 'без лимита загрузки'}`))),
       roleSelect,
       h('div', { class: 'flex gap-0.5' },
-        h('button', { type: 'button', class: 'icon-btn', title: 'Почта и квота', 'aria-label': `Почта и квота ${u.username}`, onclick: () => editProfile(u) }, icon('pencil')),
+        h('button', { type: 'button', class: 'icon-btn', title: 'Профиль', 'aria-label': `Профиль ${u.username}`, onclick: () => editProfile(u) }, icon('pencil')),
         h('button', { type: 'button', class: 'icon-btn', title: 'Сменить пароль', 'aria-label': `Сменить пароль ${u.username}`, onclick: () => resetPassword(u) }, icon('key')),
         u.twoFactor && h('button', { type: 'button', class: 'icon-btn', title: 'Сбросить 2FA', 'aria-label': `Сбросить двухфакторную аутентификацию ${u.username}`, onclick: () => resetTwoFactor(u) }, icon('shield')),
         h('button', { type: 'button', class: 'icon-btn-danger', title: self ? 'Нельзя удалить себя' : 'Удалить', 'aria-label': `Удалить ${u.username}`, disabled: self, onclick: () => removeUser(u) }, icon('trash'))));
+  }
+
+  // Гостевой (временный) аккаунт: до какого дня действует или что уже истёк.
+  function expiryBadge(u) {
+    if (!u.expiresAt) return null;
+    const expired = Date.parse(u.expiresAt) <= Date.now();
+    return h('span', {
+      class: `badge ${expired ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300' : 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'}`,
+      title: expired ? 'Срок учётной записи истёк — вход закрыт' : `Гостевой доступ до ${formatDate(u.expiresAt)}`,
+    }, expired ? 'срок истёк' : `до ${formatDateShort(u.expiresAt, { time: false })}`);
   }
 
   const render = () => list.replaceChildren(...users.map(row));
@@ -83,13 +95,33 @@ export function mountUsers(view, ctx) {
         { name: 'role', label: 'Роль', type: 'select', value: 'editor', options: roleOptions() },
         !personalForAll && { name: 'personal', label: 'Личная папка', type: 'checkbox', value: false, hint: 'Своя папка, которую видит только этот пользователь' },
         { name: 'quotaMb', label: 'Квота личной папки, МБ', type: 'number', value: '0', inputmode: 'numeric', optional: true, hint: '0 — без ограничения' },
+        ...accessFields({}),
       ].filter(Boolean),
-      onSubmit: (values) => api.createUser({ ...values, quotaMb: Number(values.quotaMb) || 0, personal: personalForAll || values.personal }),
+      onSubmit: (values) => api.createUser({ ...values, ...accessValues(values), quotaMb: Number(values.quotaMb) || 0, personal: personalForAll || values.personal }),
     });
     if (created) {
       toast(`Пользователь ${created.user.username} создан`, 'success');
       load();
     }
+  }
+
+  // Срок действия (гостевой доступ) и лимит загрузки в день.
+  function accessFields(u) {
+    const day = u.expiresAt ? new Date(u.expiresAt) : null;
+    const pad = (n) => String(n).padStart(2, '0');
+    return [
+      u.role !== 'admin' && u.username !== ctx.user.username && { name: 'expires', label: 'Действует до', type: 'date', optional: true,
+        value: day ? `${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}` : '', hint: 'Для гостей: после этого дня вход закроется сам. Пусто — бессрочно' },
+      { name: 'dailyUploadMb', label: 'Лимит загрузки в день, МБ', type: 'number', inputmode: 'numeric', optional: true,
+        value: u.dailyUploadMb == null ? '' : String(u.dailyUploadMb), placeholder: 'как в настройках', hint: 'Пусто — как в настройках (для «Редактора»), 0 — без лимита' },
+    ];
+  }
+  function accessValues(v) {
+    return {
+      ...(v.expires !== undefined && { expiresAt: v.expires ? new Date(`${v.expires}T23:59:59`).toISOString() : null }),
+      dailyUploadMb: v.dailyUploadMb === '' ? null : Number(v.dailyUploadMb),
+      expires: undefined,
+    };
   }
 
   async function resetPassword(u) {
@@ -116,9 +148,11 @@ export function mountUsers(view, ctx) {
         { name: 'email', label: 'Почта', type: 'email', value: u.email ?? '', optional: true, autocomplete: 'off', placeholder: 'не указана' },
         !personalForAll && { name: 'personal', label: 'Личная папка', type: 'checkbox', value: u.personal, hint: 'Выключение не удаляет папку и файлы' },
         { name: 'quotaMb', label: 'Квота личной папки, МБ', type: 'number', value: String(u.quotaMb ?? 0), inputmode: 'numeric' },
+        ...accessFields(u),
       ].filter(Boolean),
-      onSubmit: ({ email, quotaMb, personal }) => api.updateUser(u.username, {
-        email: email.trim() || null, quotaMb: Number(quotaMb) || 0, ...(personal !== undefined && { personal }),
+      onSubmit: (values) => api.updateUser(u.username, {
+        email: values.email.trim() || null, quotaMb: Number(values.quotaMb) || 0, ...(values.personal !== undefined && { personal: values.personal }),
+        ...accessValues(values),
       }),
     });
     if (done?.user) {
