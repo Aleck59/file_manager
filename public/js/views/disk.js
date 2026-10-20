@@ -292,6 +292,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
       canEdit && { label: 'Сделать копию', icon: 'copy', onSelect: () => copyFiles([file], folder) },
       canEdit && ctx.storages.length > 1 && { label: 'Перенести в хранилище…', icon: 'server', onSelect: () => transferFiles([file]) },
       canEdit && labelMenuItem(() => btn, { key: file.key }, file, () => renderList()),
+      canEdit && { label: file.expiresAt ? 'Срок хранения (задан)…' : 'Срок хранения…', icon: 'clock', onSelect: () => setExpiry([file]) },
     ] },
     canEdit && { label: 'Удалить', icon: 'trash', danger: true, onSelect: () => deleteFile(file) },
   ]);
@@ -316,6 +317,18 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     ] },
     canEdit && { label: 'Удалить папку', icon: 'trash', danger: true, onSelect: () => deleteFolder(f) },
   ]);
+
+  // Срок хранения: сколько дней осталось до автоматического удаления в корзину.
+  function expiryChip(file) {
+    if (!file.expiresAt) return null;
+    const days = Math.max(0, Math.ceil((Date.parse(file.expiresAt) - Date.now()) / 86_400_000));
+    const title = `Удалится в корзину ${formatDate(file.expiresAt)}`;
+    return h('span', {
+      class: `inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-px text-[11px] font-medium tabular-nums ${days <= 1
+        ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300' : 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'}`,
+      title, 'aria-label': title,
+    }, icon('clock', 'h-3 w-3'), days ? `${days} дн.` : 'сегодня');
+  }
 
   const commentChip = (file) => file.comments && h('span', {
     class: 'inline-flex shrink-0 items-center gap-0.5 text-[11px] tabular-nums text-slate-400', title: `Комментарии: ${file.comments}`, 'aria-label': `Комментарии: ${file.comments}`,
@@ -409,6 +422,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
             h('p', { class: 'truncate text-sm font-medium', title: file.name }, file.name),
             labelDot(file.label),
             publicChip(file),
+            expiryChip(file),
             commentChip(file),
             storageChip(file)),
           h('p', { class: 'truncate text-xs tabular-nums text-slate-500 md:hidden dark:text-slate-400' }, `${formatSize(file.size)} · ${formatDateShort(file.lastModified)}`))),
@@ -687,6 +701,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
           canEdit && { label: 'Переместить…', icon: 'move', onSelect: bulkMove },
           canEdit && { label: 'Копировать…', icon: 'copy', onSelect: () => copyFiles(checkedFiles()) },
           canEdit && ctx.storages.length > 1 && { label: 'Перенести в хранилище…', icon: 'server', onSelect: () => transferFiles(checkedFiles()) },
+          canEdit && { label: 'Срок хранения…', icon: 'clock', onSelect: () => setExpiry(checkedFiles()) },
           canEdit && { label: `Удалить (${state.checked.size})`, icon: 'trash', danger: true, onSelect: bulkDelete },
         ]);
       }
@@ -1073,6 +1088,24 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     ctx.refreshStats();
     if (done.length) toast(`${trashIds.length ? 'В корзине' : 'Удалено'}: ${pluralize(done.length, FILES)}`, 'success', undoAction(...trashIds));
     if (failed) { toast(`Не удалось удалить: ${pluralize(failed, FILES)}`, 'error'); load(); }
+  }
+
+  // Срок хранения: через N дней файлы сами уйдут в корзину.
+  async function setExpiry(files) {
+    const current = files.length === 1 && files[0].expiresAt;
+    const done = await openDialog({
+      title: files.length === 1 ? `Срок хранения «${files[0].name}»` : `Срок хранения: ${pluralize(files.length, FILES)}`,
+      text: current ? `Сейчас: удалится в корзину ${formatDate(current)}.` : 'По истечении срока файл сам уйдёт в корзину.',
+      confirmLabel: 'Сохранить',
+      fields: [{ name: 'days', label: 'Удалить через', type: 'select', value: current ? '' : '30', options: [
+        ['', 'Не удалять'], ['1', '1 день'], ['7', '7 дней'], ['30', '30 дней'], ['90', '90 дней'], ['365', '1 год'],
+      ] }],
+      onSubmit: ({ days }) => api.setExpiry(files.map((f) => f.key), days ? Number(days) : null),
+    });
+    if (!done) return;
+    for (const f of files) f.expiresAt = done.expiresAt ?? undefined;
+    renderList();
+    toast(done.expiresAt ? `Удалится в корзину ${formatDate(done.expiresAt)}` : 'Срок хранения снят', 'success');
   }
 
   // Архив собирается на сервере потоком; браузер сразу начинает скачивание.

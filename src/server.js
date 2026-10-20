@@ -11,7 +11,7 @@ import { adminRouter } from './routes/admin.js';
 import { publicSharesRouter, sharesRouter } from './routes/shares.js';
 import * as sharesStore from './shares.js';
 import { authRouter } from './routes/auth.js';
-import { filesRouter } from './routes/files.js';
+import { filesRouter, startExpirySweeper } from './routes/files.js';
 import { settingsRouter } from './routes/settings.js';
 import { trashRouter } from './routes/trash.js';
 import * as trash from './trash.js';
@@ -21,6 +21,7 @@ import * as folderIds from './folder-ids.js';
 import * as labelsStore from './labels.js';
 import * as commentsStore from './comments.js';
 import * as uploadUsage from './upload-usage.js';
+import * as expiryStore from './expiry.js';
 import { usersRouter } from './routes/users.js';
 import { initUsers } from './users.js';
 
@@ -116,6 +117,7 @@ app.use(errorHandler);
 const server = app.listen(config.port, config.host, () => {
   console.log(`File manager запущен: http://${config.host}:${config.port} (публичный адрес ${config.appOrigin})`);
   trash.startAutoPurge();
+  startExpirySweeper();
   backup.startScheduler();
   if (!config.s3Configured) console.log('Хранилище S3 не настроено — укажите его в интерфейсе: Настройки → Хранилище S3.');
 });
@@ -127,6 +129,7 @@ export function shutdown(code = 0) {
   labelsStore.flush();
   commentsStore.flush();
   uploadUsage.flush();
+  expiryStore.flush();
   folderIds.flush();
   server.close(() => process.exit(code));
   server.closeAllConnections?.();

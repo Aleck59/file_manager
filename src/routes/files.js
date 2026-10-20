@@ -14,7 +14,9 @@ import { writeZip } from '../zip-writer.js';
 import crypto from 'node:crypto';
 import * as acl from '../acl.js';
 import * as comments from '../comments.js';
+import * as auditLog from '../audit-log.js';
 import * as duplicates from '../duplicates.js';
+import * as expiry from '../expiry.js';
 import * as uploadUsage from '../upload-usage.js';
 import * as folderIds from '../folder-ids.js';
 import * as labels from '../labels.js';
@@ -226,6 +228,7 @@ filesRouter.get('/files', async (req, res) => {
     f.label = labels.get(f.key) ?? undefined;
     f.public = publicOf(f.key, folder) ?? undefined; // {downloads, active} — счётчик скачиваний по ссылкам
     f.comments = comments.count(f.key) || undefined;
+    f.expiresAt = expiry.get(f.key) ?? undefined; // срок хранения: потом — в корзину
   }
   for (const f of result.folders) f.label = labels.get(labels.folderId(f.path)) ?? undefined;
   res.json({ folder, access, ...result, warnings: publicWarnings(req, result.warnings) });
@@ -550,6 +553,52 @@ filesRouter.post('/files/office', async (req, res) => {
   if (size > 100 * 1024 * 1024) throw new HttpError(413, 'Документ слишком большой для просмотра');
   res.json(await flow(() => renderOffice(st, rel, size, ext)));
 });
+
+// ---------- срок хранения файла ----------
+// POST /api/files/expiry {keys, days|null} — через N дней файл сам уйдёт в корзину; null — не удалять.
+filesRouter.post('/files/expiry', canEdit, (req, res) => {
+  const keys = req.body?.keys;
+  if (!Array.isArray(keys) || !keys.length || keys.length > 1000) throw new HttpError(400, 'Выберите от 1 до 1000 файлов');
+  const days = req.body?.days;
+  if (days !== null && !(Number.isInteger(days) && days >= 1 && days <= 3650)) throw new HttpError(400, 'Срок — от 1 до 3650 дней');
+  const at = days === null ? null : new Date(Date.now() + days * 86_400_000).toISOString();
+  for (const key of keys) {
+    const { st, rel } = writeRef(req, key);
+    if (!expiry.set(formatRef(st.id, rel), at)) throw new HttpError(507, 'Слишком много файлов со сроком хранения');
+  }
+  audit(req, 'file.expiry', { count: keys.length, days });
+  res.json({ ok: true, expiresAt: at });
+});
+
+/** Раз в 10 минут: файлы, срок которых наступил, — в корзину (или удалить, если корзины нет). */
+export function startExpirySweeper() {
+  let running = false;
+  const run = async () => {
+    if (running || !config.s3Configured) return;
+    running = true;
+    try {
+      for (const key of expiry.due()) {
+        let ref;
+        try { ref = resolveRef(key); } catch { expiry.forget(key); continue; } // хранилище убрали
+        try {
+          if (!(await ref.st.headObject(ref.rel))) { expiry.forget(key); continue; }
+          if (trash.enabled()) await trash.trashFiles([{ st: ref.st, rel: ref.rel }], 'срок хранения');
+          else { await ref.st.deleteObject(ref.rel); labels.forget(key); }
+          expiry.forget(key); // восстановленный из корзины файл больше не удаляется сам
+          sharesStore.fileGone(key);
+          auditLog.record({ user: 'система', action: trash.enabled() ? 'file.trash' : 'file.delete', details: { key: ref.rel, reason: 'срок хранения' } });
+        } catch (err) {
+          console.error('[срок хранения]', ref.rel, err?.name, err?.message); // попробуем в следующий раз
+        }
+      }
+      storages.invalidateStats();
+    } finally {
+      running = false;
+    }
+  };
+  setTimeout(run, 90_000).unref();
+  setInterval(run, 10 * 60_000).unref();
+}
 
 // ---------- комментарии ----------
 // Видят и пишут все, кто может читать файл; удалить — автор или администратор.

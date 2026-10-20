@@ -736,3 +736,19 @@ test('гостевой аккаунт: после срока сессия не �
   assert.equal(usage.check({ username: 'root', role: 'admin' }, 10 ** 9), null);
   config.limits.dailyUploadMb = 0;
 });
+
+test('срок хранения: следует за файлом и папкой, просроченные выдаются для удаления', async () => {
+  const expiry = await import('../src/expiry.js');
+  const labelsMod = await import('../src/labels.js');
+  const past = new Date(Date.now() - 1000).toISOString();
+  const future = new Date(Date.now() + 86_400_000).toISOString();
+  expiry.set('main:Док/a.txt', past);
+  expiry.set('main:Док/b.txt', future);
+  assert.deepEqual(expiry.due(), ['main:Док/a.txt']);
+  labelsMod.rekey('main:Док/b.txt', 'main:Док/c.txt'); // переименование файла
+  assert.equal(expiry.get('main:Док/c.txt'), future);
+  labelsMod.refolder('Док/', 'Архив/'); // перемещение папки
+  assert.equal(expiry.get('main:Архив/c.txt'), future);
+  labelsMod.forget('main:Архив/a.txt');
+  assert.equal(expiry.get('main:Архив/a.txt'), null);
+});
