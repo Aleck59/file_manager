@@ -65,7 +65,8 @@
   .file-row:hover { @apply bg-slate-50 dark:bg-slate-800/40; }
   .file-row:focus-visible { @apply bg-slate-50 ring-2 ring-inset ring-brand-500 ring-offset-0 dark:bg-slate-800/40; }
   @media (min-width: 768px) {
-    .file-row, .list-head { grid-template-columns: minmax(0, 1fr) 6.5rem 9rem 7.5rem; }
+    /* Ширина столбцов меняется перетаскиванием границ в шапке (переменные задаёт disk.js). */
+    .file-row, .list-head { grid-template-columns: minmax(8rem, 1fr) var(--col-size, 6.5rem) var(--col-date, 9rem) var(--col-actions, 7.5rem); }
   }
   .check-cell { @apply flex w-4 shrink-0 items-center; }
   .check { @apply h-4 w-4 cursor-pointer rounded accent-brand-600; transition: opacity 120ms ease-out; }
@@ -85,6 +86,11 @@
     .has-selection .tile-check, .tile[aria-selected="true"] .tile-check { opacity: 1; }
   }
 
+  .list-head > * { position: relative; }
+  .col-resizer { @apply absolute -left-3 top-1/2 z-10 flex h-6 w-4 -translate-y-1/2 cursor-col-resize touch-none items-center justify-center; }
+  .col-resizer::after { content: ''; @apply h-4 w-px bg-slate-300 transition-colors dark:bg-slate-600; }
+  .col-resizer:hover::after, .col-resizer.is-dragging::after { @apply h-6 w-0.5 bg-brand-500; }
+  body.is-col-resizing { cursor: col-resize; user-select: none; }
   .sort-head { @apply inline-flex items-center gap-1 rounded uppercase tracking-wide transition-colors hover:text-slate-700 dark:hover:text-slate-200; }
   .sort-head.is-active { @apply text-slate-700 dark:text-slate-200; }
   .sort-arrow { opacity: 0; transition: opacity 120ms ease-out, transform 150ms ease-out; }
