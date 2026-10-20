@@ -23,8 +23,9 @@ import * as sharesStore from './shares.js';
 import * as storages from './storages.js';
 import * as trash from './trash.js';
 import { streamInto } from './url-import.js';
-import { getUser } from './users.js';
+import { getUser, isExpired } from './users.js';
 import { personalUsage, reserveQuota, treeSize } from './routes/files.js';
+import * as uploadUsage from './upload-usage.js';
 
 const PREFIX = '/dav';
 const MAX_LIST = 10_000;
@@ -58,7 +59,7 @@ async function authenticateDav(req) {
   const cached = authCache.get(id);
   if (cached && cached.until > Date.now()) {
     const user = getUser(cached.username);
-    if (user && user.passwordHash === cached.passwordHash && !user.totp) return { user, readOnly: false };
+    if (user && user.passwordHash === cached.passwordHash && !user.totp && !isExpired(user)) return { user, readOnly: false };
     authCache.delete(id);
   }
   const decoded = Buffer.from(m[1], 'base64').toString('utf8');
@@ -69,12 +70,13 @@ async function authenticateDav(req) {
   let result = null;
   if (secret.startsWith('fmt_')) {
     const token = apiTokens.verify(`Bearer ${secret}`, req.ip);
-    const user = token && token.user === username ? getUser(username) : null;
+    const found = token && token.user === username ? getUser(username) : null;
+    const user = isExpired(found) ? null : found;
     if (user) result = { user, readOnly: token.readOnly };
   } else if (secret.length <= 256) {
     const user = await authenticate(username, secret);
     // С 2FA пароля мало: нужен API-токен (код из приложения WebDAV-клиент спросить не может).
-    if (user && !user.totp) {
+    if (user && !user.totp && !isExpired(user)) {
       result = { user, readOnly: false };
       if (authCache.size > 200) authCache.clear();
       authCache.set(id, { username: user.username, passwordHash: user.passwordHash, until: Date.now() + 5 * 60_000 });
@@ -258,8 +260,11 @@ async function put(req, res, ctx, segs) {
   const st = await storages.pickForUpload(size);
   const rel = generateKey(name, folder);
   if (!isValidKey(rel)) throw fail(400, 'Слишком длинный путь или имя');
-  // Квота личной папки — как при загрузке через сайт.
+  // Квота личной папки и дневной лимит загрузки — как при загрузке через сайт.
   let max = config.limits.maxFileSize;
+  let daily;
+  try { daily = uploadUsage.check(ctx.user, size); } catch (err) { throw fail(err.status ?? 429, err.message); }
+  if (daily !== null) max = Math.min(max, daily);
   if (ctx.user.quotaMb && acl.inPersonal(ctx.user, folder)) {
     const left = ctx.user.quotaMb * 1024 * 1024 - await personalUsage(ctx.user);
     if (left <= 0 || size > left) throw fail(507, 'Не хватает места в личной папке');
@@ -274,6 +279,7 @@ async function put(req, res, ctx, segs) {
     throw fail(err.status ?? 400, err.message);
   }
   storages.noteUploaded(st.id, job.loaded);
+  uploadUsage.note(ctx.user, job.loaded);
   // Перезапись: новый файл уже на месте, прежний удаляем (метка и ссылки переходят к новому).
   if (existing?.type === 'file') {
     const old = storages.resolveRef(existing.file.key);

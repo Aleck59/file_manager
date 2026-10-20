@@ -20,6 +20,7 @@ import * as backup from './backup.js';
 import * as folderIds from './folder-ids.js';
 import * as labelsStore from './labels.js';
 import * as commentsStore from './comments.js';
+import * as uploadUsage from './upload-usage.js';
 import { usersRouter } from './routes/users.js';
 import { initUsers } from './users.js';
 
@@ -125,6 +126,7 @@ export function shutdown(code = 0) {
   apiTokens.flush();
   labelsStore.flush();
   commentsStore.flush();
+  uploadUsage.flush();
   folderIds.flush();
   server.close(() => process.exit(code));
   server.closeAllConnections?.();

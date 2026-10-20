@@ -15,6 +15,7 @@ import crypto from 'node:crypto';
 import * as acl from '../acl.js';
 import * as comments from '../comments.js';
 import * as duplicates from '../duplicates.js';
+import * as uploadUsage from '../upload-usage.js';
 import * as folderIds from '../folder-ids.js';
 import * as labels from '../labels.js';
 import * as sharesStore from '../shares.js';
@@ -151,6 +152,15 @@ export async function reserveQuota(user, folder, size) {
   noteQuotaUse(user, size);
 }
 
+/** Дневной лимит загрузки: сколько ещё можно сегодня (null — без лимита), иначе 429. */
+function dailyLeft(user, size) {
+  try {
+    return uploadUsage.check(user, size);
+  } catch (err) {
+    throw new HttpError(err.status ?? 429, err.message);
+  }
+}
+
 /** Сколько ещё можно положить в папку с учётом квоты (undefined — квоты нет). */
 async function quotaLimit(user, folder, size) {
   if (!user.quotaMb || !acl.inPersonal(user, folder)) return undefined;
@@ -160,6 +170,11 @@ async function quotaLimit(user, folder, size) {
   }
   return Math.min(config.limits.maxFileSize, left);
 }
+
+// GET /api/upload-usage → {limit, used} — дневной лимит загрузки (байты; limit null — без лимита)
+filesRouter.get('/upload-usage', (req, res) => {
+  res.json({ limit: uploadUsage.limitFor(req.user), used: uploadUsage.usedToday(req.user) });
+});
 
 // GET /api/personal → {path, quotaMb, used} — личная папка и сколько в ней занято
 filesRouter.get('/personal', async (req, res) => {
@@ -328,7 +343,9 @@ filesRouter.post('/uploads', canEdit, async (req, res) => {
   const folder = withSubfolders(writeFolder(req, req.body?.folder), req.body?.subfolders);
   if (!acl.canWrite(req.user, folder)) throw new HttpError(403, 'Нет прав на изменения в этой папке');
   const { name, size, type } = req.body ?? {};
-  const maxSize = await quotaLimit(req.user, folder, size);
+  const daily = dailyLeft(req.user, size);
+  const quota = await quotaLimit(req.user, folder, size);
+  const maxSize = daily === null ? quota : Math.min(quota ?? config.limits.maxFileSize, daily);
   res.json(await flow(() => uploadFlow.planUpload({ name, size, type, folder, maxSize })));
 });
 
@@ -338,9 +355,11 @@ filesRouter.post('/uploads/url', canEdit, async (req, res) => {
   const folder = writeFolder(req, req.body?.folder);
   if (acl.inPersonal(req.user, folder) && req.user.quotaMb) throw new HttpError(400, 'В личную папку с квотой загрузите файл с компьютера');
   const job = await urlImport.startImport({
-    url: req.body?.url, folder, user: req.user.username,
+    url: req.body?.url, folder, user: req.user.username, maxBytes: dailyLeft(req.user, 0) ?? undefined,
     onDone: (j) => {
-      if (j.status === 'done') audit(req, 'file.upload_url', { host: j.host, key: j.file.key, size: j.size });
+      if (j.status !== 'done') return;
+      uploadUsage.note(req.user, j.size ?? j.loaded);
+      audit(req, 'file.upload_url', { host: j.host, key: j.file.key, size: j.size });
     },
   });
   res.status(202).json({ job });
@@ -408,6 +427,7 @@ filesRouter.post('/uploads/complete', canEdit, async (req, res) => {
   const maxSize = uploadId ? await quotaLimit(req.user, folderFromKey(ref.rel), 0) : undefined;
   const { file, st, rel, size } = await flow(() => uploadFlow.completeUpload(req.body?.key, uploadId, maxSize ? { maxSize } : undefined));
   if (acl.inPersonal(req.user, folderFromKey(rel))) noteQuotaUse(req.user, size);
+  uploadUsage.note(req.user, size);
   audit(req, 'file.upload', { storage: st.id, key: rel, size });
   res.json({ file });
 });

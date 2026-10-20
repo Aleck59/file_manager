@@ -200,7 +200,7 @@ export function cancelJob(id, user) {
  * Запускает фоновую загрузку. Возвращает описание задания (статус — через getJob).
  * @param {{ url: string, folder: string, user: string, onDone?: (job) => void }} opts
  */
-export async function startImport({ url: raw, folder, user, onDone }) {
+export async function startImport({ url: raw, folder, user, onDone, maxBytes }) {
   if (!isValidFolder(folder)) throw Object.assign(new Error('Некорректный путь папки'), { status: 400 });
   const url = parseImportUrl(raw);
   const running = activeJobs();
@@ -209,6 +209,7 @@ export async function startImport({ url: raw, folder, user, onDone }) {
   await resolvePublic(url.hostname); // быстрый отказ до создания задания
 
   const job = createJob({ type: 'url', user, folder, host: url.host, name: sanitizeFileName(fileNameFrom({ headers: {} }, url)) });
+  job.limit = maxBytes ?? null; // дневной лимит загрузки пользователя
   run(job, url).then(() => onDone?.(job), () => onDone?.(job));
   return publicJob(job);
 }
@@ -221,12 +222,13 @@ async function run(job, url) {
   try {
     const { res, finalUrl } = await fetchPublic(url, signal);
     const length = Number(res.headers['content-length']);
-    if (Number.isFinite(length) && length > config.limits.maxFileSize) {
+    const max = Math.min(config.limits.maxFileSize, job.limit ?? Infinity);
+    if (Number.isFinite(length) && length > max) {
       res.destroy();
-      throw new Error(`Файл больше допустимого размера (${Math.round(config.limits.maxFileSize / 1024 / 1024)} МБ)`);
+      throw new Error(`Файл больше допустимого размера (${Math.round(max / 1024 / 1024)} МБ)`);
     }
     job.size = Number.isFinite(length) ? length : null;
-    job.max = config.limits.maxFileSize;
+    job.max = max;
     job.name = sanitizeFileName(fileNameFrom(res, finalUrl));
     const contentType = safeContentType(String(res.headers['content-type'] ?? '').split(';')[0]);
     st = await storages.pickForUpload(job.size ?? 0);

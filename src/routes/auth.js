@@ -13,7 +13,7 @@ import { hashPassword, verifyPassword } from '../password.js';
 import * as acl from '../acl.js';
 import * as oauth from '../oauth.js';
 import * as totp from '../totp.js';
-import { findByEmail, getUser, publicUser, updateUser } from '../users.js';
+import { findByEmail, getUser, isExpired, publicUser, updateUser } from '../users.js';
 
 export const authRouter = Router();
 
@@ -39,6 +39,10 @@ authRouter.post('/login', loginLimiter, async (req, res) => {
     console.warn(`[auth] неудачный вход: логин=${JSON.stringify(username.slice(0, 64))} ip=${req.ip}`);
     auditLog.record({ user: username.slice(0, 64), action: 'auth.fail', ip: req.ip });
     throw new HttpError(401, 'Неверный логин или пароль');
+  }
+  if (isExpired(user)) {
+    auditLog.record({ user: user.username, action: 'auth.fail', ip: req.ip, details: { reason: 'expired' } });
+    throw new HttpError(403, 'Срок действия учётной записи истёк — обратитесь к администратору');
   }
   // Включена 2FA — сессию даст только второй шаг (код из приложения).
   if (user.totp) return res.json({ twoFactor: true, ticket: totp.issueTicket(user, 'password') });
@@ -139,6 +143,7 @@ authRouter.get('/oauth/:provider/callback', oauthLimiter, async (req, res) => {
     auditLog.record({ user: result.email, action: 'auth.fail', ip: req.ip, details: { via: id, reason: 'nouser' } });
     return goTo(res, '/login?error=nouser');
   }
+  if (isExpired(user)) return goTo(res, '/login?error=expired');
   if (user.totp) {
     res.cookie(TICKET_COOKIE, totp.issueTicket(user, id), cookieOpts(5 * 60 * 1000));
     return goTo(res, '/login?step=2fa');

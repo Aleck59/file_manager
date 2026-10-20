@@ -709,3 +709,30 @@ test('запрос файла: закрывается после «Готово�
   assert.equal(st.log[0].name, 'фото.jpg'); // новые сверху
   assert.equal(shares.ownerView(s).uploadLog, undefined); // журнал — только через statsOf
 });
+
+test('гостевой аккаунт: после срока сессия не действует; лимит загрузки в день', async () => {
+  const { hashPassword: hp } = await import('../src/password.js');
+  const created = users.createUser({ username: 'guest1', role: 'editor', passwordHash: await hp('guest-password-1'), expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+  assert.ok(created.user);
+  const guest = users.getUser('guest1');
+  const token = auth.issueToken ? auth.issueToken(guest) : null;
+  assert.equal(users.isExpired(guest), false);
+  assert.equal(users.isExpired(guest, Date.now() + 2 * 3600_000), true);
+  if (token) assert.equal(auth.userFromToken(token)?.username, 'guest1');
+  users.updateUser('guest1', { expiresAt: new Date(Date.now() - 1000).toISOString() });
+  if (token) assert.equal(auth.userFromToken(token), null);
+  assert.equal(users.isExpired(users.getUser('guest1')), true);
+
+  const usage = await import('../src/upload-usage.js');
+  const { config } = await import('../src/config.js');
+  const editor = { username: 'ed1', role: 'editor' };
+  config.limits.dailyUploadMb = 0;
+  assert.equal(usage.check(editor, 10 ** 9), null); // без лимита
+  config.limits.dailyUploadMb = 10;
+  assert.equal(usage.check(editor, 1024), 10 * 1024 * 1024);
+  usage.note(editor, 9 * 1024 * 1024);
+  assert.throws(() => usage.check(editor, 2 * 1024 * 1024), /Дневной лимит/);
+  assert.equal(usage.check({ ...editor, dailyUploadMb: 0 }, 10 ** 9), null); // свой лимит: 0 — без лимита
+  assert.equal(usage.check({ username: 'root', role: 'admin' }, 10 ** 9), null);
+  config.limits.dailyUploadMb = 0;
+});

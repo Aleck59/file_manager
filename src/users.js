@@ -46,9 +46,13 @@ export function initUsers() {
 }
 
 // Наружу — без хешей и секретов 2FA.
-export const publicUser = ({ username, role, createdAt, email, quotaMb, totp, personal }) => ({
+export const publicUser = ({ username, role, createdAt, email, quotaMb, totp, personal, expiresAt, dailyUploadMb }) => ({
   username, role, createdAt, email: email ?? null, quotaMb: quotaMb ?? 0, twoFactor: Boolean(totp), personal: Boolean(personal),
+  expiresAt: expiresAt ?? null, dailyUploadMb: dailyUploadMb ?? null,
 });
+
+/** Гостевой (временный) аккаунт с истёкшим сроком: войти нельзя, сессии и токены не действуют. */
+export const isExpired = (u, now = Date.now()) => Boolean(u?.expiresAt && Date.parse(u.expiresAt) <= now);
 
 /** Пользователь по почте (вход через Яндекс/Google): почту указывает администратор. */
 export function findByEmail(email) {
@@ -73,17 +77,17 @@ export function normalizeUsername(input) {
 
 const adminCount = () => [...users.values()].filter((u) => u.role === 'admin').length;
 
-export function createUser({ username, role, passwordHash, email, quotaMb, personal }) {
+export function createUser({ username, role, passwordHash, email, quotaMb, personal, expiresAt, dailyUploadMb }) {
   if (users.has(username)) return { error: 'Пользователь с таким логином уже существует' };
   if (email && findByEmail(email)) return { error: 'Эта почта уже указана у другого пользователя' };
-  const user = { username, role, passwordHash, createdAt: new Date().toISOString(), ...(email && { email }), ...(quotaMb && { quotaMb }), ...(personal && { personal: true }) };
+  const user = { username, role, passwordHash, createdAt: new Date().toISOString(), ...(email && { email }), ...(quotaMb && { quotaMb }), ...(personal && { personal: true }), ...(expiresAt && { expiresAt }), ...(dailyUploadMb != null && { dailyUploadMb }) };
   users.set(username, user);
   persist();
   return { user: publicUser(user) };
 }
 
 // Изменяемые поля. undefined — не менять; null — убрать (почта, 2FA).
-const MUTABLE = ['role', 'passwordHash', 'email', 'quotaMb', 'totp', 'totpPending', 'personal'];
+const MUTABLE = ['role', 'passwordHash', 'email', 'quotaMb', 'totp', 'totpPending', 'personal', 'expiresAt', 'dailyUploadMb'];
 
 export function updateUser(username, changes) {
   const user = users.get(username);
@@ -98,6 +102,7 @@ export function updateUser(username, changes) {
   const next = { ...user };
   for (const key of MUTABLE) {
     if (changes[key] === undefined) continue;
+    // dailyUploadMb: 0 — «без лимита» (явно), null — как в настройках
     if (changes[key] === null || changes[key] === '') delete next[key];
     else next[key] = changes[key];
   }
