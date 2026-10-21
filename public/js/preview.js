@@ -9,17 +9,67 @@ import { openShareDialog } from './share-dialog.js';
 import { richView } from './textview.js';
 import qrcode from './vendor/qrcode.js';
 import {
-  $, CATEGORY_STYLE, categoryOf, copyToClipboard, extOf, folderLabel, formatDate, formatSize, h, icon, prefs, toast, toned,
+  $, CATEGORY_STYLE, categoryOf, copyToClipboard, extOf, folderLabel, formatDate, formatSize, h, icon, kindLabel, prefs, toast, toned,
 } from './ui.js';
 
 const TEXT_LIMIT = 256 * 1024;
 const panel = () => $('#preview');
+
+// Ширина панели: левая граница тянется мышью (двойной щелчок — как было), запоминается.
+const PREVIEW_MIN = 288;
+const previewMax = () => Math.min(Math.round(window.innerWidth * 0.6), 960);
+let edge;
+function setPanelWidth(px, save = true) {
+  if (px === null) {
+    panel().style.removeProperty('--preview-w');
+    if (save) prefs.set('preview-width', '');
+    return;
+  }
+  const w = Math.round(Math.min(previewMax(), Math.max(PREVIEW_MIN, px)));
+  panel().style.setProperty('--preview-w', `${w}px`);
+  if (save) prefs.set('preview-width', String(w));
+}
+function resizeEdge() {
+  const el = h('div', {
+    class: 'preview-resizer', role: 'separator', 'aria-orientation': 'vertical', tabindex: '0',
+    'aria-label': 'Ширина панели предпросмотра', title: 'Потяните, чтобы изменить ширину · двойной щелчок — как было',
+  });
+  el.addEventListener('dblclick', () => setPanelWidth(null));
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    setPanelWidth(panel().getBoundingClientRect().width + (e.key === 'ArrowLeft' ? 24 : -24));
+  });
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const x0 = e.clientX;
+    const w0 = panel().getBoundingClientRect().width;
+    el.setPointerCapture(e.pointerId);
+    document.body.classList.add('is-col-resizing');
+    const onMove = (ev) => setPanelWidth(w0 + (x0 - ev.clientX), false); // влево — шире
+    const onUp = () => {
+      el.removeEventListener('pointermove', onMove);
+      document.body.classList.remove('is-col-resizing');
+      setPanelWidth(panel().getBoundingClientRect().width);
+    };
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', onUp, { once: true });
+    el.addEventListener('pointercancel', onUp, { once: true });
+  });
+  return el;
+}
+/** Содержимое панели (ручка ширины остаётся на месте). */
+const fillPanel = (...nodes) => panel().replaceChildren(edge, ...nodes);
 const backdrop = () => $('#preview-backdrop');
 let current = null; // ключ открытого файла — защита от гонок при быстром переключении
 let ctx;
 
 export function initPreview(appCtx) {
   ctx = appCtx;
+  edge = resizeEdge();
+  const saved = Number(prefs.get('preview-width', ''));
+  if (saved > 0) setPanelWidth(saved, false);
   backdrop().addEventListener('click', closePreview);
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && current && !document.querySelector('dialog[open]')) closePreview();
@@ -53,7 +103,7 @@ function header(title) {
 }
 
 function renderEmpty() {
-  panel().replaceChildren(
+  fillPanel(
     header('Предпросмотр'),
     h('div', { class: 'flex flex-1 flex-col items-center justify-center px-8 text-center' },
       h('span', { class: 'mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-400 dark:bg-slate-800' }, icon('eye', 'h-6 w-6')),
@@ -130,10 +180,53 @@ function speedSelect(media) {
   return sel;
 }
 
+// Место остановки видео (в этом браузере): {ключ: секунды}, последние 200 видео.
+const POS_KEY = 'fm-video-pos';
+function readPositions() {
+  try { return JSON.parse(localStorage.getItem(POS_KEY) ?? '{}') ?? {}; } catch { return {}; }
+}
+function savePosition(key, seconds) {
+  try {
+    const all = readPositions();
+    delete all[key];
+    if (seconds !== null) all[key] = Math.floor(seconds);
+    const keys = Object.keys(all);
+    for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete all[k];
+    localStorage.setItem(POS_KEY, JSON.stringify(all));
+  } catch { /* приватный режим — просто не запоминаем */ }
+}
+const clock = (s) => {
+  const t = Math.floor(s);
+  const hh = Math.floor(t / 3600);
+  const mm = Math.floor((t % 3600) / 60);
+  const ss = String(t % 60).padStart(2, '0');
+  return hh ? `${hh}:${String(mm).padStart(2, '0')}:${ss}` : `${mm}:${ss}`;
+};
+
 function videoPlayer(url, file, siblings) {
   const video = h('video', { src: url, controls: true, preload: 'metadata', playsinline: true, class: 'w-full rounded-xl bg-black' });
+  const resume = h('span', { class: 'mr-auto hidden items-center gap-2' });
   const bar = h('div', { class: 'flex flex-wrap items-center justify-end gap-2 text-xs text-slate-500 dark:text-slate-400' },
+    resume,
     h('label', { class: 'flex items-center gap-1.5' }, 'Скорость', speedSelect(video)));
+  // Продолжить с места, где остановились (если смотрели больше 10 с и не досмотрели).
+  const saved = readPositions()[file.key];
+  video.addEventListener('loadedmetadata', () => {
+    if (!(saved > 10) || !(saved < video.duration - 10) || video.currentTime > 1) return;
+    video.currentTime = saved;
+    resume.replaceChildren(`Продолжено с ${clock(saved)}`,
+      h('button', { type: 'button', class: 'link', onclick: () => { video.currentTime = 0; resume.classList.add('hidden'); resume.classList.remove('flex'); } }, 'С начала'));
+    resume.classList.remove('hidden');
+    resume.classList.add('flex');
+  }, { once: true });
+  let lastSave = 0;
+  video.addEventListener('timeupdate', () => {
+    if (Date.now() - lastSave < 5000) return;
+    lastSave = Date.now();
+    savePosition(file.key, video.currentTime > 10 ? video.currentTime : null);
+  });
+  video.addEventListener('pause', () => savePosition(file.key, video.currentTime > 10 ? video.currentTime : null));
+  video.addEventListener('ended', () => savePosition(file.key, null));
   const variants = renditions(file, siblings);
   if (variants.length) {
     const sel = h('select', { class: 'select py-1 text-xs', 'aria-label': 'Качество' },
@@ -298,7 +391,7 @@ export async function showPreview(file, { folder, onDelete, onRename, onMove, ga
   openDrawer(true);
   const body = h('div', { class: 'flex-1 space-y-5 overflow-y-auto p-4' },
     h('div', { class: 'aspect-[4/3] w-full animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800' }));
-  panel().replaceChildren(header('Предпросмотр'), body);
+  fillPanel(header('Предпросмотр'), body);
 
   let info;
   try {
@@ -334,7 +427,7 @@ export async function showPreview(file, { folder, onDelete, onRename, onMove, ga
     actions,
     h('dl', { class: 'divide-y divide-slate-100 text-sm dark:divide-slate-800' },
       metaRow('Размер', formatSize(info.size)),
-      metaRow('Тип', info.contentType),
+      metaRow('Тип', kindLabel(file.name, info.contentType)),
       metaRow('Изменён', formatDate(info.lastModified)),
       metaRow('Расположение', folderLabel(folder)),
       info.storage && metaRow('Хранилище', info.storage.name)),

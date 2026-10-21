@@ -87,7 +87,7 @@
 
         <!-- ===== Правая панель: предпросмотр ===== -->
         <aside id="preview"
-               class="fixed inset-y-0 right-0 z-40 hidden w-full translate-x-full flex-col border-l border-slate-200 bg-white transition-transform duration-200 sm:w-[26rem] xl:static xl:z-auto xl:w-[24rem] xl:translate-x-0 dark:border-slate-800 dark:bg-slate-900"
+               class="fixed inset-y-0 right-0 z-40 hidden w-full translate-x-full flex-col border-l border-slate-200 bg-white transition-transform duration-200 sm:w-[var(--preview-w,26rem)] xl:relative xl:z-auto xl:w-[var(--preview-w,24rem)] xl:shrink-0 xl:translate-x-0 dark:border-slate-800 dark:bg-slate-900"
                aria-label="Предпросмотр файла"></aside>
         <div id="preview-backdrop" class="fixed inset-0 z-30 hidden bg-slate-900/40 xl:hidden"></div>
       </div>

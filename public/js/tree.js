@@ -1,9 +1,10 @@
 // Дерево папок в левой панели. Подпапки подгружаются лениво при раскрытии;
 // при переходе в глубокую папку автоматически раскрываются все её предки.
 import { api } from './api.js';
-import { h, homeFolder, icon, makeDropTarget, toast } from './ui.js';
+import { folderIconName, folderTextTone, h, homeFolder, icon, makeDropTarget, toast } from './ui.js';
 
 const nodes = new Map(); // path -> { children: [{path,name}] | null, expanded, loading }
+const styles = new Map(); // path -> {style} — цвет и значок папки
 let container;
 let activePath = null;
 let onNavigate = () => {};
@@ -20,7 +21,7 @@ const parentOf = (path) => path.slice(0, path.slice(0, -1).lastIndexOf('/') + 1)
 async function loadChildren(path) {
   const n = node(path);
   n.loading ??= api.listFolder(path)
-    .then((res) => { n.children = res.folders; })
+    .then((res) => { n.children = res.folders; for (const f of res.folders) styles.set(f.path, f); })
     .catch((err) => { toast(err.message, 'error'); n.children ??= []; })
     .finally(() => { n.loading = null; });
   return n.loading;
@@ -29,6 +30,7 @@ async function loadChildren(path) {
 // Дисковый вид уже знает подпапки текущей папки — передаёт их, чтобы не делать лишний запрос.
 export function setChildren(path, folders) {
   node(path).children = folders;
+  for (const f of folders) styles.set(f.path, f);
   render();
 }
 
@@ -109,7 +111,7 @@ function renderNode(path, name, depth) {
     },
   },
   chevron,
-  icon(path === homeFolder ? 'drive' : 'folder', `h-4 w-4 ${path === activePath ? '' : 'text-slate-400'}`),
+  icon(path === homeFolder ? 'drive' : folderIconName(styles.get(path)), `h-4 w-4 ${folderTextTone(styles.get(path)) || (path === activePath ? '' : 'text-slate-400')}`),
   h('span', { class: 'ml-1.5 truncate' }, name));
   // Отступ уровня через CSSOM (inline style-атрибуты запрещены CSP).
   row.style.paddingLeft = `${depth * 14 + 2}px`;

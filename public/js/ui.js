@@ -200,6 +200,56 @@ export function categoryOf(name) {
   return 'other';
 }
 
+// Цвет и значок папки (задаётся в меню папки, общий для всех). Классы — целиком строками:
+// Tailwind собирает только те, что видит в исходниках.
+export const FOLDER_TONES = {
+  green: ['bg-brand-50 text-brand-600 dark:bg-brand-950/60 dark:text-brand-400', 'text-brand-600 dark:text-brand-400', 'bg-brand-500'],
+  blue: ['bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400', 'text-blue-600 dark:text-blue-400', 'bg-blue-500'],
+  sky: ['bg-sky-50 text-sky-600 dark:bg-sky-950/60 dark:text-sky-400', 'text-sky-600 dark:text-sky-400', 'bg-sky-500'],
+  violet: ['bg-violet-50 text-violet-600 dark:bg-violet-950/60 dark:text-violet-400', 'text-violet-600 dark:text-violet-400', 'bg-violet-500'],
+  pink: ['bg-pink-50 text-pink-600 dark:bg-pink-950/60 dark:text-pink-400', 'text-pink-600 dark:text-pink-400', 'bg-pink-500'],
+  red: ['bg-rose-50 text-rose-600 dark:bg-rose-950/60 dark:text-rose-400', 'text-rose-600 dark:text-rose-400', 'bg-rose-500'],
+  orange: ['bg-orange-50 text-orange-600 dark:bg-orange-950/60 dark:text-orange-400', 'text-orange-600 dark:text-orange-400', 'bg-orange-500'],
+  amber: ['bg-amber-50 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400', 'text-amber-600 dark:text-amber-400', 'bg-amber-500'],
+  slate: ['bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300', 'text-slate-600 dark:text-slate-300', 'bg-slate-500'],
+};
+export const FOLDER_ICONS = ['folder', 'star', 'image', 'video', 'music', 'doc', 'archive', 'user', 'users', 'lock', 'home', 'calendar', 'chart', 'globe', 'server', 'clipboard', 'key', 'message'];
+export const folderTone = (f) => FOLDER_TONES[f?.style?.color ?? 'green'][0];
+export const folderTextTone = (f) => (f?.style?.color ? FOLDER_TONES[f.style.color][1] : '');
+export const folderIconName = (f) => f?.style?.icon ?? 'folder';
+
+// Понятное название типа файла для людей («Архив», «Фото»), а не MIME-тип.
+const KIND_EXT = [
+  ['Исполняемый файл', 'exe msi bat cmd com scr apk app dmg deb rpm appimage sh ps1'],
+  ['Образ диска', 'iso img vhd vhdx vmdk'],
+  ['Архив', 'zip rar 7z tar gz tgz bz2 xz zst cab'],
+  ['Фото', 'jpg jpeg png gif webp avif heic heif bmp tif tiff raw cr2 nef arw dng'],
+  ['Векторное изображение', 'svg ai eps'],
+  ['Значок', 'ico icns'],
+  ['Видео', 'mp4 m4v mov mkv avi webm wmv flv ogv 3gp ts'],
+  ['Аудио', 'mp3 wav ogg oga m4a aac flac opus wma'],
+  ['Документ PDF', 'pdf'],
+  ['Документ Word', 'doc docx odt rtf pages'],
+  ['Таблица', 'xls xlsx ods numbers csv tsv'],
+  ['Презентация', 'ppt pptx odp key'],
+  ['Электронная книга', 'epub fb2 mobi djvu'],
+  ['Текст', 'txt md markdown log'],
+  ['Данные', 'json jsonl xml yml yaml toml ini conf cfg sql db sqlite'],
+  ['Веб-страница', 'html htm'],
+  ['Исходный код', 'js mjs ts tsx jsx css scss py rb php go rs java kt c h cpp hpp cs swift vue'],
+  ['Шрифт', 'ttf otf woff woff2'],
+  ['Торрент', 'torrent'],
+  ['Ярлык', 'lnk url'],
+];
+const KIND_BY_EXT = new Map(KIND_EXT.flatMap(([label, list]) => list.split(' ').map((e) => [e, label])));
+const KIND_BY_MIME = [[/^image\//, 'Фото'], [/^video\//, 'Видео'], [/^audio\//, 'Аудио'], [/^text\//, 'Текст'], [/zip|compressed|tar/, 'Архив']];
+/** «Архив (ZIP)», «Исполняемый файл (EXE)», «Файл»… */
+export function kindLabel(name, contentType = '') {
+  const ext = extOf(name);
+  const label = KIND_BY_EXT.get(ext) ?? KIND_BY_MIME.find(([re]) => re.test(contentType))?.[1] ?? 'Файл';
+  return ext ? `${label} (${ext.toUpperCase()})` : label;
+}
+
 // Визуальный стиль типа файла (иконка + тон). Цвет здесь — вторичный признак,
 // тип всегда продублирован расширением/иконкой.
 export const CATEGORY_STYLE = {
