@@ -554,6 +554,42 @@ filesRouter.post('/files/office', async (req, res) => {
   res.json(await flow(() => renderOffice(st, rel, size, ext)));
 });
 
+// ---------- перетаскивание файла на рабочий стол ----------
+// Браузер (Chrome, Edge) скачивает перетащенный файл сам, по ссылке из DownloadURL. Ссылку на
+// S3 с чужого домена он молча не скачивает, поэтому отдаём свою: /dl/<подпись> — без входа,
+// действует 50 минут, права проверены при выдаче. Файл идёт через сервер потоком.
+const DRAG_TTL = 50 * 60;
+const dragSig = (payload) => crypto.createHmac('sha256', config.auth.sessionSecret).update(`drag:${payload}`).digest('base64url');
+
+filesRouter.post('/files/drag-link', (req, res) => {
+  const { st, rel } = readRef(req, req.body?.key);
+  const payload = Buffer.from(JSON.stringify({ k: formatRef(st.id, rel), e: Math.floor(Date.now() / 1000) + DRAG_TTL })).toString('base64url');
+  res.json({ url: `${config.appOrigin}/dl/${payload}.${dragSig(payload)}` });
+});
+
+/** GET /dl/:token — подключается в server.js вне /api (без cookie: скачивает менеджер загрузок). */
+export async function dragDownload(req, res) {
+  const [payload, sig] = String(req.params.token ?? '').split('.');
+  const good = payload && sig && sig.length === 43
+    && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(dragSig(payload)));
+  let data = null;
+  try { data = good ? JSON.parse(Buffer.from(payload, 'base64url').toString()) : null; } catch { /* битая ссылка */ }
+  if (!data || !(data.e > Date.now() / 1000)) throw new HttpError(410, 'Ссылка устарела');
+  let ref;
+  try { ref = resolveRef(data.k); } catch { throw new HttpError(404, 'Файл не найден'); }
+  const { body, contentType, size } = await ref.st.getStream(ref.rel).catch(() => { throw new HttpError(404, 'Файл не найден'); });
+  res.setHeader('Content-Type', safeContentType(contentType) || 'application/octet-stream');
+  res.setHeader('Content-Disposition', contentDisposition(nameFromKey(ref.rel)));
+  if (Number.isSafeInteger(size)) res.setHeader('Content-Length', size);
+  res.setHeader('Cache-Control', 'no-store');
+  if (req.method === 'HEAD') { body.destroy?.(); return res.end(); }
+  try {
+    await pipeline(body, res);
+  } catch {
+    res.destroy();
+  }
+}
+
 // ---------- срок хранения файла ----------
 // POST /api/files/expiry {keys, days|null} — через N дней файл сам уйдёт в корзину; null — не удалять.
 filesRouter.post('/files/expiry', canEdit, (req, res) => {

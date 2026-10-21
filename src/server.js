@@ -11,7 +11,7 @@ import { adminRouter } from './routes/admin.js';
 import { publicSharesRouter, sharesRouter } from './routes/shares.js';
 import * as sharesStore from './shares.js';
 import { authRouter } from './routes/auth.js';
-import { filesRouter, startExpirySweeper } from './routes/files.js';
+import { dragDownload, filesRouter, startExpirySweeper } from './routes/files.js';
 import { settingsRouter } from './routes/settings.js';
 import { trashRouter } from './routes/trash.js';
 import * as trash from './trash.js';
@@ -96,10 +96,15 @@ app.get('/sw.js', page('sw.js'));
 // «Поделиться» без service worker (старый браузер, первый запуск) — просто открыть приложение.
 app.post('/share-target', (req, res) => res.redirect(303, '/#/inbox'));
 
+// Перетаскивание файла на рабочий стол: подписанная ссылка на 50 минут (см. files.js).
+app.get('/dl/:token', dragDownload);
+
 // Страница публичной ссылки: /s/<id> (данные она берёт из /api/public/s/<id>).
 app.get('/s/:id', (req, res) => sharePage(req, res));
 
-app.use(serveStatic(publicDir, { maxAge: 3600 }));
+// Без долгого кеша: браузер каждый раз сверяет ETag (ответ 304 — без тела), поэтому
+// после обновления сайта новые скрипты и стили подхватываются сразу, а не через час.
+app.use(serveStatic(publicDir, { maxAge: 0 }));
 // Портал загрузки по короткому адресу: files.example.com/<адрес> (задаётся у ссылки).
 app.get('/:slug', (req, res, next) => (sharesStore.get(req.params.slug)?.slug ? sharePage(req, res) : next()));
 // Неизвестный адрес: браузеру — страница 404 с монстром, остальным — короткий текст.

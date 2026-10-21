@@ -65,8 +65,12 @@
   .file-row:hover { @apply bg-slate-50 dark:bg-slate-800/40; }
   .file-row:focus-visible { @apply bg-slate-50 ring-2 ring-inset ring-brand-500 ring-offset-0 dark:bg-slate-800/40; }
   @media (min-width: 768px) {
-    /* Ширина столбцов меняется перетаскиванием границ в шапке (переменные задаёт disk.js). */
-    .file-row, .list-head { grid-template-columns: minmax(8rem, 1fr) var(--col-size, 6.5rem) var(--col-date, 9rem) var(--col-actions, 7.5rem); }
+    /* Ширина и порядок столбцов задаются в шапке (переменные --cols и --o-N ставит disk.js). */
+    .file-row, .list-head { grid-template-columns: var(--cols, minmax(8rem, 1fr) 6.5rem 9rem 7.5rem); }
+    .file-row > :nth-child(1), .list-head > :nth-child(1) { order: var(--o-1, 1); }
+    .file-row > :nth-child(2), .list-head > :nth-child(2) { order: var(--o-2, 2); }
+    .file-row > :nth-child(3), .list-head > :nth-child(3) { order: var(--o-3, 3); }
+    .file-row > :nth-child(4), .list-head > :nth-child(4) { order: var(--o-4, 4); }
   }
   .check-cell { @apply flex w-4 shrink-0 items-center; }
   .check { @apply h-4 w-4 cursor-pointer rounded accent-brand-600; transition: opacity 120ms ease-out; }
@@ -87,10 +91,17 @@
   }
 
   .list-head > * { position: relative; }
+  .list-head .col-cell[draggable="true"] { cursor: grab; }
+  .list-head .is-col-dragging { opacity: .4; }
+  .list-head .is-col-drop { @apply rounded bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300; }
   .col-resizer { @apply absolute -left-3 top-1/2 z-10 flex h-6 w-4 -translate-y-1/2 cursor-col-resize touch-none items-center justify-center; }
-  .col-resizer::after { content: ''; @apply h-4 w-px bg-slate-300 transition-colors dark:bg-slate-600; }
+  .col-resizer::after { content: ''; @apply h-4 w-0.5 rounded-full bg-slate-300 transition-colors dark:bg-slate-600; }
   .col-resizer:hover::after, .col-resizer.is-dragging::after { @apply h-6 w-0.5 bg-brand-500; }
   body.is-col-resizing { cursor: col-resize; user-select: none; }
+  /* Левая граница панели предпросмотра — тянется (на телефоне панель во весь экран, ручки нет). */
+  .preview-resizer { @apply absolute inset-y-0 -left-1.5 z-10 hidden w-3 cursor-col-resize touch-none sm:block; }
+  .preview-resizer::after { content: ''; @apply absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-transparent transition-colors; }
+  .preview-resizer:hover::after, .preview-resizer:focus-visible::after, body.is-col-resizing .preview-resizer::after { @apply bg-brand-500; }
   .sort-head { @apply inline-flex items-center gap-1 rounded uppercase tracking-wide transition-colors hover:text-slate-700 dark:hover:text-slate-200; }
   .sort-head.is-active { @apply text-slate-700 dark:text-slate-200; }
   .sort-arrow { opacity: 0; transition: opacity 120ms ease-out, transform 150ms ease-out; }

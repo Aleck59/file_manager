@@ -200,6 +200,38 @@ export function categoryOf(name) {
   return 'other';
 }
 
+// Понятное название типа файла для людей («Архив», «Фото»), а не MIME-тип.
+const KIND_EXT = [
+  ['Исполняемый файл', 'exe msi bat cmd com scr apk app dmg deb rpm appimage sh ps1'],
+  ['Образ диска', 'iso img vhd vhdx vmdk'],
+  ['Архив', 'zip rar 7z tar gz tgz bz2 xz zst cab'],
+  ['Фото', 'jpg jpeg png gif webp avif heic heif bmp tif tiff raw cr2 nef arw dng'],
+  ['Векторное изображение', 'svg ai eps'],
+  ['Значок', 'ico icns'],
+  ['Видео', 'mp4 m4v mov mkv avi webm wmv flv ogv 3gp ts'],
+  ['Аудио', 'mp3 wav ogg oga m4a aac flac opus wma'],
+  ['Документ PDF', 'pdf'],
+  ['Документ Word', 'doc docx odt rtf pages'],
+  ['Таблица', 'xls xlsx ods numbers csv tsv'],
+  ['Презентация', 'ppt pptx odp key'],
+  ['Электронная книга', 'epub fb2 mobi djvu'],
+  ['Текст', 'txt md markdown log'],
+  ['Данные', 'json jsonl xml yml yaml toml ini conf cfg sql db sqlite'],
+  ['Веб-страница', 'html htm'],
+  ['Исходный код', 'js mjs ts tsx jsx css scss py rb php go rs java kt c h cpp hpp cs swift vue'],
+  ['Шрифт', 'ttf otf woff woff2'],
+  ['Торрент', 'torrent'],
+  ['Ярлык', 'lnk url'],
+];
+const KIND_BY_EXT = new Map(KIND_EXT.flatMap(([label, list]) => list.split(' ').map((e) => [e, label])));
+const KIND_BY_MIME = [[/^image\//, 'Фото'], [/^video\//, 'Видео'], [/^audio\//, 'Аудио'], [/^text\//, 'Текст'], [/zip|compressed|tar/, 'Архив']];
+/** «Архив (ZIP)», «Исполняемый файл (EXE)», «Файл»… */
+export function kindLabel(name, contentType = '') {
+  const ext = extOf(name);
+  const label = KIND_BY_EXT.get(ext) ?? KIND_BY_MIME.find(([re]) => re.test(contentType))?.[1] ?? 'Файл';
+  return ext ? `${label} (${ext.toUpperCase()})` : label;
+}
+
 // Визуальный стиль типа файла (иконка + тон). Цвет здесь — вторичный признак,
 // тип всегда продублирован расширением/иконкой.
 export const CATEGORY_STYLE = {

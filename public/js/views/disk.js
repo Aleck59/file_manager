@@ -245,37 +245,56 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
   const sortHeader = (by, label, cls = '') => h('button', {
     type: 'button', class: `sort-head ${cls}`, dataset: { sort: by }, onclick: () => setSort(by),
   }, label, icon('arrowDown', 'sort-arrow h-3 w-3'));
-  // Ширина столбцов: границы в шапке тянутся мышью, двойной щелчок — как было. Запоминается.
-  const COLS = { size: [104, 56, 256], date: [144, 96, 256], actions: [120, 80, 200] }; // по умолчанию, мин, макс (px)
+  // ---------- столбцы: ширина и порядок ----------
+  // Ширина — перетаскиванием границ в шапке (двойной щелчок — как было), порядок «Имя / Размер /
+  // Изменён» — перетаскиванием заголовка на место другого. «Действия» всегда последние.
+  // У «Имени» нет своей ширины: оно занимает всё, что осталось. Всё запоминается в браузере.
+  const COLS = { name: [0, 0, 0], size: [104, 56, 320], date: [144, 96, 320], actions: [120, 80, 220] }; // по умолчанию, мин, макс (px)
+  const LABELS = { name: 'Имя', size: 'Размер', date: 'Изменён', actions: 'Действия' };
+  const CELL_INDEX = { name: 0, size: 1, date: 2, actions: 3 }; // порядок ячеек в разметке строки
   const widths = (() => {
     const saved = prefs.get('columns', '').split(',').map(Number);
-    return Object.fromEntries(Object.keys(COLS).map((k, i) => [k, saved[i] > 0 ? saved[i] : COLS[k][0]]));
+    return Object.fromEntries(['size', 'date', 'actions'].map((k, i) => [k, saved[i] > 0 ? saved[i] : COLS[k][0]]));
+  })();
+  let order = (() => {
+    const saved = prefs.get('column-order', '').split(',');
+    const movable = ['name', 'size', 'date'];
+    return saved.length === 3 && movable.every((k) => saved.includes(k)) ? [...saved, 'actions'] : [...movable, 'actions'];
   })();
   const clampCol = (k, v) => Math.round(Math.min(COLS[k][2], Math.max(COLS[k][1], v)));
-  function applyWidths(save = true) {
-    for (const k of Object.keys(COLS)) card.style.setProperty(`--col-${k}`, `${widths[k]}px`);
-    if (save) prefs.set('columns', Object.keys(COLS).map((k) => widths[k]).join(','));
+  const track = (k) => (k === 'name' ? 'minmax(8rem, 1fr)' : `${widths[k]}px`);
+  function applyColumns(save = true) {
+    card.style.setProperty('--cols', order.map(track).join(' '));
+    order.forEach((k, i) => card.style.setProperty(`--o-${CELL_INDEX[k] + 1}`, String(i + 1)));
+    if (save) {
+      prefs.set('columns', ['size', 'date', 'actions'].map((k) => widths[k]).join(','));
+      prefs.set('column-order', order.slice(0, 3).join(','));
+    }
   }
-  // Граница слева от столбца: «имя|размер» меняет размер, «размер|дата» — размер и дату, и т. д.
-  function resizer(left, right, label) {
-    const handle = h('span', { class: 'col-resizer', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': label, title: 'Потяните, чтобы изменить ширину · двойной щелчок — как было', tabindex: '0' });
+  // Граница между столбцами left и right: тянем вправо — left шире, right уже (кроме «Имени»).
+  function resize(left, right, dx, start) {
+    if (left !== 'name') widths[left] = clampCol(left, start[left] + dx);
+    if (right !== 'name') widths[right] = clampCol(right, start[right] - (left !== 'name' ? widths[left] - start[left] : dx));
+  }
+  function resizer(left, right) {
+    const handle = h('span', {
+      class: 'col-resizer', role: 'separator', 'aria-orientation': 'vertical', tabindex: '0',
+      'aria-label': `Граница столбцов «${LABELS[left]}» и «${LABELS[right]}»`, title: 'Потяните, чтобы изменить ширину · двойной щелчок — как было',
+    });
     const stop = (e) => { e.stopPropagation(); e.preventDefault(); };
     handle.addEventListener('click', stop);
+    handle.addEventListener('dragstart', stop);
     handle.addEventListener('dblclick', (e) => {
       stop(e);
-      for (const k of [left, right]) if (k) widths[k] = COLS[k][0];
-      applyWidths();
+      for (const k of [left, right]) if (k !== 'name') widths[k] = COLS[k][0];
+      applyColumns();
     });
-    handle.addEventListener('keydown', (e) => { // стрелки — для клавиатуры
+    handle.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       stop(e);
-      move(e.key === 'ArrowRight' ? 16 : -16, { ...widths });
-      applyWidths();
+      resize(left, right, e.key === 'ArrowRight' ? 16 : -16, { ...widths });
+      applyColumns();
     });
-    function move(dx, start) {
-      if (left) widths[left] = clampCol(left, start[left] + dx);
-      if (right) widths[right] = clampCol(right, start[right] - (left ? widths[left] - start[left] : dx));
-    }
     handle.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       stop(e);
@@ -284,12 +303,12 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
       handle.setPointerCapture(e.pointerId);
       handle.classList.add('is-dragging');
       document.body.classList.add('is-col-resizing');
-      const onMove = (ev) => { move(ev.clientX - x0, start); applyWidths(false); };
+      const onMove = (ev) => { resize(left, right, ev.clientX - x0, start); applyColumns(false); };
       const onUp = () => {
         handle.removeEventListener('pointermove', onMove);
         handle.classList.remove('is-dragging');
         document.body.classList.remove('is-col-resizing');
-        applyWidths();
+        applyColumns();
       };
       handle.addEventListener('pointermove', onMove);
       handle.addEventListener('pointerup', onUp, { once: true });
@@ -297,13 +316,52 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     });
     return handle;
   }
-  const withResizer = (el, handle) => { el.prepend(handle); return el; };
+
+  const headCells = {
+    name: h('span', { class: 'col-cell flex items-center gap-3' }, h('span', { class: 'check-cell' }, checkAll), sortHeader('name', 'Имя')),
+    size: h('span', { class: 'col-cell flex justify-end' }, sortHeader('size', 'Размер')),
+    date: h('span', { class: 'col-cell flex' }, sortHeader('date', 'Изменён')),
+    actions: h('span', { class: 'col-cell text-right' }, 'Действия'),
+  };
+  // Перестановка: заголовок тянется на место другого (кроме «Действий»).
+  let draggingCol = null;
+  for (const k of ['name', 'size', 'date']) {
+    const cell = headCells[k];
+    cell.draggable = true;
+    cell.title = 'Перетащите, чтобы поменять столбцы местами';
+    cell.addEventListener('dragstart', (e) => {
+      draggingCol = k;
+      e.dataTransfer.setData('text/x-fm-column', k);
+      e.dataTransfer.effectAllowed = 'move';
+      cell.classList.add('is-col-dragging');
+    });
+    cell.addEventListener('dragend', () => { draggingCol = null; cell.classList.remove('is-col-dragging'); });
+    cell.addEventListener('dragover', (e) => {
+      if (!draggingCol || draggingCol === k) return;
+      e.preventDefault();
+      cell.classList.add('is-col-drop');
+    });
+    cell.addEventListener('dragleave', () => cell.classList.remove('is-col-drop'));
+    cell.addEventListener('drop', (e) => {
+      cell.classList.remove('is-col-drop');
+      if (!draggingCol || draggingCol === k) return;
+      e.preventDefault();
+      const from = order.indexOf(draggingCol);
+      const to = order.indexOf(k);
+      order = [...order];
+      [order[from], order[to]] = [order[to], order[from]];
+      renderHead();
+      applyColumns();
+    });
+  }
+  // Ручки ширины — на левой границе каждого столбца, кроме первого (по текущему порядку).
+  function renderHead() {
+    for (const cell of Object.values(headCells)) cell.querySelector(':scope > .col-resizer')?.remove();
+    for (let i = 1; i < order.length; i++) headCells[order[i]].prepend(resizer(order[i - 1], order[i]));
+  }
   const head = h('div', { class: 'list-head hidden items-center gap-4 border-b border-slate-200 px-4 py-2 text-xs font-medium uppercase tracking-wide text-slate-400 md:grid dark:border-slate-800' },
-    h('span', { class: 'flex items-center gap-3' }, h('span', { class: 'check-cell' }, checkAll), sortHeader('name', 'Имя')),
-    // У столбца «Имя» нет своей ширины — он занимает остальное; граница справа от него сужает «Размер».
-    withResizer(h('span', { class: 'flex justify-end' }, sortHeader('size', 'Размер')), resizer(null, 'size', 'Граница столбцов «Имя» и «Размер»')),
-    withResizer(h('span', { class: 'flex' }, sortHeader('date', 'Изменён')), resizer('size', 'date', 'Граница столбцов «Размер» и «Изменён»')),
-    withResizer(h('span', { class: 'text-right' }, 'Действия'), resizer('date', 'actions', 'Граница столбцов «Изменён» и «Действия»')));
+    headCells.name, headCells.size, headCells.date, headCells.actions);
+  renderHead();
 
   const dropzone = canEdit && h('div', { class: 'dropzone group hidden items-center sm:flex gap-3 rounded-2xl border border-dashed border-slate-300 bg-white/60 px-4 py-3 text-sm dark:border-slate-700 dark:bg-slate-900/40' },
     h('span', { class: 'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600 dark:bg-brand-950 dark:text-brand-400' }, icon('upload')),
@@ -328,7 +386,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
       h('div', { class: 'flex min-h-9 min-w-0 items-center' }, summary, bulkBar),
       toolbar),
     warnBox, head, list, empty, skeleton, loadMoreWrap);
-  applyWidths(false);
+  applyColumns(false);
 
   view.replaceChildren(h('div', { class: 'mx-auto max-w-6xl space-y-4 p-4 sm:p-6' }, dropzone, card), overlay);
 
@@ -1162,7 +1220,7 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
     if (dragUrls.get(file.key)?.until > Date.now()) return;
     prefetchTimer = setTimeout(async () => {
       try {
-        const { url } = await api.downloadLink(file.key, 3600);
+        const { url } = await api.dragLink(file.key);
         dragUrls.set(file.key, { url, until: Date.now() + 50 * 60_000 });
         if (dragUrls.size > 300) dragUrls.delete(dragUrls.keys().next().value);
       } catch { /* без ссылки файл просто не вытащить на рабочий стол */ }

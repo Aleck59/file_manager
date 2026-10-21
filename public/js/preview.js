@@ -9,17 +9,67 @@ import { openShareDialog } from './share-dialog.js';
 import { richView } from './textview.js';
 import qrcode from './vendor/qrcode.js';
 import {
-  $, CATEGORY_STYLE, categoryOf, copyToClipboard, extOf, folderLabel, formatDate, formatSize, h, icon, prefs, toast, toned,
+  $, CATEGORY_STYLE, categoryOf, copyToClipboard, extOf, folderLabel, formatDate, formatSize, h, icon, kindLabel, prefs, toast, toned,
 } from './ui.js';
 
 const TEXT_LIMIT = 256 * 1024;
 const panel = () => $('#preview');
+
+// Ширина панели: левая граница тянется мышью (двойной щелчок — как было), запоминается.
+const PREVIEW_MIN = 288;
+const previewMax = () => Math.min(Math.round(window.innerWidth * 0.6), 960);
+let edge;
+function setPanelWidth(px, save = true) {
+  if (px === null) {
+    panel().style.removeProperty('--preview-w');
+    if (save) prefs.set('preview-width', '');
+    return;
+  }
+  const w = Math.round(Math.min(previewMax(), Math.max(PREVIEW_MIN, px)));
+  panel().style.setProperty('--preview-w', `${w}px`);
+  if (save) prefs.set('preview-width', String(w));
+}
+function resizeEdge() {
+  const el = h('div', {
+    class: 'preview-resizer', role: 'separator', 'aria-orientation': 'vertical', tabindex: '0',
+    'aria-label': 'Ширина панели предпросмотра', title: 'Потяните, чтобы изменить ширину · двойной щелчок — как было',
+  });
+  el.addEventListener('dblclick', () => setPanelWidth(null));
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    setPanelWidth(panel().getBoundingClientRect().width + (e.key === 'ArrowLeft' ? 24 : -24));
+  });
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const x0 = e.clientX;
+    const w0 = panel().getBoundingClientRect().width;
+    el.setPointerCapture(e.pointerId);
+    document.body.classList.add('is-col-resizing');
+    const onMove = (ev) => setPanelWidth(w0 + (x0 - ev.clientX), false); // влево — шире
+    const onUp = () => {
+      el.removeEventListener('pointermove', onMove);
+      document.body.classList.remove('is-col-resizing');
+      setPanelWidth(panel().getBoundingClientRect().width);
+    };
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', onUp, { once: true });
+    el.addEventListener('pointercancel', onUp, { once: true });
+  });
+  return el;
+}
+/** Содержимое панели (ручка ширины остаётся на месте). */
+const fillPanel = (...nodes) => panel().replaceChildren(edge, ...nodes);
 const backdrop = () => $('#preview-backdrop');
 let current = null; // ключ открытого файла — защита от гонок при быстром переключении
 let ctx;
 
 export function initPreview(appCtx) {
   ctx = appCtx;
+  edge = resizeEdge();
+  const saved = Number(prefs.get('preview-width', ''));
+  if (saved > 0) setPanelWidth(saved, false);
   backdrop().addEventListener('click', closePreview);
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && current && !document.querySelector('dialog[open]')) closePreview();
@@ -53,7 +103,7 @@ function header(title) {
 }
 
 function renderEmpty() {
-  panel().replaceChildren(
+  fillPanel(
     header('Предпросмотр'),
     h('div', { class: 'flex flex-1 flex-col items-center justify-center px-8 text-center' },
       h('span', { class: 'mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-400 dark:bg-slate-800' }, icon('eye', 'h-6 w-6')),
@@ -298,7 +348,7 @@ export async function showPreview(file, { folder, onDelete, onRename, onMove, ga
   openDrawer(true);
   const body = h('div', { class: 'flex-1 space-y-5 overflow-y-auto p-4' },
     h('div', { class: 'aspect-[4/3] w-full animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800' }));
-  panel().replaceChildren(header('Предпросмотр'), body);
+  fillPanel(header('Предпросмотр'), body);
 
   let info;
   try {
@@ -334,7 +384,7 @@ export async function showPreview(file, { folder, onDelete, onRename, onMove, ga
     actions,
     h('dl', { class: 'divide-y divide-slate-100 text-sm dark:divide-slate-800' },
       metaRow('Размер', formatSize(info.size)),
-      metaRow('Тип', info.contentType),
+      metaRow('Тип', kindLabel(file.name, info.contentType)),
       metaRow('Изменён', formatDate(info.lastModified)),
       metaRow('Расположение', folderLabel(folder)),
       info.storage && metaRow('Хранилище', info.storage.name)),
