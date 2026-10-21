@@ -67,6 +67,8 @@ export const api = {
   }),
   createFolder: (parent, name) => request('POST', '/api/folders', { parent, name }),
   deleteFolder: (path) => request('POST', '/api/folders/delete', { path }),
+  copyFolder: (path, parent) => request('POST', '/api/folders/copy', { path, parent }),
+  folderStyle: (path, style) => request('PUT', '/api/folders/style', { path, ...style }),
   dragLink: (key) => request('POST', '/api/files/drag-link', { key }),
   setExpiry: (keys, days) => request('POST', '/api/files/expiry', { keys, days }),
   archive: (what) => request('POST', '/api/files/archive', what),

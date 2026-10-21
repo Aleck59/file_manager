@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import * as comments from './comments.js';
 import * as expiry from './expiry.js';
+import * as folderStyle from './folder-style.js';
 import { config } from './config.js';
 
 export const COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'];
@@ -69,6 +70,7 @@ export function forget(id) {
 export function refolder(oldPath, newPath) {
   comments.refolder(oldPath, newPath);
   expiry.refolder(oldPath, newPath);
+  folderStyle.refolder(oldPath, newPath); // цвет и значок папки — тоже
   let changed = false;
   for (const [id, c] of [...labels]) {
     const i = id.indexOf(':');
@@ -85,6 +87,7 @@ export function refolder(oldPath, newPath) {
 export function forgetFolder(p) {
   comments.forgetFolder(p);
   expiry.forgetFolder(p);
+  folderStyle.forgetFolder(p);
   let changed = false;
   for (const id of [...labels.keys()]) {
     if (id.slice(id.indexOf(':') + 1).startsWith(p)) { labels.delete(id); changed = true; }

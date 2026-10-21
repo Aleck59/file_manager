@@ -17,6 +17,7 @@ import * as comments from '../comments.js';
 import * as auditLog from '../audit-log.js';
 import * as duplicates from '../duplicates.js';
 import * as expiry from '../expiry.js';
+import * as folderStyle from '../folder-style.js';
 import * as uploadUsage from '../upload-usage.js';
 import * as folderIds from '../folder-ids.js';
 import * as labels from '../labels.js';
@@ -230,7 +231,10 @@ filesRouter.get('/files', async (req, res) => {
     f.comments = comments.count(f.key) || undefined;
     f.expiresAt = expiry.get(f.key) ?? undefined; // срок хранения: потом — в корзину
   }
-  for (const f of result.folders) f.label = labels.get(labels.folderId(f.path)) ?? undefined;
+  for (const f of result.folders) {
+    f.label = labels.get(labels.folderId(f.path)) ?? undefined;
+    f.style = folderStyle.get(f.path) ?? undefined; // {color, icon}
+  }
   res.json({ folder, access, ...result, warnings: publicWarnings(req, result.warnings) });
 });
 
@@ -288,6 +292,61 @@ filesRouter.post('/folders', canEdit, async (req, res) => {
   folderIds.remember(path);
   audit(req, 'folder.create', { path });
   res.status(201).json({ folder: { path, name }, warnings: publicWarnings(req, warnings) });
+});
+
+// PUT /api/folders/style {path, color, icon} — цвет и значок папки (null — как обычно)
+filesRouter.put('/folders/style', canEdit, (req, res) => {
+  const path = writeFolder(req, req.body?.path);
+  if (!path) throw new HttpError(400, 'У корня диска нет своего значка');
+  const style = { color: req.body?.color || null, icon: req.body?.icon || null };
+  if (!folderStyle.set(path, style)) throw new HttpError(400, 'Неизвестный цвет или значок');
+  res.json({ style: folderStyle.get(path) });
+});
+
+// POST /api/folders/copy {path, parent} — копия папки со всем содержимым (во всех хранилищах,
+// копирование внутри бакетов — байты не идут через VDS). Закрытые для пользователя вложенные
+// папки не копируются. Такое имя уже есть — «Имя (копия)», «Имя (копия 2)»…
+const FOLDER_COPY_MAX = 10_000;
+filesRouter.post('/folders/copy', canEdit, async (req, res) => {
+  const path = readFolder(req, req.body?.path);
+  if (!path) throw new HttpError(400, 'Корневую папку скопировать нельзя');
+  const parent = writeFolder(req, req.body?.parent);
+  const base = path.slice(0, -1).split('/').pop();
+  const exists = async (p) => (await storages.everywhere((st) => st.hasObjects(p))).values.some(Boolean);
+  let target = `${parent}${base}/`;
+  for (let i = 1; await exists(target); i++) target = `${parent}${sanitizeFolderName(`${base} (копия${i > 1 ? ` ${i}` : ''})`)}/`;
+  if (!isValidFolder(target)) throw new HttpError(400, 'Слишком глубокая вложенность или длинный путь');
+  if (target.startsWith(path)) throw new HttpError(400, 'Нельзя скопировать папку внутрь неё самой');
+
+  const filter = filterAcl(req);
+  const plan = []; // {st, rel, size, storageClass}
+  let bytes = 0;
+  let tooMany = false;
+  const { warnings } = await storages.everywhere(async (st) => {
+    await st.forEachObject(path, (o) => {
+      if (isReservedFolder(o.rel)) return;
+      if (filter && !acl.canRead(req.user, o.rel.endsWith('/') ? o.rel : folderFromKey(o.rel))) return;
+      if (plan.length >= FOLDER_COPY_MAX) { tooMany = true; return; }
+      plan.push({ st, rel: o.rel, size: o.size, storageClass: o.storageClass });
+      bytes += o.size;
+    });
+  });
+  if (tooMany) throw new HttpError(413, `В папке больше ${FOLDER_COPY_MAX} объектов — скопируйте её частями`);
+  if (warnings.length) throw new HttpError(502, 'Часть хранилищ недоступна — копия была бы неполной');
+  await reserveQuota(req.user, target, bytes);
+  let next = 0;
+  const worker = async () => {
+    while (next < plan.length) {
+      const o = plan[next++];
+      await o.st.copyObject(o.rel, target + o.rel.slice(path.length), o.size, undefined, o.storageClass ?? o.st.storageClass);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, plan.length) }, worker));
+  if (!plan.length) await storages.createFolder(target); // пустая папка
+  storages.invalidateStats();
+  folderIds.remember(target);
+  audit(req, 'folder.copy', { from: path, to: target, objects: plan.length, size: bytes });
+  res.status(201).json({ folder: { path: target, name: target.slice(0, -1).split('/').pop() }, copied: plan.length });
 });
 
 // POST /api/folders/move {path, parent?, name?} — переименовать и/или переместить папку
@@ -698,17 +757,20 @@ function uniqueName(name, used) {
 
 filesRouter.post('/files/archive', async (req, res) => {
   const items = []; // {st, rel, size, lastModified, path}
-  let name;
-  if (Array.isArray(req.body?.keys)) {
-    if (!req.body.keys.length || req.body.keys.length > 1000) throw new HttpError(400, 'Выберите от 1 до 1000 файлов');
-    for (const key of req.body.keys) {
-      const { st, rel } = readRef(req, key);
-      items.push({ st, rel, path: nameFromKey(rel) });
-    }
-    name = items.length === 1 ? nameFromKey(items[0].rel).replace(/\.[^.]*$/, '') : `Файлы (${items.length})`;
-  } else {
-    const folder = readFolder(req, req.body?.folder);
-    const filter = filterAcl(req);
+  const keys = Array.isArray(req.body?.keys) ? req.body.keys : [];
+  // Папки: {folder} — одна (архив с её содержимым), {folders: [...]} — внутри архива каждая своей папкой.
+  const single = typeof req.body?.folder === 'string' && !keys.length && !req.body?.folders;
+  const folders = single ? [req.body.folder] : Array.isArray(req.body?.folders) ? req.body.folders : [];
+  if (!keys.length && !folders.length) throw new HttpError(400, 'Нечего упаковывать');
+  if (keys.length > 1000 || folders.length > 200) throw new HttpError(400, 'Слишком много файлов и папок сразу');
+  for (const key of keys) {
+    const { st, rel } = readRef(req, key);
+    items.push({ st, rel, path: nameFromKey(rel) });
+  }
+  const filter = filterAcl(req);
+  for (const raw of folders) {
+    const folder = readFolder(req, raw);
+    const prefix = single || !folder ? '' : `${folder.slice(0, -1).split('/').pop()}/`;
     let tooMany = false;
     const { warnings } = await storages.everywhere(async (st) => {
       await st.forEachObject(folder, (o) => {
@@ -716,14 +778,16 @@ filesRouter.post('/files/archive', async (req, res) => {
         const f = folderFromKey(o.rel);
         if (filter && !acl.canRead(req.user, f)) return;
         if (items.length >= ARCHIVE_MAX_FILES) { tooMany = true; return; }
-        items.push({ st, rel: o.rel, size: o.size, lastModified: o.lastModified, path: f.slice(folder.length) + nameFromKey(o.rel) });
+        items.push({ st, rel: o.rel, size: o.size, lastModified: o.lastModified, path: prefix + f.slice(folder.length) + nameFromKey(o.rel) });
       });
     });
-    if (tooMany) throw new HttpError(413, `В папке больше ${ARCHIVE_MAX_FILES} файлов — скачайте её частями`);
+    if (tooMany) throw new HttpError(413, `Больше ${ARCHIVE_MAX_FILES} файлов — скачайте частями`);
     if (warnings.length) throw new HttpError(502, 'Часть хранилищ недоступна — архив был бы неполным');
-    if (!items.length) throw new HttpError(404, 'В папке нет файлов');
-    name = folder ? folder.slice(0, -1).split('/').pop() : 'Мой диск';
   }
+  if (!items.length) throw new HttpError(404, 'В выбранных папках нет файлов');
+  const name = single ? (folders[0] ? folders[0].slice(0, -1).split('/').pop() : 'Мой диск')
+    : items.length === 1 ? nameFromKey(items[0].rel).replace(/\.[^.]*$/, '')
+      : folders.length === 1 && !keys.length ? folders[0].slice(0, -1).split('/').pop() : `Архив (${keys.length + folders.length})`;
   const used = new Set();
   const entries = items.map((it) => ({ ...it, path: uniqueName(it.path, used) }));
   const token = crypto.randomBytes(18).toString('base64url');

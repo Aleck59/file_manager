@@ -108,7 +108,10 @@
   .sort-head:hover .sort-arrow, .sort-head.is-active .sort-arrow { opacity: 1; }
   .sort-head.is-asc .sort-arrow { transform: rotate(180deg); }
 
-  .file-grid { @apply grid gap-3 p-3 sm:gap-4 sm:p-4; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); }
+  .file-grid { @apply grid gap-3 p-3 sm:gap-4 sm:p-4; grid-template-columns: repeat(auto-fill, minmax(var(--tile-min, 9.5rem), 1fr)); }
+  /* Компактный список: ниже строки, меньше значки. */
+  .density-compact .file-row { @apply py-1; }
+  .density-compact .file-row .thumb, .density-compact .file-row > div > span.flex.h-9 { @apply h-7 w-7; }
   .tile { @apply relative flex cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-200 bg-white outline-none dark:border-slate-800 dark:bg-slate-900;
     transition: box-shadow 150ms ease-out, transform 150ms ease-out, border-color 150ms ease-out; }
   .tile:hover { @apply border-slate-300 shadow-md dark:border-slate-700; transform: translateY(-1px); }
@@ -120,6 +123,8 @@
   .tile-check { @apply absolute left-2 top-2 z-10 flex h-7 w-7 items-center justify-center rounded-lg bg-white/90 shadow-sm backdrop-blur dark:bg-slate-900/90; transition: opacity 120ms ease-out; }
   .tile-actions { @apply absolute right-1.5 top-1.5 z-10 rounded-lg bg-white/90 shadow-sm backdrop-blur dark:bg-slate-900/90; transition: opacity 120ms ease-out; }
   .is-dragging { opacity: .45; }
+  /* Вырезано (Ctrl+X) и ждёт вставки. */
+  .is-cut { opacity: .5; }
   /* Пока выбраны файлы, поиск уступает место панели действий. */
   .has-selection .search-box { display: none; }
   /* Сенсорные экраны: флажок на плитке — только в режиме выбора. */

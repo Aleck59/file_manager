@@ -180,10 +180,53 @@ function speedSelect(media) {
   return sel;
 }
 
+// Место остановки видео (в этом браузере): {ключ: секунды}, последние 200 видео.
+const POS_KEY = 'fm-video-pos';
+function readPositions() {
+  try { return JSON.parse(localStorage.getItem(POS_KEY) ?? '{}') ?? {}; } catch { return {}; }
+}
+function savePosition(key, seconds) {
+  try {
+    const all = readPositions();
+    delete all[key];
+    if (seconds !== null) all[key] = Math.floor(seconds);
+    const keys = Object.keys(all);
+    for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete all[k];
+    localStorage.setItem(POS_KEY, JSON.stringify(all));
+  } catch { /* приватный режим — просто не запоминаем */ }
+}
+const clock = (s) => {
+  const t = Math.floor(s);
+  const hh = Math.floor(t / 3600);
+  const mm = Math.floor((t % 3600) / 60);
+  const ss = String(t % 60).padStart(2, '0');
+  return hh ? `${hh}:${String(mm).padStart(2, '0')}:${ss}` : `${mm}:${ss}`;
+};
+
 function videoPlayer(url, file, siblings) {
   const video = h('video', { src: url, controls: true, preload: 'metadata', playsinline: true, class: 'w-full rounded-xl bg-black' });
+  const resume = h('span', { class: 'mr-auto hidden items-center gap-2' });
   const bar = h('div', { class: 'flex flex-wrap items-center justify-end gap-2 text-xs text-slate-500 dark:text-slate-400' },
+    resume,
     h('label', { class: 'flex items-center gap-1.5' }, 'Скорость', speedSelect(video)));
+  // Продолжить с места, где остановились (если смотрели больше 10 с и не досмотрели).
+  const saved = readPositions()[file.key];
+  video.addEventListener('loadedmetadata', () => {
+    if (!(saved > 10) || !(saved < video.duration - 10) || video.currentTime > 1) return;
+    video.currentTime = saved;
+    resume.replaceChildren(`Продолжено с ${clock(saved)}`,
+      h('button', { type: 'button', class: 'link', onclick: () => { video.currentTime = 0; resume.classList.add('hidden'); resume.classList.remove('flex'); } }, 'С начала'));
+    resume.classList.remove('hidden');
+    resume.classList.add('flex');
+  }, { once: true });
+  let lastSave = 0;
+  video.addEventListener('timeupdate', () => {
+    if (Date.now() - lastSave < 5000) return;
+    lastSave = Date.now();
+    savePosition(file.key, video.currentTime > 10 ? video.currentTime : null);
+  });
+  video.addEventListener('pause', () => savePosition(file.key, video.currentTime > 10 ? video.currentTime : null));
+  video.addEventListener('ended', () => savePosition(file.key, null));
   const variants = renditions(file, siblings);
   if (variants.length) {
     const sel = h('select', { class: 'select py-1 text-xs', 'aria-label': 'Качество' },
