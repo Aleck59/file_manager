@@ -711,6 +711,7 @@ async function start() {
     ctx.clockSkew = me.clockSkew;
     ctx.trashDays = me.trashDays ?? 0;
     ctx.personal = me.personal;
+    ctx.version = me.version ?? null;
     setHomeFolder(me.home);
   } catch {
     return; // при 401 api сам перенаправит на /login

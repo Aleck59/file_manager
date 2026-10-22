@@ -23,6 +23,7 @@ import * as commentsStore from './comments.js';
 import * as uploadUsage from './upload-usage.js';
 import * as expiryStore from './expiry.js';
 import * as folderStyleStore from './folder-style.js';
+import { version } from './version.js';
 import { usersRouter } from './routes/users.js';
 import { initUsers } from './users.js';
 
@@ -35,7 +36,7 @@ const publicDir = path.join(config.root, 'public');
 
 app.use(securityHeaders);
 
-app.get('/healthz', (req, res) => res.json({ ok: true }));
+app.get('/healthz', (req, res) => res.json({ ok: true, version: version.version, commit: version.sha }));
 
 // Логотип — публичный (нужен и на странице входа). Только растровые форматы, nosniff.
 app.get('/branding/logo', (req, res) => {

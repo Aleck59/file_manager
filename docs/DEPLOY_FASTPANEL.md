@@ -369,14 +369,30 @@ MALLOC_TRIM_THRESHOLD_=131072
 
 ## 8. Обновление
 
+Одной командой из папки файлообменника:
+
 ```bash
-sudo -iu USER
 cd /var/www/USER/data/www/files.example.com
-git pull
-npm ci --omit=dev
-pm2 restart file-manager        # или: sudo systemctl restart file-manager
-# (если менялся deploy/file-manager.service — повторите sudo bash deploy/install-systemd.sh --user USER)
+sudo bash scripts/update.sh        # или: npm run update
 ```
+
+Скрипт переключается на ветку `main` (если сервер стоит на другой), подтягивает её с GitHub,
+ставит зависимости, только если они поменялись, перезапускает службу (systemd или pm2), ждёт,
+пока сайт ответит, и печатает, что нового. Если на сервере кто-то правил файлы проекта —
+останавливается и показывает их. `.env` и `data/` не трогает. Номер версии и коммит видны
+внизу «Настроек» у администратора.
+
+**Первый раз**, если скрипта на сервере ещё нет (сервер на старой версии или другой ветке):
+
+```bash
+cd /var/www/USER/data/www/files.example.com
+git fetch origin main && git show origin/main:scripts/update.sh | sudo bash
+```
+
+> `gh repo sync` здесь не подходит: он обновляет ветку `main`, но не переключает на неё
+> рабочую копию — если сервер стоит на другой ветке, файлы остаются старыми.
+
+Если менялся `deploy/file-manager.service` — повторите `sudo bash deploy/install-systemd.sh --user USER`.
 
 ---
 

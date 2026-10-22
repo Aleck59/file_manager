@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import { TTL_LABELS } from '../preview.js';
 import { adminSettings } from './settings-admin.js';
 import { sessionsBlock, tokensBlock, twoFactorBlock } from './security-settings.js';
-import { applyTheme, h, prefs, toast } from '../ui.js';
+import { applyTheme, formatDate, h, prefs, toast } from '../ui.js';
 
 function section(title, description, ...content) {
   return h('section', { class: 'card grid gap-6 p-5 sm:p-6 md:grid-cols-3' },
@@ -97,8 +97,13 @@ export function mountSettings(view, ctx) {
   // Все параметры сервера (.env) — только для администратора.
   if (ctx.can('admin')) sections.push(adminSettings(ctx));
 
+  // Версия сервера — видно, применилось ли обновление (scripts/update.sh).
+  const v = ctx.version;
+  const versionLine = v && h('p', { class: 'text-center text-xs text-slate-400' },
+    [`Версия ${v.version}`, v.sha && `коммит ${v.sha}`, v.branch && v.branch !== 'main' && `ветка ${v.branch}`,
+      `запущено ${formatDate(v.startedAt)}`].filter(Boolean).join(' · '));
   view.replaceChildren(h('div', { class: 'mx-auto max-w-4xl space-y-6 p-4 sm:p-6' },
-    ...sections));
+    ...sections, versionLine));
 
   return { unmount() {} };
 }

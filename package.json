@@ -15,7 +15,8 @@
     "watch:css": "tailwindcss -c tailwind.config.js -i frontend/tailwind.css -o public/css/app.css --watch",
     "hash-password": "node scripts/hash-password.js",
     "s3:cors": "node scripts/apply-cors.js",
-    "test": "node --test"
+    "test": "node --test",
+    "update": "bash scripts/update.sh"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1149.0",
