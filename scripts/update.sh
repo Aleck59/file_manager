@@ -83,11 +83,26 @@ PORT="$(node -e '
   if (!p) try { p = /^\s*PORT\s*=\s*(\d+)/m.exec(fs.readFileSync(".env", "utf8"))?.[1]; } catch {}
   console.log(p || 3000);
 ' 2>/dev/null || echo 3000)"
+health=""
 for _ in $(seq 30); do
-  if curl -fsS --noproxy '*' -o /dev/null "http://127.0.0.1:$PORT/healthz" 2>/dev/null; then ok=1; break; fi
+  if health="$(curl -fsS --noproxy '*' "http://127.0.0.1:$PORT/healthz" 2>/dev/null)"; then break; fi
+  health=""
   sleep 0.5
 done
-[ "${ok:-}" ] || fail "Приложение не ответило на порту $PORT. Журнал: journalctl -u $SERVICE -n 50"
+[ -n "$health" ] || fail "Приложение не ответило на порту $PORT. Журнал: journalctl -u $SERVICE -n 50"
+
+# Запущена ли именно обновлённая версия? Если служба работает из другой папки, браузер получит
+# новые скрипты (их отдаёт nginx из этой папки), а сервер ответит по-старому — интерфейс ломается.
+running="$(printf '%s' "$health" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).commit||"")}catch{console.log("")}})' 2>/dev/null || true)"
+expected="$(run git rev-parse --short=7 HEAD)"
+if [ "$running" != "$expected" ]; then
+  dir=""
+  if command -v systemctl >/dev/null; then dir="$(systemctl show -p WorkingDirectory --value "$SERVICE" 2>/dev/null || true)"; fi
+  printf '\033[1;33m!\033[0m На порту %s отвечает другая версия (%s), а в этой папке — %s.\n' "$PORT" "${running:-старая, без номера}" "$expected"
+  [ -n "$dir" ] && [ "$dir" != "$HERE" ] && printf '  Служба %s запущена из папки %s, а обновлена %s.\n  Обновляйте ту папку или переустановите службу отсюда: sudo bash deploy/install-systemd.sh --user ПОЛЬЗОВАТЕЛЬ\n' "$SERVICE" "$dir" "$HERE"
+  [ -z "$dir" ] || [ "$dir" = "$HERE" ] && printf '  Проверьте, что на порту %s работает именно служба %s (systemctl status %s).\n' "$PORT" "$SERVICE" "$SERVICE"
+  exit 1
+fi
 
 if [ "$before" = "$after" ]; then
   say "Готово: обновлений не было, приложение перезапущено"

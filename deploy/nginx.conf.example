@@ -55,10 +55,12 @@ location /dav/ {
 
 # Статику отдаёт сам Nginx — меньше работы для Node.js.
 # Путь замените на свой (FastPanel: /var/www/<пользователь>/data/www/<домен>/public).
+# Без долгого кеша: браузер сверяет ETag (ответ 304 без тела), поэтому после обновления новые
+# скрипты подхватываются сразу. Путь — та же папка, из которой запущена служба file-manager.
 location ~ ^/(css|js)/ {
     root /var/www/USER/data/www/files.example.com/public;
-    expires 1h;
-    add_header Cache-Control "public";
+    etag on;
+    add_header Cache-Control "no-cache";
     add_header X-Content-Type-Options "nosniff";
     access_log off;
 }

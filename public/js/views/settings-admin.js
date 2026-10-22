@@ -34,6 +34,8 @@ function setStatus(el, kind, text) {
  * @returns {{ el: HTMLElement, key: string, value: () => any, changed: () => boolean, input: HTMLElement }}
  */
 function settingField(desc, { label, hint, suffix, placeholder, onReset, wide, inputType }) {
+  // Сервер не знает такой настройки (интерфейс новее сервера — служба не перезапущена) — пропускаем.
+  if (!desc) return null;
   const id = `set-${desc.key}`;
   const [srcLabel, srcTone, srcTitle] = SOURCE[desc.source];
   let input;
@@ -473,8 +475,8 @@ export function adminSettings(ctx) {
       settingField(f.DAILY_UPLOAD_MB, { label: 'Лимит загрузки в день', suffix: 'МБ', hint: 'Для роли «Редактор»; у пользователя можно задать свой. 0 — без лимита', onReset: reset }),
     ];
     return card('Загрузка файлов', 'Ограничения и параметры загрузки. Применяются сразу.', 'upload',
-      h('div', { class: 'grid gap-4 sm:grid-cols-2' }, ...fields.map((x) => x.el)),
-      saveRow(fields));
+      h('div', { class: 'grid gap-4 sm:grid-cols-2' }, ...fields.filter(Boolean).map((x) => x.el)),
+      saveRow(fields.filter(Boolean)));
   }
 
   // ---------- Пользователи и вход ----------
@@ -491,8 +493,8 @@ export function adminSettings(ctx) {
       settingField(f.OAUTH_GOOGLE_SECRET, { label: 'Google: Client secret', onReset: reset, wide: true }),
     ];
     return card('Пользователи и вход', 'Личные папки и вход через Яндекс/Google. Через провайдера входят только существующие пользователи — по почте, указанной в разделе «Пользователи».', 'users',
-      h('div', { class: 'grid gap-4 sm:grid-cols-2' }, ...fields.map((x) => x.el)),
-      saveRow(fields));
+      h('div', { class: 'grid gap-4 sm:grid-cols-2' }, ...fields.filter(Boolean).map((x) => x.el)),
+      saveRow(fields.filter(Boolean)));
   }
 
   // ---------- Сайт и безопасность ----------
@@ -532,8 +534,8 @@ export function adminSettings(ctx) {
     }
 
     return card('Сайт и безопасность', 'Адрес сайта, сессии и параметры запуска.', 'settings',
-      h('div', { class: 'grid gap-4 sm:grid-cols-2' }, ...fields.map((x) => x.el)),
-      saveRow(fields, { originField: fields[0] }),
+      h('div', { class: 'grid gap-4 sm:grid-cols-2' }, ...fields.filter(Boolean).map((x) => x.el)),
+      saveRow(fields.filter(Boolean), { originField: fields[0] }),
       h('div', { class: 'flex flex-wrap items-center gap-2 border-t border-slate-200 pt-5 dark:border-slate-800' },
         h('button', { type: 'button', class: 'btn-ghost border border-slate-200 text-rose-600 dark:border-slate-700 dark:text-rose-400', onclick: resetSessions }, icon('logout'), 'Завершить все сессии'),
         pending && restartBtn,
