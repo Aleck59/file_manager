@@ -389,6 +389,10 @@ cd /var/www/USER/data/www/files.example.com
 git fetch origin main && git show origin/main:scripts/update.sh | sudo bash
 ```
 
+Если git пишет «detected dubious ownership» (папку создала панель, а репозиторий клонировали
+от root), добавьте в начало команды `git -c safe.directory="$PWD"` вместо `git`; сам скрипт
+это учитывает и работает от имени владельца `.git`.
+
 > `gh repo sync` здесь не подходит: он обновляет ветку `main`, но не переключает на неё
 > рабочую копию — если сервер стоит на другой ветке, файлы остаются старыми.
 
