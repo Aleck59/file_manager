@@ -53,6 +53,7 @@ export function storageNotice(ctx) {
 }
 
 const FOLDER_DRAG = 'application/x-fm-folder'; // перетаскивание папок внутри диска
+let dragUnsupported = false; // сервер не выдаёт ссылки для перетаскивания (старая версия)
 const dragUrls = new Map(); // ключ файла → {url, until} — для перетаскивания на рабочий стол
 
 // Буфер обмена диска (Ctrl+C / Ctrl+X → Ctrl+V) и история для отмены (Ctrl+Z):
@@ -1541,13 +1542,16 @@ export function mountDisk(view, ctx, folder, { selectKey, selectId } = {}) {
   let prefetchTimer;
   function prefetchDragUrl(file) {
     clearTimeout(prefetchTimer);
-    if (dragUrls.get(file.key)?.until > Date.now()) return;
+    if (dragUnsupported || dragUrls.get(file.key)?.until > Date.now()) return;
     prefetchTimer = setTimeout(async () => {
       try {
         const { url } = await api.dragLink(file.key);
         dragUrls.set(file.key, { url, until: Date.now() + 50 * 60_000 });
         if (dragUrls.size > 300) dragUrls.delete(dragUrls.keys().next().value);
-      } catch { /* без ссылки файл просто не вытащить на рабочий стол */ }
+      } catch (err) {
+        // 404 — сервер этого не умеет (старая версия): больше не спрашиваем до перезагрузки страницы.
+        if (err.status === 404) dragUnsupported = true;
+      }
     }, 350);
   }
   cleanup.push(() => clearTimeout(prefetchTimer));
