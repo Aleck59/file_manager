@@ -14,6 +14,7 @@ import * as acl from '../acl.js';
 import * as oauth from '../oauth.js';
 import * as totp from '../totp.js';
 import { findByEmail, getUser, isExpired, publicUser, updateUser } from '../users.js';
+import { version } from '../version.js';
 
 export const authRouter = Router();
 
@@ -212,6 +213,8 @@ authRouter.get('/me', requireAuth, async (req, res) => {
   res.json({
     user: publicUser(req.user),
     personal: acl.hasPersonal(req.user) ? { path: acl.personalPath(req.user.username), quotaMb: req.user.quotaMb ?? 0 } : null,
+    // Версия (номер, коммит, ветка) — администратору, внизу «Настроек».
+    ...(acl.isAdmin(req.user) && { version }),
     // Корень диска в интерфейсе: личная папка или весь диск.
     home: acl.homeOf(req.user),
     storageConfigured: config.s3Configured,
